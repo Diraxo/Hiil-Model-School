@@ -94,10 +94,6 @@ function generatePassword() {
   for (let i = 0; i < 10; i++) pw += chars[Math.floor(Math.random() * chars.length)];
   return pw;
 }
-// 6-digit numeric code for the password-reset flow (see DataContext.requestPasswordReset).
-function generateResetCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
 function avatarColor(name = "") {
   const colors = ["bg-sky-600", "bg-emerald-700", "bg-indigo-600", "bg-teal-600", "bg-cyan-700", "bg-blue-700"];
   let h = 0;
@@ -180,6 +176,6 @@ function joinWithAnd(items) {
 }
 
 export {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, generateResetCode, avatarColor, fullName, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
   numberToWords, amountInWords, joinWithAnd, monthLabel,
 };

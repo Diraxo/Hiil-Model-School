@@ -2796,10 +2796,14 @@ function AcademicYearsPanel() {
   const [newStart, setNewStart] = useState(latest ? addYearToDateStr(latest.yearStart) : new Date().toISOString().slice(0, 10));
   const preview = defaultAcademicCalendar(new Date(newStart + "T00:00:00"));
 
-  function create() {
-    data.createAcademicYear({ yearStart: newStart }, auth.currentUser.id);
-    toast(`${formatAcademicYearLabel(preview)} was created.`, "success");
-    setCreating(false);
+  async function create() {
+    const result = await data.createAcademicYear({ yearStart: newStart }, auth.currentUser.id);
+    if (result.ok) {
+      toast(`${formatAcademicYearLabel(preview)} was created.`, "success");
+      setCreating(false);
+    } else {
+      toast(result.message || "Couldn't create the academic year.", "error");
+    }
   }
 
   return (
@@ -2822,7 +2826,10 @@ function AcademicYearsPanel() {
         {years.map((y) => (
           <div key={y.id} className="flex items-center justify-between text-sm px-3 py-2 rounded-lg border border-slate-100">
             <span className="text-slate-700">{formatAcademicYearLabel(y)}</span>
-            {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" onClick={() => { data.setCurrentAcademicYear(y.id); toast(`${formatAcademicYearLabel(y)} is now current.`, "success"); }} className="text-xs text-sky-600 font-medium">Set as Current</button>}
+            {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" onClick={async () => {
+              const result = await data.setCurrentAcademicYear(y.id);
+              toast(result.ok ? `${formatAcademicYearLabel(y)} is now current.` : (result.message || "Couldn't update the current academic year."), result.ok ? "success" : "error");
+            }} className="text-xs text-sky-600 font-medium">Set as Current</button>}
           </div>
         ))}
       </div>
@@ -5857,23 +5864,23 @@ function SettingsPage({ role, connectChild }) {
   function onPickPhoto(e) {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      data.updateOwnProfile(auth.currentUser.id, { photo: reader.result });
-      toast("Profile photo updated.", "success");
+    reader.onload = async () => {
+      const res = await auth.updateOwnProfile({ photo: reader.result });
+      if (res.ok) toast("Profile photo updated.", "success");
     };
     reader.readAsDataURL(file);
     e.target.value = "";
   }
 
-  function removePhoto() {
-    data.updateOwnProfile(auth.currentUser.id, { photo: null });
-    toast("Profile photo removed.", "success");
+  async function removePhoto() {
+    const res = await auth.updateOwnProfile({ photo: null });
+    if (res.ok) toast("Profile photo removed.", "success");
   }
 
-  function saveProfile(e) {
+  async function saveProfile(e) {
     e && e.preventDefault && e.preventDefault();
     setProfileError("");
-    const res = data.updateOwnProfile(auth.currentUser.id, { name, phone });
+    const res = await auth.updateOwnProfile({ name, phone });
     if (!res.ok) { setProfileError(res.message); return; }
     toast("Profile updated.", "success");
   }
@@ -5885,12 +5892,12 @@ function SettingsPage({ role, connectChild }) {
     if (res.ok) { setConnectId(""); toast(res.message, "success"); }
   }
 
-  function submitPasswordChange(e) {
+  async function submitPasswordChange(e) {
     e && e.preventDefault && e.preventDefault();
     setPwError("");
     if (!currentPw || !newPw || !confirmPw) { setPwError("Please fill in all three fields."); return; }
     if (newPw !== confirmPw) { setPwError("New password and confirmation don't match."); return; }
-    const res = data.changePassword(auth.currentUser.id, currentPw, newPw);
+    const res = await auth.changePassword(currentPw, newPw);
     if (!res.ok) { setPwError(res.message); return; }
     setCurrentPw(""); setNewPw(""); setConfirmPw("");
     setShowCurrentPw(false); setShowNewPw(false); setShowConfirmPw(false);

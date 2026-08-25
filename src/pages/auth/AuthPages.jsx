@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, createContext, useCon
 import {
   LayoutDashboard, Users, GraduationCap, UserCog, School, BookOpen, CalendarDays,
   ClipboardCheck, ClipboardList, FileBarChart, AlertTriangle, MessageSquare, Bell,
-  Settings, Search, Plus, X, Check, ChevronRight, ChevronDown, LogOut, Copy,
+  Settings, Search, Plus, X, Check, ChevronRight, LogOut, Copy,
   Camera, Trash2, Edit2, ArrowLeft, Menu, Send, Eye, EyeOff, Filter,
   TrendingUp, Loader2, RefreshCw, ShieldAlert,
   Megaphone, ClipboardEdit, ChevronLeft, CheckCircle2, CircleAlert, Info, UserPlus,
@@ -14,8 +14,6 @@ import {
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton,
 } from "../../components/ui";
 import { useAuth } from "../../context/AuthContext";
-import { useData } from "../../context/DataContext";
-import { useToast } from "../../context/ToastContext";
 
 
 function LoginScreen() {
@@ -23,27 +21,23 @@ function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [showDemo, setShowDemo] = useState(false);
   const [mode, setMode] = useState("login"); // login | register | forgot
   const [error, setError] = useState(auth.sessionEndedMessage || "");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (auth.sessionEndedMessage) auth.clearSessionEndedMessage();
   }, []);
 
-  function submit(e) {
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!email.trim() || !password.trim()) { setError("Please enter your email and password."); return; }
-    const res = auth.login(email, password);
+    setSubmitting(true);
+    const res = await auth.login(email, password);
+    setSubmitting(false);
     if (!res.ok) { setError(res.message); return; }
     setError("");
   }
-
-  const demoAccounts = [
-    { role: "Administrator", email: "admin@tilmaan-demo.com", desc: "Full school management access" },
-    { role: "Teacher", email: "teacher@tilmaan-demo.com", desc: "Amina Hassan — English, Grade 3A & 3B" },
-    { role: "Parent", email: "parent@tilmaan-demo.com", desc: "Mohamed Hassan — Ahmed (3A) & Aisha (1B)" },
-  ];
 
   if (mode === "register") return <RegisterScreen onBack={() => setMode("login")} />;
   if (mode === "forgot") return <ForgotPasswordScreen onBack={() => setMode("login")} initialEmail={email} />;
@@ -77,49 +71,31 @@ function LoginScreen() {
               <button type="button" onClick={() => setMode("forgot")} className="text-sky-600 font-medium hover:text-sky-700">Forgot password?</button>
             </div>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">Sign in</button>
+            <button type="button" disabled={submitting} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+              {submitting ? "Signing in…" : "Sign in"}
+            </button>
           </div>
           <button onClick={() => setMode("register")} className="w-full mt-3 text-center text-xs text-slate-500 hover:text-slate-700">
             New parent? <span className="text-sky-600 font-medium">Create an account</span>
           </button>
         </Card>
-
-        <div className="mt-4">
-          <button onClick={() => setShowDemo((s) => !s)} className="w-full text-xs text-slate-400 hover:text-slate-600 flex items-center justify-center gap-1 py-2">
-            Demo accounts <ChevronDown size={14} className={`transition-transform ${showDemo ? "rotate-180" : ""}`} />
-          </button>
-          {showDemo && (
-            <Card className="p-3 space-y-2">
-              {demoAccounts.map((d) => (
-                <button key={d.email} onClick={() => { setEmail(d.email); setPassword("Demo123!"); setError(""); }} className="w-full text-left rounded-lg border border-slate-100 hover:border-sky-200 hover:bg-sky-50/50 px-3 py-2 transition-colors">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-700">{d.role}</span>
-                    <span className="text-[10px] text-sky-600 font-medium">Use this</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">{d.email}</p>
-                  <p className="text-[11px] text-slate-400">{d.desc}</p>
-                </button>
-              ))}
-            </Card>
-          )}
-        </div>
       </div>
     </div>
   );
 }
 
+// Parent self-registration is temporarily disabled: it needs both a real Supabase Auth signUp
+// AND a link to a real `students` row, and student data hasn't been converted from the mock
+// database to Supabase yet (that's a later phase of the migration). The screen stays in place,
+// disabled, rather than being deleted, since it comes back online once that phase lands.
 function RegisterScreen({ onBack }) {
-  const data = useData();
-  const auth = useAuth();
-  const toast = useToast();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [phone, setPhone] = useState("");
   const [children, setChildren] = useState([{ studentId: "" }]);
-  const [error, setError] = useState("");
-  const [accountCreated, setAccountCreated] = useState(false);
+  const [error] = useState("");
 
   function updateChild(i, val) {
     setChildren((c) => c.map((ch, idx) => (idx === i ? { studentId: val } : ch)));
@@ -127,33 +103,6 @@ function RegisterScreen({ onBack }) {
 
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    setError("");
-    if (!name.trim() || !email.trim() || !password.trim() || !phone.trim()) { setError("Please fill in all required fields."); return; }
-    const cleaned = children.filter((c) => c.studentId.trim());
-    if (cleaned.length === 0) { setError("Add at least one child's Student ID."); return; }
-    const res = data.createParentAccount({ name, email, password, phone, children: cleaned });
-    if (!res.ok) { setError(res.message); return; }
-    setAccountCreated(true);
-  }
-
-  function continueToDashboard() {
-    const login = auth.login(email, password);
-    if (!login.ok) onBack();
-  }
-
-  if (accountCreated) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="w-full max-w-md">
-          <Card className="p-8 text-center">
-            <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
-            <h1 className="text-lg font-semibold text-slate-800 mb-1">Account created successfully!</h1>
-            <p className="text-sm text-slate-400 mb-6">Welcome to Tilmaan Modern Academy, {name.split(" ")[0]}. Your account is ready.</p>
-            <button onClick={continueToDashboard} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Continue to Dashboard</button>
-          </Card>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -166,7 +115,10 @@ function RegisterScreen({ onBack }) {
           <p className="text-xs text-slate-400 mt-1">Connect your child using the Student ID given by the school</p>
         </div>
         <Card className="p-6">
-          <div>
+          <div className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
+            Online registration is temporarily unavailable while the school switches to its new system. Please contact the school office to set up your parent account for now.
+          </div>
+          <div className="opacity-50 pointer-events-none">
             <Field label="Full name" required><input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} /></Field>
             <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} /></Field>
             <Field label="Password" required>
@@ -197,38 +149,23 @@ function RegisterScreen({ onBack }) {
   );
 }
 
-// Real, working password recovery: step 1 issues a one-time code against the account; step 2
-// verifies it and actually updates the stored password. Phase 1 has no email server (see the
-// README's Phase 4 roadmap), so the code is shown on-screen instead of emailed — clearly labeled
-// as a demo stand-in for real delivery, never presented as if an email was actually sent.
+// Real password recovery via Supabase Auth: step 1 emails the account a real recovery link;
+// step 2 (PasswordRecoveryScreen, below) runs when that link lands the user back in this app
+// with a recovery-scoped session already established.
 function ForgotPasswordScreen({ onBack, initialEmail }) {
-  const data = useData();
-  const [step, setStep] = useState("email"); // email | reset | done
+  const auth = useAuth();
+  const [step, setStep] = useState("email"); // email | done
   const [email, setEmail] = useState(initialEmail || "");
-  const [issuedCode, setIssuedCode] = useState("");
-  const [code, setCode] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [confirmPw, setConfirmPw] = useState("");
-  const [showPw, setShowPw] = useState(false);
-  const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  function requestCode(e) {
+  async function requestReset(e) {
     e && e.preventDefault && e.preventDefault();
     setError("");
     if (!email.trim()) { setError("Please enter your email address."); return; }
-    const res = data.requestPasswordReset(email);
-    if (!res.ok) { setError(res.message); return; }
-    setIssuedCode(res.code);
-    setStep("reset");
-  }
-
-  function submitReset(e) {
-    e && e.preventDefault && e.preventDefault();
-    setError("");
-    if (!code.trim() || !newPw || !confirmPw) { setError("Please fill in the code and your new password."); return; }
-    if (newPw !== confirmPw) { setError("New password and confirmation don't match."); return; }
-    const res = data.resetPasswordWithCode(email, code, newPw);
+    setSubmitting(true);
+    const res = await auth.requestPasswordReset(email);
+    setSubmitting(false);
     if (!res.ok) { setError(res.message); return; }
     setStep("done");
   }
@@ -244,20 +181,70 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
 
         {step === "email" && (
           <Card className="p-6">
-            <p className="text-xs text-slate-400 mb-3">Enter the email address on your account. We'll issue a reset code for it.</p>
-            <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && requestCode(e)} className={inputCls} placeholder="you@school.com" /></Field>
+            <p className="text-xs text-slate-400 mb-3">Enter the email address on your account. We'll send a password reset link to it.</p>
+            <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && requestReset(e)} className={inputCls} placeholder="you@school.com" /></Field>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" onClick={requestCode} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Send reset code</button>
+            <button type="button" disabled={submitting} onClick={requestReset} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
+              {submitting ? "Sending…" : "Send reset link"}
+            </button>
           </Card>
         )}
 
-        {step === "reset" && (
+        {step === "done" && (
+          <Card className="p-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
+            <h2 className="text-base font-semibold text-slate-800 mb-1">Check your email</h2>
+            <p className="text-sm text-slate-400 mb-6">If an account exists for {email}, a password reset link has been sent. Open it to choose a new password.</p>
+            <button onClick={onBack} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Reached when a Supabase Auth password-recovery email link lands the user back in the app --
+// AuthContext detects the resulting PASSWORD_RECOVERY event and routes here instead of the
+// normal login/dashboard split (see App.jsx's Root).
+function PasswordRecoveryScreen() {
+  const auth = useAuth();
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function submit(e) {
+    e && e.preventDefault && e.preventDefault();
+    setError("");
+    if (!newPw || !confirmPw) { setError("Please fill in your new password."); return; }
+    if (newPw !== confirmPw) { setError("New password and confirmation don't match."); return; }
+    setSubmitting(true);
+    const res = await auth.completePasswordRecovery(newPw);
+    setSubmitting(false);
+    if (!res.ok) { setError(res.message); return; }
+    setDone(true);
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-6">
+          <Logo size={56} />
+          <h1 className="mt-3 text-lg font-semibold text-slate-800">Choose a new password</h1>
+        </div>
+
+        {done ? (
+          <Card className="p-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
+            <h2 className="text-base font-semibold text-slate-800 mb-1">Password reset</h2>
+            <p className="text-sm text-slate-400 mb-6">Your password has been changed. Continue to your dashboard.</p>
+            <button onClick={() => window.location.reload()} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Continue</button>
+          </Card>
+        ) : (
           <Card className="p-6">
-            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
-              This demo doesn't have a live email server yet (see the roadmap in the README), so instead of emailing your code, here it is directly. In a deployed school system, this code would arrive by email instead.
-              <p className="mt-2 font-mono text-base font-semibold text-amber-800 tracking-widest">{issuedCode}</p>
-            </div>
-            <Field label="Reset code" required><input value={code} onChange={(e) => setCode(e.target.value)} className={inputCls} placeholder="6-digit code" /></Field>
             <Field label="New password" required>
               <div className="relative">
                 <input type={showPw ? "text" : "password"} value={newPw} onChange={(e) => setNewPw(e.target.value)} className={inputCls + " pr-9"} placeholder="At least 6 characters" />
@@ -275,17 +262,10 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
               </div>
             </Field>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" onClick={submitReset} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Reset password</button>
-            <button type="button" onClick={() => setStep("email")} className="w-full mt-2 text-center text-xs text-slate-500 hover:text-slate-700">Use a different email</button>
-          </Card>
-        )}
-
-        {step === "done" && (
-          <Card className="p-8 text-center">
-            <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
-            <h2 className="text-base font-semibold text-slate-800 mb-1">Password reset</h2>
-            <p className="text-sm text-slate-400 mb-6">Your password has been changed. Sign in with your new password.</p>
-            <button onClick={onBack} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+            <button type="button" disabled={submitting} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
+              {submitting ? "Saving…" : "Reset password"}
+            </button>
+            <button type="button" onClick={auth.cancelPasswordRecovery} className="w-full mt-2 text-center text-xs text-slate-500 hover:text-slate-700">Cancel</button>
           </Card>
         )}
       </div>
@@ -294,4 +274,4 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
 }
 
 
-export { LoginScreen, RegisterScreen };
+export { LoginScreen, RegisterScreen, PasswordRecoveryScreen };

@@ -9,7 +9,7 @@ import {
   computeSemesterResult,
 } from "../utils/constants";
 import {
-  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, generateResetCode, avatarColor, fullName, computePeriodSchedule,
+  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule,
   leaveDurationLabel, joinWithAnd, monthLabel,
 } from "../utils/helpers";
 import {
@@ -18,6 +18,7 @@ import {
   announcementSenderLabel as computeAnnouncementSenderLabel,
 } from "../utils/identity";
 import { buildSeed, migrateDB, loadDB, saveDB } from "../data/seed";
+import { createAcademicYearService } from "../services/academicYearService";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
 import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel } from "../utils/academicCalendar";
@@ -227,11 +228,23 @@ function findOrCreateResultRecord(d, { studentId, classId, subject, semester }) 
 }
 
 function DataProvider({ children }) {
-  const [db, setDb] = useState(null);
+  const [mockDb, setDb] = useState(null);
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const lastWriteRef = useRef(0);
   const toast = useToast();
+
+  // Academic years: first domain converted to real Supabase data (see project notes). Lives as
+  // its own state, independent of the mock `db`/commit()/localStorage pipeline below -- every
+  // other domain still reads/writes the mock db until it's converted in turn.
+  const academicYearService = useMemo(() => createAcademicYearService(), []);
+  const [academicYears, setAcademicYears] = useState([]);
+  const refetchAcademicYears = useCallback(async () => {
+    const rows = await academicYearService.list();
+    setAcademicYears(rows);
+    return rows;
+  }, [academicYearService]);
+  useEffect(() => { refetchAcademicYears().catch((e) => console.error("Failed to load academic years", e)); }, [refetchAcademicYears]);
 
   useEffect(() => {
     let mounted = true;
@@ -361,7 +374,13 @@ function DataProvider({ children }) {
 
   /* ---------- derived lookups ---------- */
   const api = useMemo(() => {
-    if (!db) return null;
+    if (!mockDb) return null;
+    // Shadows the mock `db` state for the rest of this function: academicYears now comes from
+    // Supabase (see refetchAcademicYears above) instead of the seeded/localStorage array. Every
+    // read below (`db.academicYears...`) picks this up automatically since it's one closure.
+    // academicCalendar is re-derived from the real data too (rather than trusting mockDb's stale
+    // seeded copy), since classifyAttendanceDate/etc. read it directly instead of academicYears.
+    const db = { ...mockDb, academicYears, academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar };
 
     const getUser = (id) => db.users.find((u) => u.id === id);
     const getClass = (id) => db.classes.find((c) => c.id === id);
@@ -778,27 +797,38 @@ function DataProvider({ children }) {
         });
       },
 
-      // ---- Academic Years (a real, id'd, multi-year entity — see plan) ----
-      createAcademicYear(fields, createdBy) {
-        let newYear = null;
-        commit((d) => {
+      // ---- Academic Years: real Supabase data (see academicYearService). Only the activity-log
+      // side effect still goes through commit()/the mock db -- `activities` hasn't converted yet.
+      async createAcademicYear(fields, createdBy) {
+        try {
           const base = defaultAcademicCalendar(fields.yearStart ? new Date(fields.yearStart) : undefined);
-          newYear = { ...base, ...fields, id: uid("ayear"), isCurrent: false, updatedAt: Date.now(), updatedBy: createdBy };
-          d.academicYears.push(newYear);
-          d.activities = [{ id: uid("act"), text: `Academic year ${formatAcademicYearLabel(newYear)} was created.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return newYear;
+          const newYear = await academicYearService.create({ ...base, ...fields }, createdBy);
+          await refetchAcademicYears();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Academic year ${formatAcademicYearLabel(newYear)} was created.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, year: newYear };
+        } catch (e) {
+          console.error("Failed to create academic year", e);
+          return { ok: false, message: e.message || "Couldn't create the academic year." };
+        }
       },
-      setCurrentAcademicYear(id) {
-        commit((d) => {
-          const year = d.academicYears.find((y) => y.id === id);
-          if (!year) return d;
-          d.academicYears.forEach((y) => { y.isCurrent = y.id === id; });
-          d.academicCalendar = year;
-          d.activities = [{ id: uid("act"), text: `${formatAcademicYearLabel(year)} is now the current academic year.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async setCurrentAcademicYear(id) {
+        const year = academicYears.find((y) => y.id === id);
+        if (!year) return { ok: false, message: "Academic year not found." };
+        try {
+          await academicYearService.setCurrent(id);
+          await refetchAcademicYears();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${formatAcademicYearLabel(year)} is now the current academic year.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to set current academic year", e);
+          return { ok: false, message: e.message || "Couldn't update the current academic year." };
+        }
       },
       // Creates (or reuses) this student's enrollment row for `academicYearId` and updates their
       // current denormalized fields to match — the prior year's enrollment row, and every
@@ -1170,85 +1200,6 @@ function DataProvider({ children }) {
           d.activities = [{ id: uid("act"), text: `Password was reset for ${t?.name || "a teacher"}. The new temporary password was shared privately and is not stored anywhere visible.`, createdAt: Date.now() }, ...d.activities];
           return d;
         });
-      },
-
-      changePassword(userId, currentPassword, newPassword) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const u = d.users.find((x) => x.id === userId);
-          if (!u) { result = { ok: false, message: "Account not found." }; return d; }
-          if (u.password !== currentPassword) { result = { ok: false, message: "Your current password doesn't match." }; return d; }
-          if (!newPassword || newPassword.length < 6) { result = { ok: false, message: "New password must be at least 6 characters." }; return d; }
-          u.password = newPassword;
-          u.mustChangePassword = false;
-          d.activities = [{ id: uid("act"), text: `${u.name} changed their password.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
-      },
-
-      // Self-service profile edits (name/phone/photo) — deliberately excludes email, role,
-      // childIds and every school-controlled field. Used by SettingsPage for every role.
-      updateOwnProfile(userId, patch) {
-        let result = { ok: true, message: "Profile updated." };
-        commit((d) => {
-          const u = d.users.find((x) => x.id === userId);
-          if (!u) { result = { ok: false, message: "Account not found." }; return d; }
-          if (patch.name !== undefined) {
-            const trimmed = (patch.name || "").trim();
-            if (!trimmed) { result = { ok: false, message: "Name cannot be empty." }; return d; }
-            u.name = trimmed;
-          }
-          if (patch.phone !== undefined) u.phone = (patch.phone || "").trim();
-          if (patch.photo !== undefined) u.photo = patch.photo || null;
-          // Mirror onto the linked staff/payroll record too, so Staff/Payroll views (which read
-          // staff.name/photo, not users.name/photo) don't go stale after a self-service edit.
-          const staffRec = d.staff.find((s) => s.userId === userId);
-          if (staffRec) {
-            if (patch.name !== undefined) staffRec.name = u.name;
-            if (patch.photo !== undefined) staffRec.photo = u.photo;
-          }
-          return d;
-        });
-        return result;
-      },
-
-      // Forgot-password, step 1: issue a one-time code against the account. Phase 1 has no email
-      // server (see README's Phase 4 roadmap), so the code is handed straight back to the caller
-      // to display in-app rather than emailed — this is a real, working recovery flow (it really
-      // updates the stored password in step 2), just without real email transport yet.
-      requestPasswordReset(email) {
-        let result = { ok: false, message: "" };
-        commit((d) => {
-          const u = d.users.find((x) => x.email.toLowerCase() === email.trim().toLowerCase());
-          if (!u) { result = { ok: false, message: "No account was found with that email address." }; return d; }
-          const code = generateResetCode();
-          u.resetCode = code;
-          u.resetCodeExpiresAt = Date.now() + 15 * 60 * 1000;
-          result = { ok: true, message: "A reset code was issued.", code, name: u.name };
-          return d;
-        });
-        return result;
-      },
-
-      // Forgot-password, step 2: verify the code and actually change the stored password.
-      resetPasswordWithCode(email, code, newPassword) {
-        let result = { ok: false, message: "" };
-        commit((d) => {
-          const u = d.users.find((x) => x.email.toLowerCase() === email.trim().toLowerCase());
-          if (!u || !u.resetCode) { result = { ok: false, message: "Please request a new reset code." }; return d; }
-          if (Date.now() > (u.resetCodeExpiresAt || 0)) { result = { ok: false, message: "This reset code has expired. Please request a new one." }; return d; }
-          if (u.resetCode !== (code || "").trim()) { result = { ok: false, message: "Incorrect reset code." }; return d; }
-          if (!newPassword || newPassword.length < 6) { result = { ok: false, message: "New password must be at least 6 characters." }; return d; }
-          u.password = newPassword;
-          u.mustChangePassword = false;
-          u.resetCode = null;
-          u.resetCodeExpiresAt = null;
-          d.activities = [{ id: uid("act"), text: `${u.name} reset their password via the Forgot Password flow.`, createdAt: Date.now() }, ...d.activities];
-          result = { ok: true, message: "Password reset. You can now sign in with your new password." };
-          return d;
-        });
-        return result;
       },
 
       // `data.subjects`, if given, is the class's full curriculum (subject name strings) — set in
@@ -3293,7 +3244,7 @@ function DataProvider({ children }) {
         setDb(fresh);
       },
     };
-  }, [db, commit]);
+  }, [mockDb, commit, academicYears]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not
   // events — nothing "happens" to trigger them, so they're checked on an ambient interval
@@ -3319,7 +3270,7 @@ function DataProvider({ children }) {
     );
   }
 
-  if (!ready || !db) {
+  if (!ready || !mockDb) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
