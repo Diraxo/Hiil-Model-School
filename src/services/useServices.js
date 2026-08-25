@@ -23,7 +23,7 @@ export function useServices() {
       teachers: createTeacherService(data),
       parents: createParentService(data),
       classes: createClassService(data),
-      subjects: createSubjectService(data),
+      subjects: createSubjectService(),
       homework: createHomeworkService(data),
       attendance: createAttendanceService(data),
       results: createResultsService(data),

@@ -19,6 +19,7 @@ import {
 } from "../utils/identity";
 import { buildSeed, migrateDB, loadDB, saveDB } from "../data/seed";
 import { createAcademicYearService } from "../services/academicYearService";
+import { createSubjectService } from "../services/subjectService";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
 import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel } from "../utils/academicCalendar";
@@ -246,6 +247,17 @@ function DataProvider({ children }) {
   }, [academicYearService]);
   useEffect(() => { refetchAcademicYears().catch((e) => console.error("Failed to load academic years", e)); }, [refetchAcademicYears]);
 
+  // Subjects: second domain converted to real Supabase data. Still referenced by NAME (not id)
+  // from every other still-mock table -- see subjectService.js's header comment.
+  const subjectService = useMemo(() => createSubjectService(), []);
+  const [subjects, setSubjects] = useState([]);
+  const refetchSubjects = useCallback(async () => {
+    const rows = await subjectService.list();
+    setSubjects(rows);
+    return rows;
+  }, [subjectService]);
+  useEffect(() => { refetchSubjects().catch((e) => console.error("Failed to load subjects", e)); }, [refetchSubjects]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -380,7 +392,7 @@ function DataProvider({ children }) {
     // read below (`db.academicYears...`) picks this up automatically since it's one closure.
     // academicCalendar is re-derived from the real data too (rather than trusting mockDb's stale
     // seeded copy), since classifyAttendanceDate/etc. read it directly instead of academicYears.
-    const db = { ...mockDb, academicYears, academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar };
+    const db = { ...mockDb, academicYears, subjects, academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar };
 
     const getUser = (id) => db.users.find((u) => u.id === id);
     const getClass = (id) => db.classes.find((c) => c.id === id);
@@ -1293,50 +1305,71 @@ function DataProvider({ children }) {
         return result;
       },
 
-      createSubject(name) {
-        commit((d) => {
-          d.subjects.push({ id: uid("sub"), name });
-          d.activities = [{ id: uid("act"), text: `${name} was added as a new subject.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      // ---- Subjects: real Supabase data (see subjectService). Still-mock tables that reference a
+      // subject by NAME (homework, teacherAssignments, classSubjects, users.subject, results) still
+      // get their cascade-rename via commit() here, same as before -- only the subjects row itself
+      // now lives in Postgres.
+      async createSubject(name) {
+        try {
+          await subjectService.create(name);
+          await refetchSubjects();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${name} was added as a new subject.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create subject", e);
+          return { ok: false, message: e.message || "Couldn't create the subject." };
+        }
       },
 
-      updateSubject(id, newName) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const subj = d.subjects.find((s) => s.id === id);
-          if (!subj) { result = { ok: false, message: "Subject not found." }; return d; }
-          const trimmed = newName.trim();
-          const duplicate = d.subjects.some((s) => s.id !== id && s.name.toLowerCase() === trimmed.toLowerCase());
-          if (duplicate) { result = { ok: false, message: "This subject already exists." }; return d; }
-          const oldName = subj.name;
-          subj.name = trimmed;
-          d.homework.forEach((h) => { if (h.subject === oldName) h.subject = trimmed; });
-          d.teacherAssignments.forEach((ta) => { if (ta.subject === oldName) ta.subject = trimmed; });
-          d.classSubjects.forEach((cs) => { if (cs.subject === oldName) cs.subject = trimmed; });
-          d.users.forEach((u) => { if (u.role === ROLES.TEACHER && u.subject === oldName) u.subject = trimmed; });
-          // Existing recorded results are keyed by subject name — without this, a rename orphans
-          // every student's already-recorded scores under the old name (invisible in Results/
-          // report cards, which all query by the class's *current* curriculum).
-          d.results.forEach((r) => { if (r.subject === oldName) r.subject = trimmed; });
-          d.activities = [{ id: uid("act"), text: `Subject "${oldName}" was renamed to "${trimmed}".`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      async updateSubject(id, newName) {
+        const subj = subjects.find((s) => s.id === id);
+        if (!subj) return { ok: false, message: "Subject not found." };
+        const trimmed = newName.trim();
+        const duplicate = subjects.some((s) => s.id !== id && s.name.toLowerCase() === trimmed.toLowerCase());
+        if (duplicate) return { ok: false, message: "This subject already exists." };
+        const oldName = subj.name;
+        try {
+          await subjectService.rename(id, trimmed);
+          await refetchSubjects();
+          commit((d) => {
+            d.homework.forEach((h) => { if (h.subject === oldName) h.subject = trimmed; });
+            d.teacherAssignments.forEach((ta) => { if (ta.subject === oldName) ta.subject = trimmed; });
+            d.classSubjects.forEach((cs) => { if (cs.subject === oldName) cs.subject = trimmed; });
+            d.users.forEach((u) => { if (u.role === ROLES.TEACHER && u.subject === oldName) u.subject = trimmed; });
+            // Existing recorded results are keyed by subject name — without this, a rename orphans
+            // every student's already-recorded scores under the old name (invisible in Results/
+            // report cards, which all query by the class's *current* curriculum).
+            d.results.forEach((r) => { if (r.subject === oldName) r.subject = trimmed; });
+            d.activities = [{ id: uid("act"), text: `Subject "${oldName}" was renamed to "${trimmed}".`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to rename subject", e);
+          return { ok: false, message: e.message || "Couldn't rename the subject." };
+        }
       },
 
-      deleteSubject(id) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const subj = d.subjects.find((s) => s.id === id);
-          if (!subj) { result = { ok: false, message: "Subject not found." }; return d; }
-          const inUse = d.classSubjects.some((cs) => cs.subject === subj.name) || d.teacherAssignments.some((ta) => ta.subject === subj.name) || d.users.some((u) => u.role === ROLES.TEACHER && u.subject === subj.name);
-          if (inUse) { result = { ok: false, message: `${subj.name} is still part of one or more classes' subjects. Remove it from those classes first.` }; return d; }
-          d.subjects = d.subjects.filter((s) => s.id !== id);
-          d.activities = [{ id: uid("act"), text: `${subj.name} was removed from the subject list.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      async deleteSubject(id) {
+        const subj = subjects.find((s) => s.id === id);
+        if (!subj) return { ok: false, message: "Subject not found." };
+        const inUse = db.classSubjects.some((cs) => cs.subject === subj.name) || db.teacherAssignments.some((ta) => ta.subject === subj.name) || db.users.some((u) => u.role === ROLES.TEACHER && u.subject === subj.name);
+        if (inUse) return { ok: false, message: `${subj.name} is still part of one or more classes' subjects. Remove it from those classes first.` };
+        try {
+          await subjectService.remove(id);
+          await refetchSubjects();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${subj.name} was removed from the subject list.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete subject", e);
+          return { ok: false, message: e.message || "Couldn't delete the subject." };
+        }
       },
 
       gradeOptions() {
@@ -3244,7 +3277,7 @@ function DataProvider({ children }) {
         setDb(fresh);
       },
     };
-  }, [mockDb, commit, academicYears]);
+  }, [mockDb, commit, academicYears, subjects]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not
   // events — nothing "happens" to trigger them, so they're checked on an ambient interval

@@ -1855,27 +1855,28 @@ function ClassFormModal({ open, onClose, cls }) {
     setForm((f) => (f.subjects.includes(name) ? { ...f, subjects: f.subjects.filter((s) => s !== name) } : { ...f, subjects: [...f.subjects, name] }));
   }
 
-  function addNewSubject() {
+  async function addNewSubject() {
     const trimmed = newSubject.trim();
     if (!trimmed) return;
     if (data.db.subjects.some((s) => s.name.toLowerCase() === trimmed.toLowerCase())) { toast("This subject already exists.", "error"); return; }
-    data.createSubject(trimmed);
+    const res = await data.createSubject(trimmed);
+    if (!res.ok) { toast(res.message, "error"); return; }
     setForm((f) => (f.subjects.includes(trimmed) ? f : { ...f, subjects: [...f.subjects, trimmed] }));
     setNewSubject("");
   }
 
-  function submitRename() {
+  async function submitRename() {
     if (!renameTarget) return;
     const trimmed = renameValue.trim();
     if (!trimmed) { toast("Please enter a subject name.", "error"); return; }
-    const res = data.updateSubject(renameTarget.id, trimmed);
+    const res = await data.updateSubject(renameTarget.id, trimmed);
     if (!res.ok) { toast(res.message, "error"); return; }
     setForm((f) => ({ ...f, subjects: f.subjects.map((s) => (s === renameTarget.name ? trimmed : s)) }));
     setRenameTarget(null);
   }
 
-  function deleteGlobalSubject(subj) {
-    const res = data.deleteSubject(subj.id);
+  async function deleteGlobalSubject(subj) {
+    const res = await data.deleteSubject(subj.id);
     if (!res.ok) { toast(res.message, "error"); return; }
     setForm((f) => ({ ...f, subjects: f.subjects.filter((s) => s !== subj.name) }));
     toast("Subject deleted.", "info");
