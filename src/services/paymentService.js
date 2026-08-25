@@ -1,0 +1,31 @@
+// Phase 1: thin pass-through to DataContext. Phase 2: swap for Supabase.
+export function createPaymentService(data) {
+  return {
+    list: () => data.db.payments,
+    feeTypes: () => data.db.feeTypes,
+    feeSchedules: () => data.db.feeSchedules,
+    feeInstallments: () => data.db.feeInstallments,
+    obligations: () => data.db.studentFeeObligations,
+    adjustments: () => data.db.feeObligationAdjustments,
+    allocations: () => data.db.paymentAllocations,
+    paymentMethods: () => data.db.paymentMethods,
+    feeTypesForStudent: (student, academicYearId) => data.feeTypesForStudent(student, academicYearId),
+    balanceFor: (student, feeType, academicYearId) => data.balanceFor(student, feeType, academicYearId),
+    summaryForStudent: (student, academicYearId) => data.studentPaymentSummary(student, academicYearId),
+    installmentStatusForStudent: (student, academicYearId) => data.installmentStatusForStudent(student, academicYearId),
+    busScheduleForStudent: (student, academicYearId) => data.busScheduleForStudent(student, academicYearId),
+    priorYearsOutstanding: (student, excludeYearId) => data.priorYearsOutstanding(student, excludeYearId),
+    generateReceiptNo: () => data.generateReceiptNo(),
+    record: (payload) => data.recordPayment(payload),
+    recordBatch: (lines, recordedBy) => data.recordPaymentBatch(lines, recordedBy),
+    void: (paymentId, reason, actorId, actorRole) => data.voidPayment(paymentId, reason, actorId, actorRole),
+    sendReminder: (payload) => data.sendPaymentReminder(payload),
+    createFeeType: (payload) => data.createFeeType(payload),
+    updateFeeType: (id, payload) => data.updateFeeType(id, payload),
+    rolloutFeeTypeForYear: (feeTypeId, academicYearId, payload, actorId) => data.rolloutFeeTypeForYear(feeTypeId, academicYearId, payload, actorId),
+    editInstallment: (installmentId, patch) => data.editInstallment(installmentId, patch),
+    addAdjustment: (obligationId, payload, actorId) => data.addObligationAdjustment(obligationId, payload, actorId),
+    deleteFeeType: (id) => data.deleteFeeType(id),
+    addPaymentMethod: (method) => data.addPaymentMethod(method),
+  };
+}

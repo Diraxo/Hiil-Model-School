@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Printable documents: only the modal's *-print content should end up on paper. */
+@media print {
+  body * { visibility: hidden; }
+  .report-card-print, .report-card-print *,
+  .receipt-print, .receipt-print *,
+  .payslip-print, .payslip-print * { visibility: visible; }
+  .report-card-print, .receipt-print, .payslip-print { position: absolute; top: 0; left: 0; width: 100%; }
+  .no-print { display: none !important; }
+}
