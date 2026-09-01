@@ -234,7 +234,7 @@ function feeRowsForStudentIn(dbLike, student, feeType, academicYearId) {
   }).filter(Boolean);
   return { schedule, installments, rows, currentIndex };
 }
-// Resolves an allocation to its human-readable fee label ("School Fee Quarter 1", "Bus Fee –
+// Resolves an allocation to its human-readable fee label ("School Fee September 2026", "Bus Fee –
 // September 2026") by walking allocation → obligation → installment → schedule → feeType — the
 // label is a stored, immutable fact on the installment now, no more reconstructing a bus payment's
 // covered month from array position/payment order.
@@ -1586,7 +1586,7 @@ function DataProvider({ children }) {
           // -- grab their keys first so we can best-effort delete them after.
           const orphanEvidencePaths = resultEvidenceRaw.filter((e) => e.studentId === id).map((e) => e.storagePath);
           await studentService.remove(id);
-          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards()]);
+          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
           commit((d) => {
             d.attendance = d.attendance.filter((a) => a.studentId !== id);
@@ -1594,13 +1594,12 @@ function DataProvider({ children }) {
             // results + result_audit_log + result_evidence rows cascade-delete in Postgres
             // (student_id is ON DELETE CASCADE on all three) -- refetchResults / refetchResultEvidence
             // above pick that up; the Storage objects were cleaned up just above.
-            // Payments are immutable financial records (Locked Principle #4) — a hard student
-            // delete never erases them, only this student's own billing state. Any payment that
-            // funded this student's obligations keeps its row and its allocations as historical
-            // fact; it simply funds a now-orphaned obligation instead of a deleted one.
-            const orphanedObligationIds = d.studentFeeObligations.filter((o) => o.studentId === id).map((o) => o.id);
-            d.feeObligationAdjustments = (d.feeObligationAdjustments || []).filter((a) => !orphanedObligationIds.includes(a.obligationId));
-            d.studentFeeObligations = d.studentFeeObligations.filter((o) => o.studentId !== id);
+            // student_fee_obligations.student_id is ON DELETE CASCADE and fee_obligation_adjustments
+            // cascade from the obligation, so those clear server-side too (refetchFees above picks
+            // it up). NOTE: payment_allocations.obligation_id is ON DELETE RESTRICT, so a student
+            // who has ever had a payment recorded cannot be hard-deleted at all — studentService
+            // .remove() will reject. Payments are immutable financial records (Locked Principle #4);
+            // archive such a student instead.
             d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STUDENT" && r.subjectId === id));
             d.activities = [{ id: uid("act"), text: `${name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
             return d;

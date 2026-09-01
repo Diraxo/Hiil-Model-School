@@ -5350,7 +5350,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
       // payments by installmentId, not by date or overall balance), so letting the entered amount
       // exceed what's due here would make that month's row disagree with the family's aggregate
       // balance: the aggregate (balanceFor) would show "paid in full" from the total amount received
-      // while this quarter and the untouched later quarters still show unpaid.
+      // while this month and the untouched later months still show unpaid.
       const tuitionAmount = row ? Math.min(Number(draft.tuitionAmount) || 0, row.remaining) : 0;
       if (inst.feeType && draft.installmentId && tuitionAmount > 0) {
         lines.push({ studentId, installmentId: draft.installmentId, amount: tuitionAmount, method: finalMethod, date, note });

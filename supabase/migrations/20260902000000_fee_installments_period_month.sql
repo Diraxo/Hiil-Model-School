@@ -38,7 +38,19 @@ create unique index if not exists fee_installments_schedule_period_month_key
   where period_month is not null;
 
 -- ---------------------------------------------------------------------------------------
--- 3. DELETE policy for fee_installments.
+-- 3. Widen fee_types.category to include 'OTHER'.
+--    The original check (20260825181404) allowed only TUITION / TRANSPORT, but the Fee
+--    Settings UI has always offered a third "Other" option (non-transport, billed to every
+--    student — behaves like TUITION in every fee helper except the tuition-only installment
+--    view). Picking it used to work only because the catalog was mock; now it must persist.
+-- ---------------------------------------------------------------------------------------
+alter table public.fee_types drop constraint if exists fee_types_category_known;
+alter table public.fee_types
+  add constraint fee_types_category_known
+  check (category in ('TUITION', 'TRANSPORT', 'OTHER'));
+
+-- ---------------------------------------------------------------------------------------
+-- 4. DELETE policy for fee_installments.
 --    The RLS migration (20260825190000) gave fee_installments SELECT/INSERT/UPDATE to
 --    Owner/Finance but no DELETE -- so a schedule generated with the wrong academic-year
 --    dates could never have its installments cleared and regenerated. student_fee_obligations
