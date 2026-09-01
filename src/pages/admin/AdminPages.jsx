@@ -4726,11 +4726,6 @@ function CreateAnnouncementModal({ open, onClose, role }) {
 
 /* ============================== PAYMENTS ============================== */
 
-// 4 fixed tuition installments, count locked per school policy — only the dates are configurable.
-function defaultInstallments() {
-  return Array.from({ length: 4 }, (_, i) => ({ id: uid("inst"), label: `Quarter ${i + 1}`, dueDate: "" }));
-}
-
 function paymentStatusBadge(status) {
   if (status === "PAID") return <Badge tone="green">Paid in full</Badge>;
   if (status === "PARTIAL") return <Badge tone="amber">Partially paid</Badge>;
@@ -4964,15 +4959,16 @@ function FeeSettingsModal({ open, onClose }) {
   const [editing, setEditing] = useState(null); // catalog fee type object or "new"
   const [rollingOut, setRollingOut] = useState(null); // catalog fee type object
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const empty = { name: "", category: "TUITION", description: "", defaultUnitAmount: "", defaultUnitMonths: "1", defaultUnitsPerYear: "" };
+  const empty = { name: "", category: "TUITION", description: "", defaultUnitAmount: "" };
   const [form, setForm] = useState(empty);
   const { busy, run } = useMutationGuard();
+  const { run: runDelete } = useMutationGuard();
 
   useEffect(() => {
     if (editing && editing !== "new") {
       setForm({
         name: editing.name, category: editing.category, description: editing.description || "",
-        defaultUnitAmount: String(editing.defaultUnitAmount || ""), defaultUnitMonths: String(editing.defaultUnitMonths || "1"), defaultUnitsPerYear: String(editing.defaultUnitsPerYear || ""),
+        defaultUnitAmount: String(editing.defaultUnitAmount || ""),
       });
     } else if (editing === "new") {
       setForm(empty);
@@ -4983,26 +4979,25 @@ function FeeSettingsModal({ open, onClose }) {
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    const isTuition = form.category === "TUITION";
     if (!form.name.trim() || !form.defaultUnitAmount) { toast("Please fill in all fee fields.", "error"); return; }
-    if (!isTuition && (!form.defaultUnitMonths || !form.defaultUnitsPerYear)) { toast("Please fill in all fee fields.", "error"); return; }
-    const payload = { ...form, defaultUnitMonths: isTuition ? 2.5 : form.defaultUnitMonths, defaultUnitsPerYear: isTuition ? 4 : form.defaultUnitsPerYear };
+    // Monthly model: unitMonths is always 1, unitsPerYear is set from the academic year at rollout
+    // — these template fields only prefill the rollout amount.
+    const payload = { ...form, defaultUnitMonths: 1, defaultUnitsPerYear: 1 };
     run(async () => {
-      if (editing === "new") {
-        await data.createFeeType(payload);
-        toast("Fee type added.", "success");
-      } else {
-        await data.updateFeeType(editing.id, payload);
-        toast("Fee type updated.", "success");
-      }
+      const res = editing === "new" ? await data.createFeeType(payload) : await data.updateFeeType(editing.id, payload);
+      if (res && res.ok === false) { toast(res.message || "Couldn't save this fee type.", "error"); return; }
+      toast(editing === "new" ? "Fee type added." : "Fee type updated.", "success");
       setEditing(null);
     }, { key: editing === "new" ? `create-fee-type:${form.name.trim().toLowerCase()}` : `update-fee-type:${editing.id}` });
   }
   function confirmDelete() {
     if (!deleteTarget) return;
-    const res = data.deleteFeeType(deleteTarget.id);
-    toast(res.message || (res.ok ? "Fee type deleted." : "Couldn't delete this fee type."), res.ok ? "info" : "error");
-    setDeleteTarget(null);
+    const target = deleteTarget;
+    runDelete(async () => {
+      const res = await data.deleteFeeType(target.id);
+      toast(res.message || (res.ok ? "Fee type deleted." : "Couldn't delete this fee type."), res.ok ? "info" : "error");
+      setDeleteTarget(null);
+    }, { key: `delete-fee-type:${target.id}` });
   }
 
   if (editing) {
@@ -5017,18 +5012,8 @@ function FeeSettingsModal({ open, onClose }) {
               <option value="OTHER">Other</option>
             </select>
           </Field>
-          <p className="text-xs text-slate-400 -mt-1 mb-2">These are just defaults, prefilled when this fee type is rolled out for an academic year — they don't set what's actually owed by themselves.</p>
-          {form.category === "TUITION" ? (
-            <Field label={`Default amount per quarter (${CURRENCY})`} required><input type="number" min="0" className={inputCls} value={form.defaultUnitAmount} onChange={(e) => set("defaultUnitAmount", e.target.value)} /></Field>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-x-3">
-                <Field label="Default months per cycle" required><input type="number" step="0.5" min="0.5" className={inputCls} value={form.defaultUnitMonths} onChange={(e) => set("defaultUnitMonths", e.target.value)} placeholder="e.g. 1" /></Field>
-                <Field label={`Default amount per cycle (${CURRENCY})`} required><input type="number" min="0" className={inputCls} value={form.defaultUnitAmount} onChange={(e) => set("defaultUnitAmount", e.target.value)} /></Field>
-              </div>
-              <Field label="Default cycles per school year" required><input type="number" min="1" className={inputCls} value={form.defaultUnitsPerYear} onChange={(e) => set("defaultUnitsPerYear", e.target.value)} /></Field>
-            </>
-          )}
+          <p className="text-xs text-slate-400 -mt-1 mb-2">This is just a default, prefilled when this fee type is rolled out for an academic year — it doesn't set what's actually owed by itself. Fees are billed monthly.</p>
+          <Field label={`Default amount per month (${CURRENCY})`} required><input type="number" min="0" className={inputCls} value={form.defaultUnitAmount} onChange={(e) => set("defaultUnitAmount", e.target.value)} /></Field>
           <Field label="Description"><textarea className={inputCls} rows={2} value={form.description} onChange={(e) => set("description", e.target.value)} /></Field>
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -5060,7 +5045,7 @@ function FeeSettingsModal({ open, onClose }) {
                       <Badge tone={ft.category === "TRANSPORT" ? "indigo" : "sky"}>{ft.category === "TRANSPORT" ? "Bus only" : ft.category === "TUITION" ? "School Fee" : "Other"}</Badge>
                       {currentYear && (schedule ? <Badge tone="green">Rolled out for {formatAcademicYearLabel(currentYear)}</Badge> : <Badge tone="amber">Not yet rolled out for {formatAcademicYearLabel(currentYear)}</Badge>)}
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5">Default {formatMoney(ft.defaultUnitAmount)} per {ft.defaultUnitMonths}-month cycle • {ft.defaultUnitsPerYear} cycles/year</p>
+                    <p className="text-xs text-slate-400 mt-0.5">Default {formatMoney(ft.defaultUnitAmount)} per month</p>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <GhostButton icon={CalendarDays} onClick={() => setRollingOut(ft)}>Roll Out for Year</GhostButton>
@@ -5087,6 +5072,26 @@ function FeeSettingsModal({ open, onClose }) {
 // Creates/refreshes ONE academic year's schedule + installments for a fee type. Already-rolled-out
 // years show read-only (installments already billed to a student can only be corrected via an
 // adjustment on that student's own balance, never edited out from under them here).
+// Monthly fee model: rollout only needs the amount charged PER MONTH. The installment months
+// themselves are generated server-side by generate_monthly_fee_installments from the academic
+// year's real year_start / year_end (one row per calendar month, spanning two calendar years if
+// the year does) — never hand-entered, never quarterly, never browser-clock math.
+function monthsForYear(year) {
+  if (!year || !year.yearStart || !year.yearEnd) return [];
+  const [sy, sm] = String(year.yearStart).split("-").map(Number);
+  const [ey, em] = String(year.yearEnd).split("-").map(Number);
+  if (!sy || !sm || !ey || !em) return [];
+  const out = [];
+  let y = sy, m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" }));
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    if (out.length > 24) break;
+  }
+  return out;
+}
+
 function RolloutFeeTypeModal({ open, onClose, feeType }) {
   const data = useData();
   const auth = useAuth();
@@ -5094,19 +5099,13 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   const { db } = data;
   const currentYear = currentAcademicYear(db.academicYears);
   const existingSchedule = currentYear ? db.feeSchedules.find((s) => s.feeTypeId === feeType.id && s.academicYearId === currentYear.id) : null;
-  const isTuition = feeType.category === "TUITION";
   const [unitAmount, setUnitAmount] = useState(String(feeType.defaultUnitAmount || ""));
-  const [unitMonths, setUnitMonths] = useState(String(feeType.defaultUnitMonths || "1"));
-  const [unitsPerYear, setUnitsPerYear] = useState(String(feeType.defaultUnitsPerYear || ""));
-  const [installments, setInstallments] = useState(isTuition ? defaultInstallments() : []);
   const { busy, run } = useMutationGuard();
+  const months = monthsForYear(currentYear);
 
   useEffect(() => {
     if (!open) return;
     setUnitAmount(String(feeType.defaultUnitAmount || ""));
-    setUnitMonths(String(feeType.defaultUnitMonths || "1"));
-    setUnitsPerYear(String(feeType.defaultUnitsPerYear || ""));
-    if (isTuition) setInstallments(defaultInstallments());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, feeType.id]);
 
@@ -5117,8 +5116,8 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     return (
       <Modal open={open} onClose={onClose} title={`${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
         <div>
-          <p className="text-xs text-slate-400 mb-3">Already rolled out for this year. An installment already billed to a student can only be corrected through an adjustment on that student's own balance, not edited here.</p>
-          <div className="space-y-1.5">
+          <p className="text-xs text-slate-400 mb-3">Already rolled out for this year — {rows.length} monthly installment{rows.length === 1 ? "" : "s"}. A month already billed to a student can only be corrected through an adjustment on that student's own balance, not edited here.</p>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
             {rows.map((r) => (
               <div key={r.id} className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2 text-sm">
                 <span className="text-slate-700">{r.label}</span>
@@ -5134,22 +5133,11 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     );
   }
 
-  function setInstallmentDate(i, dueDate) {
-    setInstallments((rows) => rows.map((inst, xi) => (xi === i ? { ...inst, dueDate } : inst)));
-  }
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    if (!unitAmount) { toast("Please fill in the amount.", "error"); return; }
-    if (isTuition) {
-      if (installments.some((inst) => !inst.dueDate)) { toast("Please set all 4 installment dates.", "error"); return; }
-    } else if (!unitMonths || !unitsPerYear) {
-      toast("Please fill in all fields.", "error"); return;
-    }
+    if (!unitAmount || Number(unitAmount) <= 0) { toast("Please enter the monthly amount.", "error"); return; }
     run(async () => {
-      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, {
-        unitAmount: Number(unitAmount), unitMonths: isTuition ? 2.5 : Number(unitMonths), unitsPerYear: isTuition ? 4 : Number(unitsPerYear),
-        installments: isTuition ? installments : undefined,
-      }, auth.currentUser.id);
+      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, { unitAmount: Number(unitAmount) }, auth.realUser.id);
       toast(res.message || "Fee type rolled out for this year.", res.ok ? "success" : "error");
       if (res.ok) onClose();
     }, { key: `rollout-fee-type:${feeType.id}:${currentYear.id}` });
@@ -5158,26 +5146,16 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   return (
     <Modal open={open} onClose={onClose} title={`Roll Out ${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
       <div>
-        {isTuition ? (
-          <>
-            <p className="text-xs text-slate-400 -mt-1 mb-2">4 quarters a year, split equally. Set each quarter's exact due date.</p>
-            <div className="grid grid-cols-2 gap-x-3">
-              {installments.map((inst, i) => (
-                <Field key={inst.id} label={inst.label} required>
-                  <input type="date" className={inputCls} value={inst.dueDate} onChange={(e) => setInstallmentDate(i, e.target.value)} />
-                </Field>
-              ))}
-            </div>
-            <Field label={`Amount per quarter (${CURRENCY})`} required><input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} /></Field>
-          </>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-x-3">
-              <Field label="Months per cycle" required><input type="number" step="0.5" min="0.5" className={inputCls} value={unitMonths} onChange={(e) => setUnitMonths(e.target.value)} placeholder="e.g. 1" /></Field>
-              <Field label={`Amount per cycle (${CURRENCY})`} required><input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} /></Field>
-            </div>
-            <Field label="Cycles per school year" required><input type="number" min="1" className={inputCls} value={unitsPerYear} onChange={(e) => setUnitsPerYear(e.target.value)} /></Field>
-          </>
+        <p className="text-xs text-slate-400 -mt-1 mb-2">
+          {feeType.category === "TRANSPORT" ? "Charged monthly to students who use the bus." : "Charged monthly."} One installment is generated for every month of {formatAcademicYearLabel(currentYear)} ({months.length} month{months.length === 1 ? "" : "s"}: {months[0]} – {months[months.length - 1]}).
+        </p>
+        <Field label={`Amount per month (${CURRENCY})`} required>
+          <input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} />
+        </Field>
+        {months.length > 0 && (
+          <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
+            {months.map((m) => <Badge key={m} tone="slate">{m}</Badge>)}
+          </div>
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -5367,10 +5345,10 @@ function RecordPaymentModal({ open, onClose, student, students }) {
       if (!stu || !draft) return;
       const inst = data.installmentStatusForStudent(stu);
       const row = inst.rows.find((r) => r.installment.id === draft.installmentId);
-      // Capped at this installment's own remaining balance — a payment tagged to one quarter's
-      // installmentId only ever counts toward that quarter (installmentStatusForStudent looks up
+      // Capped at this installment's own remaining balance — a payment tagged to one month's
+      // installmentId only ever counts toward that month (installmentStatusForStudent looks up
       // payments by installmentId, not by date or overall balance), so letting the entered amount
-      // exceed what's due here would make that quarter's row disagree with the family's aggregate
+      // exceed what's due here would make that month's row disagree with the family's aggregate
       // balance: the aggregate (balanceFor) would show "paid in full" from the total amount received
       // while this quarter and the untouched later quarters still show unpaid.
       const tuitionAmount = row ? Math.min(Number(draft.tuitionAmount) || 0, row.remaining) : 0;
@@ -5401,8 +5379,8 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     // is dropped, while a genuinely separate later payment for the same family still runs.
     const opKey = `record-payment:${selectedIds.slice().sort().join(",")}:${date}:${finalMethod}:${lines.reduce((s, l) => s + l.amount, 0)}:${lines.length}`;
     run(async () => {
-      const result = await data.recordPaymentBatch(lines, auth.currentUser.id);
-      if (!result.receiptNo) { toast("Couldn't record this payment.", "error"); return; }
+      const result = await data.recordPaymentBatch(lines, auth.realUser.id);
+      if (!result.receiptNo) { toast(result.error || "Couldn't record this payment.", "error"); return; }
       const rows = result.entries.map((entry) => ({ studentId: entry.studentId, studentName: entry.studentName, grade: entry.grade, amount: entry.amount, isBus: entry.isBus, label: entry.description }));
       setReceiptPages(buildReceiptPages(rows));
       setReceiptNo(result.receiptNo);
@@ -5453,7 +5431,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
 
                   {inst.feeType && (
                     <div className="grid sm:grid-cols-2 gap-x-3">
-                      <Field label="School Fee quarter">
+                      <Field label="School Fee month">
                         <select className={inputCls} value={draft.installmentId} onChange={(e) => {
                           const row = inst.rows.find((r) => r.installment.id === e.target.value);
                           setDraft(studentId, { installmentId: e.target.value, tuitionAmount: row ? row.remaining : 0 });
@@ -5647,15 +5625,17 @@ function VoidPaymentModal({ open, onClose, payment }) {
   const description = data.describePayment(payment);
   const methodName = data.paymentMethodName(payment);
 
-  function confirmVoid() {
-    const res = data.voidPayment(payment.id, reason, auth.realUser.id, auth.realUser.role);
+  // ConfirmDialog guards this against double-clicks (awaits onConfirm, disables the button) and
+  // only closes on success — a thrown error keeps it open to retry.
+  async function confirmVoid() {
+    const res = await data.voidPayment(payment.id, reason, auth.realUser.id, auth.realUser.role);
     if (res.ok) {
       toast("Payment voided.", "success");
       onClose();
     } else {
       toast(res.message || "Couldn't void this payment.", "error");
+      throw new Error(res.message || "void failed");
     }
-    setConfirming(false);
   }
 
   return (
@@ -5766,7 +5746,7 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
                 <p className="text-sm font-medium text-slate-700">{b.feeType.name}</p>
                 {paymentStatusBadge(feeDue.status)}
               </div>
-              <p className="text-xs text-slate-400">Paid {b.paid} of {b.feeType.unitsPerYear} cycles ({b.feeType.unitMonths}-month cycles)</p>
+              <p className="text-xs text-slate-400">Paid {Math.round((b.paid || 0) * 10) / 10} of {b.feeType.unitsPerYear} months</p>
               {coverage.coveredThrough ? (
                 <p className="text-xs text-emerald-700 mt-1">Paid through {fmtDateLong(coverage.coveredThrough)}</p>
               ) : (

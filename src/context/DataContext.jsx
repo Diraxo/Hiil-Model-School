@@ -34,9 +34,12 @@ import { createResultService } from "../services/resultService";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
 import { createExamService } from "../services/examService";
 import { createReportCardService } from "../services/reportCardService";
+import { createFeeService } from "../services/feeService";
+import { createPaymentService } from "../services/paymentService";
+import { createExpenseService } from "../services/expenseService";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
-import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel } from "../utils/academicCalendar";
+import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, formatAcademicYearLabel } from "../utils/academicCalendar";
 import { canTakeAttendance as canStudentTakeAttendance } from "../utils/studentPermissions";
 import { canTeacherPerformAcademicAction as canTeacherAct } from "../utils/staffPermissions";
 import { effectiveResultLock } from "../utils/permissions";
@@ -323,6 +326,36 @@ function evidenceErrorMessage(e) {
     return "Unsupported file type — attach a JPEG, PNG, WebP, or PDF.";
   }
   return msg || "Couldn't attach the evidence.";
+}
+
+// Finance (fees / payments / expenses) equivalent: turn a raw Postgres / RLS / RPC rejection into
+// something Finance or the Owner can act on. The money RPCs raise plain `raise exception` strings
+// with the real rule ("Only the Owner or Finance...", "Adjustment amount X exceeds...",
+// "No payable lines...") — pass those through; only genericize the opaque RLS/constraint codes.
+function financeErrorMessage(e, fallback) {
+  const msg = e && e.message ? e.message : "";
+  if (/row-level security|violates row-level|permission denied|not authorized|Unauthorized/i.test(msg)) {
+    return "You don't have permission to do that — only the Owner and Finance & Operations Director can manage fees, payments and expenses.";
+  }
+  if (/duplicate key|already exists|unique constraint/i.test(msg)) {
+    return "That looks like it was already saved — refresh to see the current state.";
+  }
+  if (/foreign key|violates foreign key/i.test(msg)) {
+    return "Couldn't save — a linked record (student, fee schedule or academic year) no longer exists.";
+  }
+  if (/exceeded the maximum allowed size|payload too large|entity too large/i.test(msg)) {
+    return "That file is too large — the maximum receipt size is 20 MB.";
+  }
+  return msg || fallback || "Something went wrong with that finance action.";
+}
+
+// Whole months from one "YYYY-MM-DD" to another, inclusive of both endpoint months
+// (2026-09-01 -> 2027-06-30 = 10). Used to size a monthly fee schedule's unitsPerYear.
+function monthsBetweenInclusive(startStr, endStr) {
+  const [sy, sm] = String(startStr).split("-").map(Number);
+  const [ey, em] = String(endStr).split("-").map(Number);
+  if (!sy || !sm || !ey || !em) return 12;
+  return Math.max(1, (ey - sy) * 12 + (em - sm) + 1);
 }
 
 function DataProvider({ children }) {
@@ -727,6 +760,82 @@ function DataProvider({ children }) {
     [resultEvidenceRaw, resultEvidenceUrls],
   );
 
+  // Fees / payments / expenses: Phase 4. Real Supabase data (fee_types -> fee_schedules ->
+  // fee_installments -> student_fee_obligations -> fee_obligation_adjustments; payments +
+  // payment_allocations + payment_methods; expenses + expense_items + the private
+  // `expense-receipts` bucket). Same shadow pattern -- every list is mapped into the mock `db`
+  // shape in the `api` useMemo below, so the ~15 pure fee helpers (scheduleForFeeType /
+  // feeRowsForStudentIn / netOwedForObligation / describeAllocation / paymentsForStudents /
+  // familyGroups / ...) and every read-path consumer keep working unchanged. Only the mutators
+  // change: each now awaits its Supabase write(s)/RPC, refetches, then commit()s the leftover
+  // mock activity/notification fan-out (that domain hasn't converted). The student fee cycle is
+  // MONTHLY -- installments are generated from academic_years.year_start/year_end by
+  // generate_monthly_fee_installments (never quarterly, never browser-clock math).
+  const feeService = useMemo(() => createFeeService(), []);
+  const paymentService = useMemo(() => createPaymentService(), []);
+  const expenseService = useMemo(() => createExpenseService(), []);
+  const [feeTypesRaw, setFeeTypesRaw] = useState([]);
+  const [feeSchedulesRaw, setFeeSchedulesRaw] = useState([]);
+  const [feeInstallmentsRaw, setFeeInstallmentsRaw] = useState([]);
+  const [obligationsRaw, setObligationsRaw] = useState([]);
+  const [adjustmentsRaw, setAdjustmentsRaw] = useState([]);
+  const [paymentsRaw, setPaymentsRaw] = useState([]);
+  const [allocationsRaw, setAllocationsRaw] = useState([]);
+  const [paymentMethodsRaw, setPaymentMethodsRaw] = useState([]);
+  const [expensesRaw, setExpensesRaw] = useState([]);
+  const [expenseReceiptUrls, setExpenseReceiptUrls] = useState(() => new Map());
+
+  const refetchFees = useCallback(async () => {
+    const [types, schedules, installments, obligations, adjustments] = await Promise.all([
+      feeService.listFeeTypes(), feeService.listSchedules(), feeService.listInstallments(),
+      feeService.listObligations(), feeService.listAdjustments(),
+    ]);
+    setFeeTypesRaw(types);
+    setFeeSchedulesRaw(schedules);
+    setFeeInstallmentsRaw(installments);
+    setObligationsRaw(obligations);
+    setAdjustmentsRaw(adjustments);
+  }, [feeService]);
+
+  const refetchPayments = useCallback(async () => {
+    const [payments, allocations, methods] = await Promise.all([
+      paymentService.list(), paymentService.listAllocations(), paymentService.listMethods(),
+    ]);
+    setPaymentsRaw(payments);
+    setAllocationsRaw(allocations);
+    setPaymentMethodsRaw(methods);
+  }, [paymentService]);
+
+  const refetchExpenses = useCallback(async () => {
+    const rows = await expenseService.list();
+    setExpensesRaw(rows);
+    try {
+      const urls = await expenseService.signedUrls(rows.map((r) => r.receiptStoragePath));
+      setExpenseReceiptUrls(urls);
+    } catch (e) {
+      console.error("Failed to sign expense receipt URLs", e);
+      setExpenseReceiptUrls(new Map());
+    }
+    return rows;
+  }, [expenseService]);
+
+  useEffect(() => {
+    refetchFees().catch((e) => console.error("Failed to load fees", e));
+    refetchPayments().catch((e) => console.error("Failed to load payments", e));
+    refetchExpenses().catch((e) => console.error("Failed to load expenses", e));
+  }, [refetchFees, refetchPayments, refetchExpenses]);
+
+  // Fold the short-lived signed receipt URL onto each expense so the expenses UI stays synchronous
+  // (`e.receiptImage` used to be a base64 data URI; it is now a signed URL to the private object,
+  // or null if the current session isn't entitled / the object is gone).
+  const expenses = useMemo(
+    () => expensesRaw.map((e) => ({
+      ...e,
+      receiptImage: e.receiptStoragePath ? (expenseReceiptUrls.get(e.receiptStoragePath) || null) : null,
+    })),
+    [expensesRaw, expenseReceiptUrls],
+  );
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -920,6 +1029,17 @@ function DataProvider({ children }) {
       resultEvidence,
       examAnnouncements,
       reportCards,
+      // Phase 4: fees / payments / expenses -> real Supabase (see refetchFees/refetchPayments/
+      // refetchExpenses above). Every pure fee helper reads these off `db` unchanged.
+      feeTypes: feeTypesRaw,
+      feeSchedules: feeSchedulesRaw,
+      feeInstallments: feeInstallmentsRaw,
+      studentFeeObligations: obligationsRaw,
+      feeObligationAdjustments: adjustmentsRaw,
+      paymentMethods: paymentMethodsRaw,
+      payments: paymentsRaw,
+      paymentAllocations: allocationsRaw,
+      expenses,
       users: mergeRealAccountsIntoUsers(mockDb.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw),
       academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
     };
@@ -1078,86 +1198,68 @@ function DataProvider({ children }) {
     }
 
     // One receipt = one call: `lines` is normally a single student, or 2+ when siblings are paid
-    // for together, so they share one receiptNo and print on one Cash Receipt Voucher. A payments
-    // row already IS the batch now (no separate batchId). Each `line` is `{studentId, feeTypeId,
-    // installmentId, amount, method, date, note}` — `installmentId` refers to a real
-    // `feeInstallments.id`, and is resolved to that student's obligation for it; a line with no
-    // matching obligation (Decision A: this installment was never owed by this student) is
-    // silently dropped, matching how the UI never offers it as a choice. Decision B (overpayment
-    // reject/cap) is enforced right here against the LIVE draft `d`, not a value the UI computed
-    // before another payment landed in the same tick.
-    // `recordPayment` (singular) below is a thin one-line wrapper over this, so the existing
-    // Record Payment UI keeps working unmodified.
-    function recordPaymentBatch(lines, recordedBy) {
-      let receiptNo = null;
-      let paymentId = null;
-      let entries = [];
-      commit((d) => {
-        const accepted = [];
-        lines.forEach((line) => {
-          const student = d.students.find((s) => s.id === line.studentId);
-          if (!student || !line.installmentId || !line.amount || line.amount <= 0) return;
-          const obligation = obligationForInstallment(d, line.studentId, line.installmentId);
-          if (!obligation) return;
-          const netOwed = netOwedForObligation(d, obligation);
-          const cappedAmount = Math.min(Number(line.amount), netOwed);
-          if (cappedAmount <= 0) return;
-          accepted.push({ ...line, student, obligation, cappedAmount });
-        });
-        if (accepted.length === 0) return d;
-
-        receiptNo = String(d.receiptSeq).padStart(4, "0");
-        d.receiptSeq += 1;
-        const method = accepted[0].method;
-        let pm = d.paymentMethods.find((m) => m.name.toLowerCase() === method.toLowerCase());
-        if (!pm) { pm = { id: uid("pm"), name: method, active: true }; d.paymentMethods.push(pm); }
-
-        const payment = {
-          id: uid("pay"), receiptNo, paymentMethodId: pm.id, amountTotal: 0,
-          date: accepted[0].date, note: accepted[0].note || "", recordedBy, createdAt: Date.now(),
-          status: "POSTED", voidedAt: null, voidedBy: null, voidReason: null,
-        };
-        d.payments.push(payment);
-        paymentId = payment.id;
-
-        accepted.forEach(({ student, obligation, cappedAmount }) => {
-          const alloc = { id: uid("alloc"), paymentId: payment.id, obligationId: obligation.id, amount: cappedAmount, createdAt: Date.now() };
-          d.paymentAllocations.push(alloc);
-          payment.amountTotal += cappedAmount;
-          const installment = d.feeInstallments.find((i) => i.id === obligation.feeInstallmentId);
-          const schedule = installment && d.feeSchedules.find((s) => s.id === installment.feeScheduleId);
-          const feeType = schedule && d.feeTypes.find((f) => f.id === schedule.feeTypeId);
-          entries.push({ studentId: student.id, studentName: studentFullName(student), grade: classLabel(getClass(student.classId)), amount: cappedAmount, isBus: feeType?.category === "TRANSPORT", description: describeAllocation(d, alloc) });
+    // for together, so they share one receiptNo and print on one Cash Receipt Voucher. Each `line`
+    // is `{studentId, installmentId, amount, method, date, note}` — `installmentId` refers to a
+    // real `fee_installments.id` (a MONTH now, not a quarter) and is resolved server-side to that
+    // student's obligation for it; a line with no matching obligation, or a non-positive amount,
+    // is silently skipped. Decision B (overpayment CAP, not reject) is enforced inside
+    // record_payment_batch against the row-locked live obligation balance — never a value the UI
+    // computed before another payment landed. `recordPayment` (singular) below wraps this.
+    async function recordPaymentBatch(lines, recordedBy) {
+      try {
+        const { payment, allocations } = await paymentService.recordPaymentBatch(lines, recordedBy);
+        // Build the printed-receipt entries from the real capped allocations, using the still-
+        // current `db` closure (obligations/installments/schedules/feeTypes all pre-date the
+        // payment, so they're already loaded).
+        const entries = allocations.map((alloc) => {
+          const obligation = db.studentFeeObligations.find((o) => o.id === alloc.obligationId);
+          const student = obligation && db.students.find((s) => s.id === obligation.studentId);
+          const installment = obligation && db.feeInstallments.find((i) => i.id === obligation.feeInstallmentId);
+          const schedule = installment && db.feeSchedules.find((s) => s.id === installment.feeScheduleId);
+          const feeType = schedule && db.feeTypes.find((f) => f.id === schedule.feeTypeId);
+          return {
+            studentId: student ? student.id : (obligation ? obligation.studentId : null),
+            studentName: student ? studentFullName(student) : "Student",
+            grade: student ? classLabel(getClass(student.classId)) : "",
+            amount: alloc.amount,
+            isBus: feeType?.category === "TRANSPORT",
+            description: describeAllocation(db, alloc),
+          };
         });
 
-        // One consolidated "Payment Received" notification per parent per receipt (not one per fee
-        // line) — covers every one of that parent's own children included in this transaction, and
-        // carries the paymentId so tapping it opens the saved receipt directly instead of sending
-        // the parent to hunt for it in Payments.
-        const byParent = new Map();
-        entries.forEach((entry) => {
-          const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(entry.studentId)).map((u) => u.id);
-          parentIds.forEach((pid) => {
-            if (!byParent.has(pid)) byParent.set(pid, []);
-            byParent.get(pid).push(entry);
+        await Promise.all([refetchPayments(), refetchFees()]);
+
+        // Leftover mock fan-out: one consolidated "Payment Received" notification per parent per
+        // receipt, plus the shared activity line. (Notifications/activities haven't converted.)
+        commit((d) => {
+          const byParent = new Map();
+          entries.forEach((entry) => {
+            const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(entry.studentId)).map((u) => u.id);
+            parentIds.forEach((pid) => {
+              if (!byParent.has(pid)) byParent.set(pid, []);
+              byParent.get(pid).push(entry);
+            });
           });
-        });
-        byParent.forEach((parentEntries, pid) => {
-          const total = parentEntries.reduce((sum, e) => sum + e.amount, 0);
-          const uniqueChildren = [...new Map(parentEntries.map((e) => [e.studentId, e])).values()];
-          const childrenLabel = joinWithAnd(uniqueChildren.map((e) => `${e.studentName} · ${e.grade}`));
-          d.notifications = [{
-            id: uid("notif"), userId: pid, title: "Payment Received",
-            message: `Your payment of ${formatMoney(total)} for ${childrenLabel} has been recorded.`,
-            read: false, createdAt: Date.now(), type: "PAYMENT", paymentId: payment.id,
-          }, ...d.notifications];
+          byParent.forEach((parentEntries, pid) => {
+            const total = parentEntries.reduce((sum, e) => sum + e.amount, 0);
+            const uniqueChildren = [...new Map(parentEntries.map((e) => [e.studentId, e])).values()];
+            const childrenLabel = joinWithAnd(uniqueChildren.map((e) => `${e.studentName} · ${e.grade}`));
+            d.notifications = [{
+              id: uid("notif"), userId: pid, title: "Payment Received",
+              message: `Your payment of ${formatMoney(total)} for ${childrenLabel} has been recorded.`,
+              read: false, createdAt: Date.now(), type: "PAYMENT", paymentId: payment.id,
+            }, ...d.notifications];
+          });
+          const namesSummary = [...new Set(entries.map((e) => e.studentName))].join(", ");
+          d.activities = [{ id: uid("act"), text: `${formatMoney(payment.amountTotal)} payment recorded for ${namesSummary} (receipt #${payment.receiptNo}).`, createdAt: Date.now(), navigation: { page: "payments", studentId: entries[0]?.studentId || null, paymentId: payment.id, receiptNo: payment.receiptNo } }, ...d.activities];
+          return d;
         });
 
-        const namesSummary = [...new Set(entries.map((e) => e.studentName))].join(", ");
-        d.activities = [{ id: uid("act"), text: `${formatMoney(payment.amountTotal)} payment recorded for ${namesSummary} (receipt #${receiptNo}).`, createdAt: Date.now(), navigation: { page: "payments", studentId: entries[0].studentId, paymentId: payment.id, receiptNo } }, ...d.activities];
-        return d;
-      });
-      return { receiptNo, paymentId, entries };
+        return { receiptNo: payment.receiptNo, paymentId: payment.id, entries };
+      } catch (e) {
+        console.error("Failed to record payment", e);
+        return { receiptNo: null, paymentId: null, entries: [], error: financeErrorMessage(e, "Couldn't record this payment.") };
+      }
     }
 
     function periodSchedule() {
@@ -1234,29 +1336,13 @@ function DataProvider({ children }) {
       // resolved the current year (createStudent) avoid resolving it twice.
       // Idempotent single-obligation creator — the JS-level form of UNIQUE(studentId,
       // feeInstallmentId). This is the ONE place a studentFeeObligations row comes into being,
-      // used by year rollout, enrollment, bus opt-in, and payment migration alike.
-      _materializeObligation(d, studentId, feeInstallment, reason) {
-        const existing = obligationForInstallment(d, studentId, feeInstallment.id);
-        if (existing) return existing;
-        const ob = { id: uid("obl"), studentId, feeInstallmentId: feeInstallment.id, amountDue: feeInstallment.amount, createdAt: Date.now(), createdReason: reason };
-        d.studentFeeObligations.push(ob);
-        return ob;
-      },
       // Materializes obligations for one student across every fee schedule already rolled out for
       // the given year, honoring Decision A (only installments due on/after `anchorDate` get a
       // row). Used at enrollment (anchorDate = admissionDate) and bus opt-in (anchorDate = today).
-      _materializeObligationsForStudent(d, student, academicYearId, anchorDate, reason) {
-        d.feeSchedules.filter((s) => s.academicYearId === academicYearId).forEach((schedule) => {
-          const ft = d.feeTypes.find((f) => f.id === schedule.feeTypeId);
-          if (!ft || ft.archivedAt || (ft.category === "TRANSPORT" && !student.usesBus)) return;
-          installmentsForSchedule(d, schedule.id).filter((fi) => fi.dueDate >= anchorDate).forEach((fi) => {
-            this._materializeObligation(d, student.id, fi, reason);
-          });
-        });
-      },
-
-      generateReceiptNo() {
-        return String(db.receiptSeq).padStart(4, "0");
+      // Now a thin wrapper over the SECURITY DEFINER RPC materialize_obligations_for_student
+      // (idempotent via UNIQUE(student_id, fee_installment_id)); the caller refetches fees after.
+      async _materializeObligationsForStudent(student, academicYearId, anchorDate, reason) {
+        await feeService.materializeForStudent(student.id, academicYearId, anchorDate || null, reason);
       },
 
       // ---- Students + enrollments: real Supabase data (see studentService.js). Fee-obligation
@@ -1270,8 +1356,15 @@ function DataProvider({ children }) {
           const student = await studentService.create({ ...fields, classId: cls ? cls.id : null, status: "ACTIVE" });
           await syncStudentEnrollment(student, year ? year.id : null);
           await Promise.all([refetchStudents(), refetchEnrollments()]);
+          if (year) {
+            try {
+              await this._materializeObligationsForStudent(student, year.id, student.admissionDate || todayKeyStr(), "ENROLLMENT");
+              await refetchFees();
+            } catch (obErr) {
+              console.error("Student created, but fee obligations failed to materialize", obErr);
+            }
+          }
           commit((d) => {
-            if (year) this._materializeObligationsForStudent(d, student, year.id, student.admissionDate || todayKeyStr(), "ENROLLMENT");
             d.activities = [{ id: uid("act"), text: `${studentFullName(student)} was added to ${student.grade}${student.section} (${student.studentId}).`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
@@ -1301,7 +1394,14 @@ function DataProvider({ children }) {
           await Promise.all([refetchStudents(), refetchEnrollments()]);
           if (busOptIn) {
             const year = currentAcademicYear(academicYears);
-            if (year) commit((d) => { this._materializeObligationsForStudent(d, updated, year.id, todayKeyStr(), "BUS_OPT_IN"); return d; });
+            if (year) {
+              try {
+                await this._materializeObligationsForStudent(updated, year.id, todayKeyStr(), "BUS_OPT_IN");
+                await refetchFees();
+              } catch (obErr) {
+                console.error("Student updated, but bus fee obligations failed to materialize", obErr);
+              }
+            }
           }
           return { ok: true };
         } catch (e) {
@@ -2896,195 +2996,195 @@ function DataProvider({ children }) {
         }
       },
 
-      // ---- Fee catalog (feeTypes) — never carries pricing or per-year state. name/category/
-      // description/default* only; default* fields are template-only, prefill a new schedule at
-      // rollout time, and are never read by any balance calculation.
-      createFeeType(data) {
-        commit((d) => {
-          d.feeTypes.push({
-            id: uid("fee"), name: data.name, category: data.category, description: data.description || "",
-            defaultUnitAmount: Number(data.defaultUnitAmount) || 0, defaultUnitMonths: Number(data.defaultUnitMonths) || 1, defaultUnitsPerYear: Number(data.defaultUnitsPerYear) || 1,
-            archivedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
-          });
-          d.activities = [{ id: uid("act"), text: `${data.name} was added as a new fee type.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      // ---- Fee catalog (fee_types) — real Supabase. Never carries pricing or per-year state:
+      // name/category/description/default* only; default* fields are template-only, prefill a new
+      // schedule at rollout time, and are never read by any balance calculation. Each mutator
+      // awaits its write, refetches, then commit()s the leftover mock activity line.
+      async createFeeType(data) {
+        try {
+          const ft = await feeService.createFeeType(data);
+          await refetchFees();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was added as a new fee type.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create fee type", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't add this fee type.") };
+        }
       },
-      updateFeeType(id, patch) {
-        commit((d) => {
-          const ft = d.feeTypes.find((f) => f.id === id);
-          if (ft) {
-            if (patch.name !== undefined) ft.name = patch.name;
-            if (patch.category !== undefined) ft.category = patch.category;
-            if (patch.description !== undefined) ft.description = patch.description;
-            if (patch.defaultUnitAmount !== undefined) ft.defaultUnitAmount = Number(patch.defaultUnitAmount);
-            if (patch.defaultUnitMonths !== undefined) ft.defaultUnitMonths = Number(patch.defaultUnitMonths);
-            if (patch.defaultUnitsPerYear !== undefined) ft.defaultUnitsPerYear = Number(patch.defaultUnitsPerYear);
-            ft.updatedAt = Date.now();
-          }
-          d.activities = [{ id: uid("act"), text: `${ft?.name || "A fee type"} was updated.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async updateFeeType(id, patch) {
+        try {
+          const ft = await feeService.updateFeeType(id, patch);
+          await refetchFees();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was updated.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update fee type", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't update this fee type.") };
+        }
       },
-      // ---- Year rollout: creates/refreshes ONE year's schedule + installments for a fee type,
-      // then materializes obligations for every currently-applicable active student (Decision A:
-      // only installments due on/after "today" for an already-enrolled continuing student).
-      // Idempotent on the schedule itself (UNIQUE feeTypeId+academicYearId) and on each obligation
-      // (UNIQUE studentId+feeInstallmentId) — re-running this never creates duplicates or doubles
-      // a balance.
-      rolloutFeeTypeForYear(feeTypeId, academicYearId, { unitAmount, unitMonths, unitsPerYear, installments }, actorId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const ft = d.feeTypes.find((f) => f.id === feeTypeId);
-          if (!ft || ft.archivedAt) { result = { ok: false, message: "Fee type not found or archived." }; return d; }
-          let schedule = scheduleForFeeType(d, feeTypeId, academicYearId);
-          if (schedule) {
-            result = { ok: true, message: `${ft.name} was already rolled out for this year — installments were not regenerated. Edit an individual installment below, or add an adjustment for an already-obligated student.` };
-          } else {
-            schedule = { id: uid("fsch"), feeTypeId, academicYearId, unitAmount: Number(unitAmount), unitMonths: Number(unitMonths), unitsPerYear: Number(unitsPerYear), createdAt: Date.now(), updatedAt: Date.now(), createdBy: actorId };
-            d.feeSchedules.push(schedule);
-            const year = d.academicYears.find((y) => y.id === academicYearId);
-            const yearStart = year ? new Date(year.yearStart + "T00:00:00") : activeYearStartDate(d.academicYears);
-            const rows = ft.category === "TUITION" && Array.isArray(installments) && installments.length > 0
-              ? installments.map((inst, i) => ({ id: uid("finst"), feeScheduleId: schedule.id, sequenceIndex: i, label: inst.label, dueDate: inst.dueDate, amount: schedule.unitAmount, createdAt: Date.now(), updatedAt: Date.now() }))
-              : Array.from({ length: schedule.unitsPerYear || 1 }, (_, i) => {
-                  const d0 = new Date(yearStart.getFullYear(), yearStart.getMonth() + Math.round(i * (schedule.unitMonths || 1)), 1);
-                  const label = ft.category === "TRANSPORT" ? d0.toLocaleString("en-US", { month: "long", year: "numeric" }) : `Cycle ${i + 1}`;
-                  const dueDate = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-01`;
-                  return { id: uid("finst"), feeScheduleId: schedule.id, sequenceIndex: i, label, dueDate, amount: schedule.unitAmount, createdAt: Date.now(), updatedAt: Date.now() };
-                });
-            rows.forEach((r) => d.feeInstallments.push(r));
+      // ---- Year rollout: creates ONE year's fee_schedule for a fee type, then generates the
+      // MONTHLY installments (generate_monthly_fee_installments — one row per calendar month of the
+      // academic year, from year_start to year_end), then materializes obligations for every
+      // currently-applicable active student (Decision A anchor = "today"). All three steps are
+      // idempotent server-side (UNIQUE(fee_type,year) / the (fee_schedule,period_month) index /
+      // UNIQUE(student,installment)). The `installments` arg is ignored — months are derived, not
+      // hand-entered (no quarterly rollout).
+      async rolloutFeeTypeForYear(feeTypeId, academicYearId, _opts, actorId) {
+        try {
+          const ft = db.feeTypes.find((f) => f.id === feeTypeId);
+          if (!ft || ft.archivedAt) return { ok: false, message: "Fee type not found or archived." };
+          const existing = db.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId);
+          if (existing) {
+            // Already rolled out — make sure months + obligations are fully materialized (safe to
+            // re-run) but never rewrite pricing.
+            await feeService.generateMonthlyInstallments(existing.id);
+            await feeService.materializeForSchedule(existing.id, todayKeyStr(), "YEAR_ROLLOUT");
+            await refetchFees();
+            return { ok: true, message: `${ft.name} was already rolled out for this year — monthly installments and obligations were re-checked, pricing was left unchanged. Edit an individual month below, or add an adjustment for an already-billed student.` };
           }
-          const scheduleInstallments = installmentsForSchedule(d, schedule.id);
-          d.students.filter((s) => !["WITHDRAWN", "TRANSFERRED", "GRADUATED", "ARCHIVED"].includes(s.status)).forEach((s) => {
-            if (ft.category === "TRANSPORT" && !s.usesBus) return;
-            const anchor = todayKeyStr(); // Decision A: "today" for an already-enrolled continuing student at rollout
-            scheduleInstallments.filter((fi) => fi.dueDate >= anchor).forEach((fi) => this._materializeObligation(d, s.id, fi, "YEAR_ROLLOUT"));
+          const opts = _opts || {};
+          // Monthly model: one installment per calendar month of the academic year. unitMonths is
+          // always 1; unitsPerYear is the month count (year_start..year_end inclusive) so the
+          // "N of M months paid" display in balanceFor stays correct.
+          const yr = db.academicYears.find((y) => y.id === academicYearId);
+          const monthsInYear = (yr && yr.yearStart && yr.yearEnd)
+            ? monthsBetweenInclusive(yr.yearStart, yr.yearEnd)
+            : 12;
+          const schedule = await feeService.createSchedule({
+            feeTypeId, academicYearId,
+            unitAmount: Number(opts.unitAmount) || 0,
+            unitMonths: 1,
+            unitsPerYear: monthsInYear,
+            createdBy: actorId,
           });
-          d.activities = [{ id: uid("act"), text: `${ft.name} was rolled out for ${formatAcademicYearLabel(d.academicYears.find((y) => y.id === academicYearId))}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          const generated = await feeService.generateMonthlyInstallments(schedule.id);
+          if (generated.length && generated.length !== monthsInYear) {
+            await feeService.updateSchedule(schedule.id, { unitsPerYear: generated.length });
+          }
+          await feeService.materializeForSchedule(schedule.id, todayKeyStr(), "YEAR_ROLLOUT");
+          await refetchFees();
+          commit((d) => {
+            const yr = d.academicYears.find((y) => y.id === academicYearId);
+            d.activities = [{ id: uid("act"), text: `${ft.name} was rolled out for ${formatAcademicYearLabel(yr)} (monthly installments).`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: `${ft.name} rolled out for this year — monthly installments generated.` };
+        } catch (e) {
+          console.error("Failed to roll out fee type", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't roll out this fee type.") };
+        }
       },
       // A single installment's amount/dueDate/label stays editable only until the first obligation
       // references it — after that, corrections go through addObligationAdjustment instead, so an
-      // already-billed student's frozen amountDue is never silently changed out from under them.
-      editInstallment(installmentId, patch) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const fi = d.feeInstallments.find((f) => f.id === installmentId);
-          if (!fi) { result = { ok: false, message: "Installment not found." }; return d; }
-          const hasObligations = d.studentFeeObligations.some((o) => o.feeInstallmentId === installmentId);
-          if (hasObligations) { result = { ok: false, message: "This installment already has student obligations against it — use an adjustment to correct an individual student's balance instead." }; return d; }
-          if (patch.label !== undefined) fi.label = patch.label;
-          if (patch.dueDate !== undefined) fi.dueDate = patch.dueDate;
-          if (patch.amount !== undefined) fi.amount = Number(patch.amount);
-          fi.updatedAt = Date.now();
-          return d;
-        });
-        return result;
-      },
-      // WAIVER/DISCOUNT/SCHOLARSHIP/CANCELLATION/CORRECTION against one obligation — append-only,
-      // never edited. Guard: the running adjustment total can never drive net-owed below what's
-      // already been allocated (can't waive away money already collected).
-      addObligationAdjustment(obligationId, { type, amount, reason }, actorId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const obligation = d.studentFeeObligations.find((o) => o.id === obligationId);
-          if (!obligation) { result = { ok: false, message: "Obligation not found." }; return d; }
-          const already = adjustmentsTotal(d, obligation.id);
-          const allocated = allocationsTotal(d, obligation.id);
-          const projectedNet = obligation.amountDue - (already + Number(amount)) - allocated;
-          if (projectedNet < 0 && type !== "CORRECTION") { result = { ok: false, message: "This would waive more than is still owed." }; return d; }
-          if (!reason || !reason.trim()) { result = { ok: false, message: "A reason is required." }; return d; }
-          d.feeObligationAdjustments.push({ id: uid("adj"), obligationId, type, amount: Number(amount), reason: reason.trim(), createdBy: actorId, createdAt: Date.now() });
-          return d;
-        });
-        return result;
-      },
-      // Archive-or-delete guard, replacing the old hasPayments check: a fee type with any rolled-
-      // out schedule can never be hard-deleted (that history must stay intact), so it's archived
-      // instead — it stops appearing as a choice for a NEW year's rollout but every past year's
-      // figures are untouched.
-      deleteFeeType(id) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const ft = d.feeTypes.find((f) => f.id === id);
-          if (!ft) { result = { ok: false, message: "Fee type not found." }; return d; }
-          const hasSchedules = d.feeSchedules.some((s) => s.feeTypeId === id);
-          if (hasSchedules) {
-            ft.archivedAt = Date.now();
-            result = { ok: true, archived: true, message: `${ft.name} has fee schedules and can't be deleted — it was archived instead, to keep financial history intact.` };
-          } else {
-            d.feeTypes = d.feeTypes.filter((f) => f.id !== id);
-            result = { ok: true, archived: false, message: `${ft.name} was removed from the fee list.` };
+      // already-billed student's frozen amountDue is never silently changed. (The
+      // student_fee_obligations FK is ON DELETE RESTRICT, so the DB backs this up.)
+      async editInstallment(installmentId, patch) {
+        try {
+          const hasObligations = await feeService.installmentHasObligations(installmentId);
+          if (hasObligations) {
+            return { ok: false, message: "This month already has student obligations against it — use an adjustment to correct an individual student's balance instead." };
           }
-          d.activities = [{ id: uid("act"), text: `${ft.name} was ${hasSchedules ? "archived" : "removed"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          await feeService.updateInstallment(installmentId, patch);
+          await refetchFees();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to edit installment", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't update this installment.") };
+        }
+      },
+      // WAIVER/DISCOUNT/SCHOLARSHIP/CANCELLATION/CORRECTION against one obligation — append-only.
+      // The add_obligation_adjustment RPC enforces "can't waive more than is still owed" (except
+      // CORRECTION) and the required-reason rule server-side; its raised message is passed through.
+      async addObligationAdjustment(obligationId, { type, amount, reason }, actorId) {
+        if (!reason || !reason.trim()) return { ok: false, message: "A reason is required." };
+        try {
+          await feeService.addAdjustment(obligationId, { type, amount, reason: reason.trim() }, actorId);
+          await refetchFees();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to add obligation adjustment", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't record this adjustment.") };
+        }
+      },
+      // Archive-or-delete guard: a fee type with any rolled-out schedule can never be hard-deleted
+      // (that history must stay intact) — it's archived instead. The fee_schedules FK is
+      // ON DELETE RESTRICT so the DB enforces this too.
+      async deleteFeeType(id) {
+        try {
+          const ft = db.feeTypes.find((f) => f.id === id);
+          if (!ft) return { ok: false, message: "Fee type not found." };
+          const hasSchedules = await feeService.hasSchedules(id);
+          if (hasSchedules) {
+            await feeService.archiveFeeType(id);
+          } else {
+            await feeService.deleteFeeType(id);
+          }
+          await refetchFees();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was ${hasSchedules ? "archived" : "removed"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return hasSchedules
+            ? { ok: true, archived: true, message: `${ft.name} has fee schedules and can't be deleted — it was archived instead, to keep financial history intact.` }
+            : { ok: true, archived: false, message: `${ft.name} was removed from the fee list.` };
+        } catch (e) {
+          console.error("Failed to delete fee type", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't delete this fee type.") };
+        }
       },
 
-      addPaymentMethod(name) {
-        commit((d) => {
+      async addPaymentMethod(name) {
+        try {
           const trimmed = (name || "").trim();
-          if (trimmed && !d.paymentMethods.some((m) => m.name.toLowerCase() === trimmed.toLowerCase())) d.paymentMethods.push({ id: uid("pm"), name: trimmed, active: true });
-          return d;
-        });
+          if (!trimmed) return { ok: false, message: "Enter a name." };
+          if (db.paymentMethods.some((m) => m.name.toLowerCase() === trimmed.toLowerCase())) return { ok: true };
+          await paymentService.addMethod(trimmed);
+          await refetchPayments();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to add payment method", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't add this payment method.") };
+        }
       },
 
       recordPayment(payload, recordedBy) {
         return recordPaymentBatch([payload], recordedBy);
       },
 
-      // Blocker 4 (payment void policy): payments are immutable financial records — this never
-      // edits or removes a payment row, it only marks it VOIDED with a required reason and an
-      // audit trail. The reason is validated here, inside the mutator, not just by the calling UI,
-      // so a void can never be recorded without one regardless of entry point. Every balance/
-      // coverage calculation reads `status !== "VOIDED"`-gated obligations/allocations live, so
-      // voiding takes effect immediately with no second ledger to keep in sync. A payment already
-      // VOIDED can't be voided again.
-      //
-      // Blocker 2 note: void is now whole-receipt, not per-line — a `payments` row has one
-      // `status`, and `paymentAllocations` carries no per-line void field (a direct, structural
-      // consequence of the locked schema, not a new decision). If Finance needs to correct just
-      // one wrong line in a multi-student receipt, the workflow is: void the whole receipt, then
-      // re-enter the correct lines as a new one.
-      voidPayment(paymentId, reason, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const trimmedReason = (reason || "").trim();
-          if (!trimmedReason) { result = { ok: false, message: "A reason is required to void a payment." }; return d; }
-          const payment = d.payments.find((p) => p.id === paymentId);
-          if (!payment) { result = { ok: false, message: "Payment not found." }; return d; }
-          if (payment.status === "VOIDED") { result = { ok: false, message: "This payment has already been voided." }; return d; }
-
-          payment.status = "VOIDED";
-          payment.voidedAt = Date.now();
-          payment.voidedBy = actorId;
-          payment.voidReason = trimmedReason;
-
-          const allocs = d.paymentAllocations.filter((a) => a.paymentId === paymentId);
+      // Blocker 4 (payment void policy): payments are immutable — void_payment never edits or
+      // removes a payments row, it only marks it VOIDED (required reason, audit-log entry). Every
+      // balance/coverage calc joins through payments.status <> 'VOIDED', so a void takes effect
+      // immediately. Whole-receipt only (a payments row has one status). The RPC re-validates the
+      // reason + Owner/Finance + not-already-voided server-side.
+      async voidPayment(paymentId, reason, actorId, actorRole) {
+        const trimmedReason = (reason || "").trim();
+        if (!trimmedReason) return { ok: false, message: "A reason is required to void a payment." };
+        try {
+          const actor = db.users.find((u) => u.id === actorId);
+          const payment = db.payments.find((p) => p.id === paymentId);
+          const allocs = db.paymentAllocations.filter((a) => a.paymentId === paymentId);
+          const studentNames = [...new Set(allocs.map((a) => {
+            const ob = db.studentFeeObligations.find((o) => o.id === a.obligationId);
+            const s = ob && db.students.find((x) => x.id === ob.studentId);
+            return s ? studentFullName(s) : null;
+          }).filter(Boolean))];
           const studentIds = [...new Set(allocs.map((a) => {
-            const ob = d.studentFeeObligations.find((o) => o.id === a.obligationId);
+            const ob = db.studentFeeObligations.find((o) => o.id === a.obligationId);
             return ob ? ob.studentId : null;
           }).filter(Boolean))];
-          const studentNames = studentIds.map((sid) => { const s = d.students.find((x) => x.id === sid); return s ? studentFullName(s) : null; }).filter(Boolean);
 
-          const actor = d.users.find((u) => u.id === actorId);
-          d.paymentAuditLog = [{
-            id: uid("aud"), entityType: "payment", entityId: payment.id, studentIds,
-            action: "VOIDED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            amount: payment.amountTotal, receiptNo: payment.receiptNo, reason: trimmedReason, at: Date.now(),
-          }, ...(d.paymentAuditLog || [])].slice(0, 500);
-
-          d.activities = [{
-            id: uid("act"), text: `${formatMoney(payment.amountTotal)} payment for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment.receiptNo || "—"}) was voided by ${actor?.name || "an admin"}.`,
-            createdAt: Date.now(), navigation: { page: "payments", studentId: studentIds[0] || null, paymentId: payment.id, receiptNo: payment.receiptNo },
-          }, ...d.activities];
-          return d;
-        });
-        return result;
+          await paymentService.voidPayment(paymentId, trimmedReason, actorId, actorRole || actor?.role || null, actor?.name || null);
+          await Promise.all([refetchPayments(), refetchFees()]);
+          commit((d) => {
+            d.activities = [{
+              id: uid("act"),
+              text: `${formatMoney(payment?.amountTotal || 0)} payment for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment?.receiptNo || "—"}) was voided by ${actor?.name || "an admin"}.`,
+              createdAt: Date.now(), navigation: { page: "payments", studentId: studentIds[0] || null, paymentId, receiptNo: payment?.receiptNo },
+            }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to void payment", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't void this payment.") };
+        }
       },
 
       sendPaymentReminder({ parentIds, message, image, feeTypeName }, sentBy) {
@@ -3831,37 +3931,52 @@ function DataProvider({ children }) {
         }
       },
 
-      /* ---------- Payment Methods (Phase 1A) ---------- */
-      createPaymentMethod(name) {
-        commit((d) => {
+      /* ---------- Payment Methods — real Supabase (payment_methods) ---------- */
+      async createPaymentMethod(name) {
+        try {
           const trimmed = (name || "").trim();
-          if (!trimmed) return d;
-          d.paymentMethods.push({ id: uid("pm"), name: trimmed, active: true });
-          d.activities = [{ id: uid("act"), text: `Payment method "${trimmed}" was added.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+          if (!trimmed) return { ok: false, message: "Enter a name." };
+          if (db.paymentMethods.some((m) => m.name.toLowerCase() === trimmed.toLowerCase())) {
+            return { ok: false, message: "A payment method with that name already exists." };
+          }
+          await paymentService.addMethod(trimmed);
+          await refetchPayments();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `Payment method "${trimmed}" was added.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create payment method", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't add this payment method.") };
+        }
       },
-      updatePaymentMethod(id, name) {
-        commit((d) => {
-          const pm = d.paymentMethods.find((m) => m.id === id);
-          if (pm && (name || "").trim()) pm.name = name.trim();
-          return d;
-        });
+      async updatePaymentMethod(id, name) {
+        try {
+          if (!(name || "").trim()) return { ok: false, message: "Enter a name." };
+          await paymentService.updateMethod(id, name);
+          await refetchPayments();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update payment method", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't rename this payment method.") };
+        }
       },
-      setPaymentMethodActive(id, active) {
-        commit((d) => {
-          const pm = d.paymentMethods.find((m) => m.id === id);
-          if (pm) pm.active = active;
-          return d;
-        });
+      async setPaymentMethodActive(id, active) {
+        try {
+          await paymentService.setMethodActive(id, active);
+          await refetchPayments();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to toggle payment method", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't update this payment method.") };
+        }
       },
 
-      /* ---------- Expenses (Phase 1A) ---------- */
-      // One expense transaction (a single purchase/shopping trip) can carry any number of line
-      // items — Finance shouldn't have to record "Add Expense" once per item bought on the same
-      // trip. Every line's total is always server-derived as quantity*unitPrice (never trusted
-      // from the client), and the transaction's totalAmount is always the sum of its lines —
-      // never an independently-editable number that could drift from the items backing it.
+      /* ---------- Expenses — real Supabase (expenses + expense_items + expense-receipts bucket) ----
+      // One expense transaction (a single purchase/shopping trip) carries any number of line items.
+      // total_amount is ALWAYS derived server-side by the recalc_expense_total() trigger from the
+      // items — never sent by the client. Header + all items are written in one transaction via the
+      // create_expense / update_expense RPCs (recorded_by stamped from auth.uid()). A receipt file
+      // goes to the private `expense-receipts` bucket after the row exists; if the upload fails the
+      // expense is still saved (surfaced), and a replaced receipt's old object is cleaned up. */
       validateExpenseItems(rawItems) {
         const items = [];
         const list = Array.isArray(rawItems) ? rawItems : [];
@@ -3877,57 +3992,80 @@ function DataProvider({ children }) {
         if (items.length === 0) return { error: "Add at least one item." };
         return { items };
       },
-      createExpense(data, recordedBy) {
-        let result = { success: false, error: "" };
-        commit((d) => {
-          const { items, error } = this.validateExpenseItems(data.items);
-          if (error) { result = { success: false, error }; return d; }
+      async createExpense(data, recordedBy) {
+        const { items, error } = this.validateExpenseItems(data.items);
+        if (error) return { success: false, error };
+        try {
+          const { id, expenseNo } = await expenseService.create({
+            date: data.date, method: data.method, purchasedBy: data.purchasedBy, note: data.note, items,
+          });
+          let receiptWarning = null;
+          if (data.receiptFile) {
+            try {
+              const up = await expenseService.uploadReceipt(id, data.receiptFile);
+              await expenseService.update(id, {
+                date: data.date, method: data.method, purchasedBy: data.purchasedBy, note: data.note, items,
+                receiptImageUrl: up.path, receiptName: up.name, receiptType: up.type,
+              });
+            } catch (upErr) {
+              console.error("Expense saved, but receipt upload failed", upErr);
+              receiptWarning = "The expense was saved, but the receipt file couldn't be attached — edit the expense to try again.";
+            }
+          }
+          await refetchExpenses();
           const totalAmount = items.reduce((sum, it) => sum + it.lineTotal, 0);
-          const seq = d.expenseSeq || 1;
-          d.expenseSeq = seq + 1;
-          const expense = {
-            id: uid("exp"), expenseNo: `#${String(seq).padStart(4, "0")}`, date: data.date, items, totalAmount,
-            method: data.method, purchasedBy: data.purchasedBy || "", note: data.note || "",
-            receiptImage: data.receiptImage || null, receiptName: data.receiptName || null, receiptType: data.receiptType || null,
-            recordedBy, createdAt: Date.now(),
-          };
-          d.expenses.push(expense);
           const label = items.length === 1 ? items[0].itemName : `${items.length} items`;
-          d.activities = [{ id: uid("act"), text: `${formatMoney(totalAmount)} expense recorded: ${label}.`, createdAt: Date.now(), navigation: { page: "expenses", expenseId: expense.id } }, ...d.activities];
-          result = { success: true, expense };
-          return d;
-        });
-        return result;
+          commit((d) => { d.activities = [{ id: uid("act"), text: `${formatMoney(totalAmount)} expense recorded: ${label}.`, createdAt: Date.now(), navigation: { page: "expenses", expenseId: id } }, ...d.activities]; return d; });
+          return { success: true, expense: { id, expenseNo }, warning: receiptWarning };
+        } catch (e) {
+          console.error("Failed to create expense", e);
+          return { success: false, error: financeErrorMessage(e, "Couldn't record this expense.") };
+        }
       },
-      updateExpense(id, data) {
-        let result = { success: false, error: "" };
-        commit((d) => {
-          const e = d.expenses.find((x) => x.id === id);
-          if (!e) { result = { success: false, error: "Expense not found." }; return d; }
-          const { items, error } = this.validateExpenseItems(data.items !== undefined ? data.items : e.items);
-          if (error) { result = { success: false, error }; return d; }
-          e.items = items;
-          e.totalAmount = items.reduce((sum, it) => sum + it.lineTotal, 0);
-          if (data.date !== undefined) e.date = data.date;
-          if (data.method !== undefined) e.method = data.method;
-          if (data.purchasedBy !== undefined) e.purchasedBy = data.purchasedBy;
-          if (data.note !== undefined) e.note = data.note;
-          if (data.receiptImage !== undefined) e.receiptImage = data.receiptImage;
-          if (data.receiptName !== undefined) e.receiptName = data.receiptName;
-          if (data.receiptType !== undefined) e.receiptType = data.receiptType;
-          d.activities = [{ id: uid("act"), text: `Expense ${e.expenseNo || ""} was updated.`, createdAt: Date.now() }, ...d.activities];
-          result = { success: true, expense: e };
-          return d;
-        });
-        return result;
+      async updateExpense(id, data) {
+        const current = expensesRaw.find((x) => x.id === id);
+        if (!current) return { success: false, error: "Expense not found." };
+        const { items, error } = this.validateExpenseItems(data.items !== undefined ? data.items : current.items);
+        if (error) return { success: false, error };
+        try {
+          let receiptImageUrl = current.receiptStoragePath || null;
+          let receiptName = current.receiptName || null;
+          let receiptType = current.receiptType || null;
+          if (data.removeReceipt) {
+            if (current.receiptStoragePath) await expenseService.removeReceiptObject(current.receiptStoragePath).catch((err) => console.error("Old receipt object not removed", err));
+            receiptImageUrl = null; receiptName = null; receiptType = null;
+          } else if (data.receiptFile) {
+            const up = await expenseService.uploadReceipt(id, data.receiptFile);
+            if (current.receiptStoragePath) await expenseService.removeReceiptObject(current.receiptStoragePath).catch((err) => console.error("Old receipt object not removed", err));
+            receiptImageUrl = up.path; receiptName = up.name; receiptType = up.type;
+          }
+          await expenseService.update(id, {
+            date: data.date !== undefined ? data.date : current.date,
+            method: data.method !== undefined ? data.method : current.method,
+            purchasedBy: data.purchasedBy !== undefined ? data.purchasedBy : current.purchasedBy,
+            note: data.note !== undefined ? data.note : current.note,
+            items, receiptImageUrl, receiptName, receiptType,
+          });
+          await refetchExpenses();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `Expense ${current.expenseNo || ""} was updated.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return { success: true, expense: { id } };
+        } catch (e) {
+          console.error("Failed to update expense", e);
+          return { success: false, error: financeErrorMessage(e, "Couldn't update this expense.") };
+        }
       },
-      deleteExpense(id) {
-        commit((d) => {
-          const exp = d.expenses.find((e) => e.id === id);
-          d.expenses = d.expenses.filter((e) => e.id !== id);
-          if (exp) d.activities = [{ id: uid("act"), text: `Expense "${exp.expenseNo || ""}" was removed.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async deleteExpense(id) {
+        try {
+          const exp = expensesRaw.find((e) => e.id === id);
+          if (exp?.receiptStoragePath) await expenseService.removeReceiptObject(exp.receiptStoragePath).catch((err) => console.error("Receipt object not removed", err));
+          await expenseService.remove(id);
+          await refetchExpenses();
+          commit((d) => { d.activities = [{ id: uid("act"), text: `Expense "${exp?.expenseNo || ""}" was removed.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          return { success: true };
+        } catch (e) {
+          console.error("Failed to delete expense", e);
+          return { success: false, error: financeErrorMessage(e, "Couldn't delete this expense.") };
+        }
       },
 
       /* ---------- Owner: account management (Phase 1A) ---------- */
@@ -4191,6 +4329,10 @@ function DataProvider({ children }) {
     resultService, examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
     resultEvidenceService, resultEvidence, resultEvidenceRaw, refetchResultEvidence,
     reportCardService, reportCards, refetchReportCards,
+    feeService, paymentService, expenseService,
+    feeTypesRaw, feeSchedulesRaw, feeInstallmentsRaw, obligationsRaw, adjustmentsRaw,
+    paymentsRaw, allocationsRaw, paymentMethodsRaw, expensesRaw, expenses,
+    refetchFees, refetchPayments, refetchExpenses,
   ]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not

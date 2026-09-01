@@ -100,8 +100,13 @@ declare
   v_category    text;
   v_created     integer := 0;
 begin
-  if not public.is_owner_or_finance() then
-    raise exception 'Only the Owner or Finance & Operations Director may materialize fee obligations';
+  -- Obligation materialization is DERIVED data (amounts come from the frozen
+  -- fee_installments.amount, never client input) — so Owner / Educational Director / Finance may
+  -- all trigger it. The Educational Director path matters: they can create students
+  -- (students_insert = is_owner_or_admin) and a new student must get their fee obligations
+  -- immediately, mirroring the old client-side _materializeObligationsForStudent.
+  if not (public.is_owner() or public.is_admin() or public.is_finance()) then
+    raise exception 'Only the Owner, Educational Director or Finance & Operations Director may materialize fee obligations';
   end if;
 
   select * into v_schedule from public.fee_schedules where id = p_fee_schedule_id;
@@ -165,8 +170,9 @@ declare
   v_status    public.student_status;
   v_created   integer := 0;
 begin
-  if not public.is_owner_or_finance() then
-    raise exception 'Only the Owner or Finance & Operations Director may materialize fee obligations';
+  -- Owner / Educational Director / Finance (see materialize_obligations_for_schedule note).
+  if not (public.is_owner() or public.is_admin() or public.is_finance()) then
+    raise exception 'Only the Owner, Educational Director or Finance & Operations Director may materialize fee obligations';
   end if;
 
   select uses_bus, status into v_uses_bus, v_status

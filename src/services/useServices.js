@@ -5,7 +5,7 @@ import {
   createSubjectService, createHomeworkService, createAttendanceService, createResultsService,
   createResultAuditService, createResultService, createResultEvidenceService, createExamService,
   createBehaviorService, createAnnouncementService, createMessageService, createNotificationService,
-  createPaymentService, createTimetableService, createReportService,
+  createFeeService, createPaymentService, createTimetableService, createReportService,
   createStaffService, createPayrollService, createExpenseService, createReportCardService, createAuditLogService,
 } from "./index";
 
@@ -35,12 +35,13 @@ export function useServices() {
       announcements: createAnnouncementService(data),
       messages: createMessageService(data),
       notifications: createNotificationService(data),
-      payments: createPaymentService(data),
+      fees: createFeeService(),
+      payments: createPaymentService(),
       timetable: createTimetableService(data),
       reports: createReportService(data),
       staff: createStaffService(),
       payroll: createPayrollService(),
-      expenses: createExpenseService(data),
+      expenses: createExpenseService(),
       reportCards: createReportCardService(),
       auditLog: createAuditLogService(data),
     };

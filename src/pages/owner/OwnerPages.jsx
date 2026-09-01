@@ -1218,10 +1218,16 @@ function ExpensesPage({ focus, clearFocus }) {
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { run: runDelete } = useMutationGuard();
   function confirmDelete() {
-    data.deleteExpense(deleteTarget.id);
-    toast("Expense removed.", "info");
-    setDeleteTarget(null);
+    const target = deleteTarget;
+    if (!target) return;
+    runDelete(async () => {
+      const res = await data.deleteExpense(target.id);
+      if (res && res.success === false) { toast(res.error || "Couldn't remove this expense.", "error"); return; }
+      toast("Expense removed.", "info");
+      setDeleteTarget(null);
+    }, { key: `delete-expense:${target.id}` });
   }
 
   return (
@@ -1324,7 +1330,11 @@ function ExpenseFormModal({ open, onClose, expense }) {
   const empty = {
     date: new Date().toISOString().slice(0, 10), items: [emptyExpenseItem()],
     method: activeMethods[0]?.name || "Cash", purchasedBy: defaultPurchasedBy(), note: "",
-    receiptImage: null, receiptName: null, receiptType: null,
+    // receiptFile: a newly picked File to upload to the private expense-receipts bucket.
+    // existingReceiptUrl/Name/Type: the already-saved receipt (a short-lived signed URL).
+    // removeReceipt: drop the existing receipt on save.
+    receiptFile: null, receiptPreviewUrl: null,
+    existingReceiptUrl: null, existingReceiptName: null, existingReceiptType: null, removeReceipt: false,
   };
   const [form, setForm] = useState(empty);
   const { busy, run } = useMutationGuard();
@@ -1332,10 +1342,13 @@ function ExpenseFormModal({ open, onClose, expense }) {
     if (!open) return;
     if (expense) {
       setForm({
+        ...empty,
         date: expense.date,
         items: expense.items.map((it) => ({ itemName: it.itemName, quantity: it.quantity, unitPrice: it.unitPrice })),
         method: expense.method, purchasedBy: expense.purchasedBy, note: expense.note || "",
-        receiptImage: expense.receiptImage, receiptName: expense.receiptName, receiptType: expense.receiptType,
+        existingReceiptUrl: expense.receiptImage || null,
+        existingReceiptName: expense.receiptName || null,
+        existingReceiptType: expense.receiptType || null,
       });
     } else {
       setForm({ ...empty, purchasedBy: defaultPurchasedBy() });
@@ -1347,11 +1360,22 @@ function ExpenseFormModal({ open, onClose, expense }) {
   function addItem() { setForm((f) => ({ ...f, items: [...f.items, emptyExpenseItem()] })); }
   // Never lets the last row disappear — the form always needs at least one item to submit.
   function removeItem(index) { setForm((f) => (f.items.length <= 1 ? f : { ...f, items: f.items.filter((_, i) => i !== index) })); }
-  function uploadReceipt(file) {
-    const reader = new FileReader();
-    reader.onload = () => setForm((f) => ({ ...f, receiptImage: reader.result, receiptName: file.name, receiptType: inferFileType(reader.result) }));
-    reader.readAsDataURL(file);
+  function pickReceipt(file) {
+    if (!file) return;
+    setForm((f) => ({
+      ...f,
+      receiptFile: file,
+      receiptPreviewUrl: /\.pdf$/i.test(file.name) ? null : URL.createObjectURL(file),
+      removeReceipt: false,
+    }));
   }
+  function clearReceipt() {
+    setForm((f) => ({ ...f, receiptFile: null, receiptPreviewUrl: null, removeReceipt: true }));
+  }
+  const showReceiptName = form.receiptFile ? form.receiptFile.name : (!form.removeReceipt ? form.existingReceiptName : null);
+  const showReceiptImageUrl = form.receiptPreviewUrl || (!form.receiptFile && !form.removeReceipt ? form.existingReceiptUrl : null);
+  const showReceiptIsPdf = form.receiptFile ? /\.pdf$/i.test(form.receiptFile.name) : (form.existingReceiptType === "pdf");
+  const hasReceipt = !!(form.receiptFile || (!form.removeReceipt && form.existingReceiptUrl));
   const grandTotal = form.items.reduce((sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
   function validate() {
     for (const it of form.items) {
@@ -1364,12 +1388,17 @@ function ExpenseFormModal({ open, onClose, expense }) {
   function submit() {
     const err = validate();
     if (err) { toast(err, "error"); return; }
-    const payload = { ...form, items: form.items.map((it) => ({ itemName: it.itemName.trim(), quantity: it.quantity, unitPrice: it.unitPrice })) };
+    const payload = {
+      date: form.date, method: form.method, purchasedBy: form.purchasedBy, note: form.note,
+      items: form.items.map((it) => ({ itemName: it.itemName.trim(), quantity: it.quantity, unitPrice: it.unitPrice })),
+      receiptFile: form.receiptFile || undefined,
+      removeReceipt: form.removeReceipt || undefined,
+    };
     const opKey = isEdit ? `update-expense:${expense.id}` : `create-expense:${form.date}:${grandTotal}:${form.items.length}:${form.method}`;
     run(async () => {
       const result = isEdit ? await data.updateExpense(expense.id, payload) : await data.createExpense(payload, auth.realUser.id);
       if (!result.success) { toast(result.error, "error"); return; }
-      toast(isEdit ? "Expense updated." : "Expense recorded.", "success");
+      toast(result.warning || (isEdit ? "Expense updated." : "Expense recorded."), result.warning ? "info" : "success");
       onClose();
     }, { key: opKey });
   }
@@ -1400,15 +1429,21 @@ function ExpenseFormModal({ open, onClose, expense }) {
       </div>
       <Field label="Notes"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} /></Field>
       <Field label="Receipt">
-        <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
-          <Receipt size={13} /> {form.receiptImage ? "Replace receipt" : "Attach receipt (image or PDF)"}
-          <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => e.target.files[0] && uploadReceipt(e.target.files[0])} />
-        </label>
-        {form.receiptImage && (form.receiptType === "pdf" ? (
-          <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"><FileText size={13} /> {form.receiptName || "receipt.pdf"}</p>
+        <div className="flex items-center gap-2">
+          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
+            <Receipt size={13} /> {hasReceipt ? "Replace receipt" : "Attach receipt (image or PDF)"}
+            <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => pickReceipt(e.target.files[0])} />
+          </label>
+          {hasReceipt && (
+            <button type="button" onClick={clearReceipt} className="text-xs font-medium text-red-500 hover:text-red-600">Remove</button>
+          )}
+        </div>
+        {hasReceipt && (showReceiptIsPdf || !showReceiptImageUrl ? (
+          <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"><FileText size={13} /> {showReceiptName || "receipt"}</p>
         ) : (
-          <img src={form.receiptImage} alt="Receipt" className="mt-2 max-h-32 rounded-lg border border-slate-200" />
+          <img src={showReceiptImageUrl} alt="Receipt" className="mt-2 max-h-32 rounded-lg border border-slate-200" />
         ))}
+        <p className="mt-1.5 text-[11px] text-slate-400">Stored privately — only the Owner and Finance can view it.</p>
       </Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
