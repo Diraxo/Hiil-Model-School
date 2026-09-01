@@ -48,6 +48,7 @@ import {
 } from "../../utils/studentPermissions";
 import { DocumentViewerModal, inferFileType } from "../../components/DocumentViewer";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
+import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 
 function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
@@ -78,7 +79,7 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-slate-800">Good morning, Administrator</h1>
-        <p className="text-sm text-slate-400 mt-0.5">Tilmaan Modern Academy — here's what's happening today, {fmtDate(new Date())}.</p>
+        <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — here's what's happening today, {fmtDate(new Date())}.</p>
       </div>
 
       <NoSchoolTodayBanner classification={todayInfo} />
@@ -426,6 +427,7 @@ function AddStudentModal({ open, onClose }) {
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const [createdId, setCreatedId] = useState(null);
+  const { busy, run } = useMutationGuard();
 
   function set(k, v) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -436,7 +438,7 @@ function AddStudentModal({ open, onClose }) {
       ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-sky-500/40", "focus:ring-red-400/40").replace("focus:border-sky-400", "focus:border-red-400")
       : inputCls;
   }
-  function submit(e) {
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     const nextErrors = {};
     if (!form.firstName.trim()) nextErrors.firstName = "First name is required.";
@@ -448,14 +450,17 @@ function AddStudentModal({ open, onClose }) {
       toast("Please complete the required fields.", "error");
       return;
     }
-    const id = data.createStudent({
-      ...form,
-      firstName: form.firstName.trim(),
-      middleName: form.middleName.trim(),
-      lastName: form.lastName.trim(),
+    await run(async () => {
+      const res = await data.createStudent({
+        ...form,
+        firstName: form.firstName.trim(),
+        middleName: form.middleName.trim(),
+        lastName: form.lastName.trim(),
+      });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setCreatedId(res.studentId);
+      toast("Student added successfully.", "success");
     });
-    setCreatedId(id);
-    toast("Student added successfully.", "success");
   }
   function close() { setForm(empty); setErrors({}); setCreatedId(null); onClose(); }
   const currentYear = currentAcademicYear(data.db.academicYears);
@@ -476,10 +481,10 @@ function AddStudentModal({ open, onClose }) {
       ) : (
         <div>
           <StudentFormFields form={form} set={set} fieldCls={fieldCls} errors={errors} mode="add" gradeOptions={data.gradeOptions()} />
-          <p className="text-xs text-slate-400 mb-3">A unique Student ID (e.g. {data.generateStudentId()}) will be generated automatically for {formatAcademicYearLabel(currentYear)}.</p>
+          <p className="text-xs text-slate-400 mb-3">A unique Student ID will be generated automatically for {formatAcademicYearLabel(currentYear)}.</p>
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-            <PrimaryButton type="button" onClick={submit} icon={Check}>Create Student</PrimaryButton>
+            <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Creating…">Create Student</PrimaryButton>
           </div>
         </div>
       )}
@@ -493,6 +498,7 @@ function ChangePhotoModal({ open, onClose, student }) {
   const data = useData();
   const toast = useToast();
   const [preview, setPreview] = useState(student?.photo || null);
+  const { busy, run } = useMutationGuard();
   useEffect(() => { setPreview(student?.photo || null); }, [student?.id, open]);
   function onFile(e) {
     const file = e.target.files[0]; if (!file) return;
@@ -500,10 +506,13 @@ function ChangePhotoModal({ open, onClose, student }) {
     reader.onload = () => setPreview(reader.result);
     reader.readAsDataURL(file);
   }
-  function save() {
-    data.updateStudent(student.id, { photo: preview });
-    toast(preview ? "Profile photo updated." : "Profile photo removed.", "success");
-    onClose();
+  async function save() {
+    await run(async () => {
+      const res = await data.updateStudent(student.id, { photo: preview });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast(preview ? "Profile photo updated." : "Profile photo removed.", "success");
+      onClose();
+    });
   }
   if (!student) return null;
   return (
@@ -519,7 +528,7 @@ function ChangePhotoModal({ open, onClose, student }) {
         </div>
         <div className="flex justify-end gap-2 w-full pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={save} icon={Check}>Save Photo</PrimaryButton>
+          <PrimaryButton type="button" onClick={save} icon={Check} loading={busy} loadingText="Saving…">Save Photo</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -558,10 +567,10 @@ const TAB_LABELS = { overview: "Overview", attendance: "Attendance", homework: "
 
 function UploadDocumentModal({ open, onClose, studentId }) {
   const data = useData();
-  const auth = useAuth();
   const toast = useToast();
   const empty = { category: DOCUMENT_CATEGORIES[0], title: "", fileDataUrl: null, fileType: "image", fileName: "" };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function onFile(e) {
     const file = e.target.files[0]; if (!file) return;
@@ -572,12 +581,15 @@ function UploadDocumentModal({ open, onClose, studentId }) {
     };
     reader.readAsDataURL(file);
   }
-  function submit() {
+  async function submit() {
     if (!form.fileDataUrl) { toast("Please choose a file to upload.", "error"); return; }
     if (!form.title.trim()) { toast("Please give the document a title.", "error"); return; }
-    data.createStudentDocument(studentId, { category: form.category, title: form.title.trim(), fileDataUrl: form.fileDataUrl, fileType: form.fileType, fileName: form.fileName }, auth.currentUser.id);
-    toast("Document uploaded.", "success");
-    setForm(empty); onClose();
+    await run(async () => {
+      const res = await data.createStudentDocument(studentId, { category: form.category, title: form.title.trim(), fileDataUrl: form.fileDataUrl, fileType: form.fileType, fileName: form.fileName });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Document uploaded.", "success");
+      setForm(empty); onClose();
+    });
   }
   return (
     <Modal open={open} onClose={onClose} title="Upload Document">
@@ -595,7 +607,7 @@ function UploadDocumentModal({ open, onClose, studentId }) {
       </Field>
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton type="button" onClick={submit} icon={Check}>Upload</PrimaryButton>
+        <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Uploading…">Upload</PrimaryButton>
       </div>
     </Modal>
   );
@@ -612,16 +624,19 @@ function PromoteStudentModal({ open, onClose, student }) {
   const [academicYearId, setAcademicYearId] = useState(defaultYear ? defaultYear.id : "");
   const [grade, setGrade] = useState(student?.grade || "");
   const [section, setSection] = useState(student?.section || "");
+  const { busy, run } = useMutationGuard();
   useEffect(() => {
     if (open) { setAcademicYearId(defaultYear ? defaultYear.id : ""); setGrade(student?.grade || ""); setSection(student?.section || ""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, student?.id]);
-  function submit() {
+  async function submit() {
     if (!academicYearId || !grade) { toast("Please choose an academic year and grade.", "error"); return; }
-    const res = data.promoteStudent(student.id, { academicYearId, grade, section });
-    if (!res.ok) { toast(res.message, "error"); return; }
-    toast("Student promoted/re-enrolled.", "success");
-    onClose();
+    await run(async () => {
+      const res = await data.promoteStudent(student.id, { academicYearId, grade, section });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Student promoted/re-enrolled.", "success");
+      onClose();
+    }, { key: `promote-student:${student.id}:${academicYearId}` });
   }
   if (!student) return null;
   return (
@@ -649,7 +664,7 @@ function PromoteStudentModal({ open, onClose, student }) {
       </div>
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton type="button" onClick={submit} icon={Check}>Promote / Re-enroll</PrimaryButton>
+        <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Working…">Promote / Re-enroll</PrimaryButton>
       </div>
     </Modal>
   );
@@ -670,6 +685,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
   const canVoid = canVoidPayment(auth.currentUser);
   const canYears = canManageAcademicYears(auth.currentUser);
 
+  const { busy: actionBusy, run: runAction } = useMutationGuard();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
   const [photoOpen, setPhotoOpen] = useState(false);
@@ -740,8 +756,8 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
 
   const tabs = ["overview", "attendance", "homework", "exams", "behavior", "documents", ...(canPayments ? ["payments"] : [])];
 
-  function confirmDelete() {
-    const res = data.deleteStudent(s.id);
+  async function confirmDelete() {
+    const res = await data.deleteStudent(s.id);
     setDeleteConfirmOpen(false);
     if (res.ok) { toast("Student deleted.", "success"); onBack(); }
     else toast(res.message, "error");
@@ -781,7 +797,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
             {canSuspend && isViewingCurrentYear && (s.status !== "SUSPENDED" ? (
               <GhostButton icon={ShieldAlert} danger onClick={() => setSuspendOpen(true)}>Suspend</GhostButton>
             ) : (
-              <GhostButton icon={Check} onClick={() => data.archiveStudent(s.id, "ACTIVE")}>Reinstate</GhostButton>
+              <GhostButton icon={Check} loading={actionBusy} onClick={() => runAction(async () => { const res = await data.archiveStudent(s.id, "ACTIVE"); if (!res.ok) toast(res.message, "error"); }, { key: `archive-student:${s.id}` })}>Reinstate</GhostButton>
             ))}
             {canYears && isViewingCurrentYear && data.db.academicYears.length > 1 && (
               <GhostButton icon={ArrowRightLeft} onClick={() => setPromoteOpen(true)}>Promote / Re-enroll</GhostButton>
@@ -1027,7 +1043,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <GhostButton icon={Eye} onClick={() => setDocViewer({ title: doc.title, fileDataUrl: doc.fileDataUrl, fileType: doc.fileType, fileName: doc.fileName })}>View</GhostButton>
-                            {canEdit && <button type="button" onClick={() => data.deleteStudentDocument(doc.id)} className="text-slate-300 hover:text-red-600"><Trash2 size={15} /></button>}
+                            {canEdit && <button type="button" disabled={actionBusy} onClick={() => runAction(async () => { const res = await data.deleteStudentDocument(doc.id); if (!res.ok) toast(res.message, "error"); }, { key: `delete-doc:${doc.id}` })} className="text-slate-300 hover:text-red-600 disabled:opacity-40"><Trash2 size={15} /></button>}
                           </div>
                         </div>
                       ))}
@@ -1155,13 +1171,17 @@ function EditStudentModal({ open, onClose, student }) {
   const toast = useToast();
   const [form, setForm] = useState(student);
   const [photoOpen, setPhotoOpen] = useState(false);
+  const { busy, run } = useMutationGuard();
   useEffect(() => { setForm(student); }, [student]);
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  function submit(e) {
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    data.updateStudent(student.id, form);
-    toast("Student profile updated.", "success");
-    onClose();
+    await run(async () => {
+      const res = await data.updateStudent(student.id, form);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Student profile updated.", "success");
+      onClose();
+    });
   }
   if (!form) return null;
   const enrollment = data.enrollmentsForStudent(student.id).find((en) => en.academicYearId === (currentAcademicYear(data.db.academicYears) || {}).id);
@@ -1177,7 +1197,7 @@ function EditStudentModal({ open, onClose, student }) {
           <StudentFormFields form={form} set={set} fieldCls={() => inputCls} errors={{}} mode="edit" gradeOptions={data.gradeOptions()} onPickPhoto={() => setPhotoOpen(true)} />
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-            <PrimaryButton type="button" onClick={submit} icon={Check}>Save Changes</PrimaryButton>
+            <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save Changes</PrimaryButton>
           </div>
         </div>
       </Modal>
@@ -1192,6 +1212,7 @@ function BehaviorModal({ open, onClose, studentId }) {
   const auth = useAuth();
   const empty = { type: "Positive", severity: "Low", description: "", action: "", staff: auth.currentUser?.name || "School Administrator", parentNotified: true, date: new Date().toISOString().slice(0, 10) };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
   useEffect(() => { if (open) setForm(empty); }, [open]);
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) {
@@ -1202,9 +1223,11 @@ function BehaviorModal({ open, onClose, studentId }) {
     // formatter; wrapping it here used to persist a "24 Aug 2026"-style string into
     // behaviorRecords, which broke every ISO string-range date comparison against it (e.g. the
     // student profile's "Behavior Records" stat, which filters by selectedYear.yearStart/yearEnd).
-    data.createBehaviorRecord({ studentId, ...form });
-    toast("Behavior record added.", "success");
-    setForm(empty); onClose();
+    run(async () => {
+      await data.createBehaviorRecord({ studentId, ...form });
+      toast("Behavior record added.", "success");
+      setForm(empty); onClose();
+    });
   }
   return (
     <Modal open={open} onClose={onClose} title="Add Behavior Record">
@@ -1222,7 +1245,7 @@ function BehaviorModal({ open, onClose, studentId }) {
         </label>
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>Save Record</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save Record</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -1253,7 +1276,7 @@ function SuspendModal({ open, onClose, studentId }) {
       </Modal>
       <ConfirmDialog open={confirming} onClose={() => setConfirming(false)} danger confirmLabel="Suspend Student"
         title="Confirm suspension" description="This will change the student's status to Suspended and notify the parent. Their academic history will be preserved."
-        onConfirm={() => { data.suspendStudent(studentId, form); toast("Student suspended.", "success"); onClose(); setConfirming(false); }} />
+        onConfirm={async () => { const res = await data.suspendStudent(studentId, form); if (!res.ok) { toast(res.message, "error"); return; } toast("Student suspended.", "success"); onClose(); setConfirming(false); }} />
     </>
   );
 }
@@ -1264,6 +1287,8 @@ function ParentsPage({ onOpen, onMessage }) {
   const { db } = data;
   const [q, setQ] = useState("");
   const [recordFor, setRecordFor] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [manageFor, setManageFor] = useState(null);
   const canPayments = canViewStudentPayments(auth.currentUser);
   const parents = db.users.filter((u) => u.role === ROLES.PARENT);
   const filtered = parents.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()) || (p.phone || "").toLowerCase().includes(q.toLowerCase()));
@@ -1272,7 +1297,10 @@ function ParentsPage({ onOpen, onMessage }) {
     <div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Parents</h1>
       <p className="text-sm text-slate-400 mb-4">{parents.length} parent accounts connected.</p>
-      <Toolbar><SearchInput value={q} onChange={setQ} placeholder="Search parent name or phone…" /></Toolbar>
+      <Toolbar>
+        <SearchInput value={q} onChange={setQ} placeholder="Search parent name or phone…" />
+        <PrimaryButton onClick={() => setAddOpen(true)} icon={UserPlus}>Add Parent</PrimaryButton>
+      </Toolbar>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map((p) => {
           const children = db.students.filter((s) => (p.childIds || []).includes(s.id));
@@ -1305,13 +1333,208 @@ function ParentsPage({ onOpen, onMessage }) {
                   );
                 })}
               </div>
-              <button onClick={() => onMessage(p.id)} className="mt-3 w-full text-xs text-sky-600 font-medium flex items-center justify-center gap-1 border border-sky-100 rounded-lg py-1.5 hover:bg-sky-50"><MessageSquare size={13} /> Message</button>
+              <div className="flex gap-2 mt-3">
+                <button onClick={() => onMessage(p.id)} className="flex-1 text-xs text-sky-600 font-medium flex items-center justify-center gap-1 border border-sky-100 rounded-lg py-1.5 hover:bg-sky-50"><MessageSquare size={13} /> Message</button>
+                <button onClick={() => setManageFor(p)} className="flex-1 text-xs text-slate-500 font-medium flex items-center justify-center gap-1 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50"><Edit2 size={13} /> Manage</button>
+              </div>
             </Card>
           );
         })}
       </div>
       {canPayments && <RecordPaymentModal open={!!recordFor} onClose={() => setRecordFor(null)} student={recordFor} />}
+      <ParentFormModal open={addOpen} onClose={() => setAddOpen(false)} />
+      <ManageParentModal parent={manageFor} onClose={() => setManageFor(null)} />
     </div>
+  );
+}
+
+// Creates a real Supabase Auth account + profiles row (role PARENT) via data.createParentAccount
+// (see DataContext.jsx) and, optionally, links it to one or more existing students by Student ID
+// at the same time. Mirrors TeacherFormModal's one-time-credentials-reveal pattern.
+function ParentFormModal({ open, onClose }) {
+  const data = useData();
+  const toast = useToast();
+  const empty = { name: "", email: "", phone: "", password: "" };
+  const [form, setForm] = useState(empty);
+  const [children, setChildren] = useState([""]);
+  const [errors, setErrors] = useState({});
+  const [showPw, setShowPw] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [createdCreds, setCreatedCreds] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setForm({ ...empty, password: generatePassword() });
+    setChildren([""]);
+    setErrors({});
+    setShowPw(false);
+    setCreatedCreds(null);
+  }, [open]);
+
+  function set(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+    setErrors((e) => (e[k] ? { ...e, [k]: undefined } : e));
+  }
+  function setChild(i, v) { setChildren((c) => c.map((x, idx) => (idx === i ? v : x))); }
+  function addChildRow() { setChildren((c) => [...c, ""]); }
+  function removeChildRow(i) { setChildren((c) => c.filter((_, idx) => idx !== i)); }
+
+  async function submit(e) {
+    e && e.preventDefault && e.preventDefault();
+    if (submitting) return;
+    const nextErrors = {};
+    if (!form.name.trim()) nextErrors.name = "Please enter the parent's full name.";
+    if (!form.email.trim()) nextErrors.email = "Please enter the parent's email address.";
+    if (!form.phone.trim()) nextErrors.phone = "Please provide the parent's phone number.";
+    if (!form.password.trim()) nextErrors.password = "Please set a temporary password, or generate one.";
+    if (Object.keys(nextErrors).length) { setErrors(nextErrors); toast("Please complete the required fields.", "error"); return; }
+    setErrors({});
+    setSubmitting(true);
+    const childPayload = children.map((c) => c.trim()).filter(Boolean).map((studentId) => ({ studentId }));
+    const res = await data.createParentAccount({ name: form.name.trim(), email: form.email.trim(), phone: form.phone.trim(), password: form.password, children: childPayload });
+    setSubmitting(false);
+    if (!res.ok) { toast(res.message, "error"); return; }
+    toast("Parent account created.", "success");
+    setCreatedCreds({ name: form.name.trim(), email: form.email.trim(), password: form.password });
+  }
+  function close() { setForm(empty); setChildren([""]); setErrors({}); setCreatedCreds(null); onClose(); }
+
+  if (createdCreds) {
+    return (
+      <Modal open={open} onClose={close} title="Parent added">
+        <div className="text-center py-4">
+          <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
+          <p className="font-medium text-slate-700 mb-1">Parent account created successfully.</p>
+          <p className="text-xs text-slate-400 mb-4">Share these sign-in details with the parent privately. The password will not be shown again — they should change it after their first sign-in.</p>
+          <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 max-w-xs mx-auto text-left space-y-2">
+            <div><p className="text-[10px] text-slate-400 uppercase tracking-wide">Name</p><span className="text-sm text-slate-700">{createdCreds.name}</span></div>
+            <div>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Email</p>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span><button onClick={async () => { const ok = await copyText(createdCreds.email); toast(ok ? "Email copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+            </div>
+            <div>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Temporary password</p>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+            </div>
+          </div>
+          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Done</button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal open={open} onClose={close} title="Add Parent">
+      <div>
+        <Field label="Full name" required error={errors.name}><input className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Email" required error={errors.email}><input type="email" className={inputCls} value={form.email} onChange={(e) => set("email", e.target.value)} /></Field>
+          <Field label="Phone" required error={errors.phone}><input className={inputCls} value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="e.g. +252 61 234 5678" /></Field>
+        </div>
+        <Field label="Temporary password" required error={errors.password}>
+          <div className="relative">
+            <input type={showPw ? "text" : "password"} className={inputCls + " pr-16 font-mono"} value={form.password} onChange={(e) => set("password", e.target.value)} />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              <button type="button" onClick={() => set("password", generatePassword())} className="text-slate-400 hover:text-slate-600" title="Generate"><RefreshCw size={14} /></button>
+              <button type="button" onClick={() => setShowPw((s) => !s)} className="text-slate-400 hover:text-slate-600" title={showPw ? "Hide" : "Show"}>{showPw ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+            </div>
+          </div>
+        </Field>
+        <Field label="Children (optional — connect by Student ID)">
+          <div className="space-y-2">
+            {children.map((c, i) => (
+              <div key={i} className="flex gap-2">
+                <input value={c} onChange={(e) => setChild(i, e.target.value)} placeholder="e.g. TMA-2026-00031" className={inputCls} />
+                {children.length > 1 && <button type="button" onClick={() => removeChildRow(i)} className="text-red-500 hover:bg-red-50 rounded-lg px-2"><X size={16} /></button>}
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={addChildRow} className="mt-2 text-xs text-sky-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
+        </Field>
+        <div className="flex justify-end gap-2 pt-3">
+          <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={submitting} loadingText="Creating…">Create Parent Account</PrimaryButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Owner/Educational Director only (mirrors parent_students' RLS -- see parentService.js):
+// connect/disconnect children and permanently delete the account. There is no self-service
+// equivalent for any of this — see SettingsPage/RegisterScreen for why.
+function ManageParentModal({ parent, onClose }) {
+  const data = useData();
+  const toast = useToast();
+  const [connectId, setConnectId] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  useEffect(() => { setConnectId(""); setDisconnectTarget(null); setConfirmDelete(false); }, [parent]);
+
+  if (!parent) return null;
+  const children = data.db.students.filter((s) => (parent.childIds || []).includes(s.id));
+
+  async function doConnect(e) {
+    e && e.preventDefault && e.preventDefault();
+    if (!connectId.trim() || connecting) return;
+    setConnecting(true);
+    const res = await data.connectChild(parent.id, connectId);
+    setConnecting(false);
+    if (!res.ok) { toast(res.message, "error"); return; }
+    setConnectId("");
+    toast(res.message, "success");
+  }
+  async function doDisconnect() {
+    if (!disconnectTarget) return;
+    const res = await data.disconnectChild(parent.id, disconnectTarget.id);
+    if (!res.ok) { toast(res.message, "error"); setDisconnectTarget(null); return; }
+    toast(`${data.studentFullName(disconnectTarget)} was disconnected from this account.`, "success");
+    setDisconnectTarget(null);
+  }
+  async function doDelete() {
+    const res = await data.deleteParentAccount(parent.id);
+    setConfirmDelete(false);
+    if (!res.ok) { toast(res.message, "error"); return; }
+    toast(`${parent.name}'s account was deleted.`, "success");
+    onClose();
+  }
+
+  return (
+    <>
+      <Modal open={!!parent && !confirmDelete && !disconnectTarget} onClose={onClose} title={`Manage — ${parent.name}`}>
+        <div>
+          <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1.5">Connected Children</p>
+          <div className="space-y-1.5 mb-4">
+            {children.length === 0 && <p className="text-xs text-slate-300">No children connected</p>}
+            {children.map((c) => (
+              <div key={c.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5">
+                <span className="text-xs text-slate-600 font-medium">{data.studentFullName(c)} · {c.grade}{c.section}</span>
+                <button onClick={() => setDisconnectTarget(c)} className="text-[11px] text-red-500 font-medium">Disconnect</button>
+              </div>
+            ))}
+          </div>
+          <Field label="Connect another child by Student ID">
+            <div className="flex gap-2">
+              <input value={connectId} onChange={(e) => setConnectId(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doConnect(e); }} placeholder="e.g. TMA-2026-00031" className={inputCls} />
+              <PrimaryButton type="button" onClick={doConnect} icon={Plus} loading={connecting} loadingText="Connecting…">Connect</PrimaryButton>
+            </div>
+          </Field>
+          <div className="border-t border-slate-100 mt-4 pt-4">
+            <button onClick={() => setConfirmDelete(true)} className="w-full text-xs text-red-500 font-medium flex items-center justify-center gap-1 border border-red-100 rounded-lg py-1.5 hover:bg-red-50"><Trash2 size={13} /> Delete Parent Account Permanently</button>
+          </div>
+        </div>
+      </Modal>
+      <ConfirmDialog open={confirmDelete} onClose={() => setConfirmDelete(false)} danger confirmLabel="Delete Parent Permanently"
+        title="Delete this parent account?"
+        description={`This permanently removes ${parent.name}'s login and disconnects them from every child. This can't be undone.`}
+        onConfirm={doDelete} />
+      <ConfirmDialog open={!!disconnectTarget} onClose={() => setDisconnectTarget(null)} danger confirmLabel="Disconnect"
+        title="Disconnect this child?"
+        description={disconnectTarget ? `${parent.name} will no longer be able to see ${data.studentFullName(disconnectTarget)}'s attendance, results, homework, or payments.` : ""}
+        onConfirm={doDisconnect} />
+    </>
   );
 }
 
@@ -1319,6 +1542,7 @@ function TeachersPage({ onMessage }) {
   const data = useData();
   const toast = useToast();
   const { db } = data;
+  const { isBusy, run } = useMutationGuard();
   const [q, setQ] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editTeacher, setEditTeacher] = useState(null);
@@ -1327,9 +1551,9 @@ function TeachersPage({ onMessage }) {
   const teachers = db.users.filter((u) => u.role === ROLES.TEACHER);
   const filtered = teachers.filter((t) => t.name.toLowerCase().includes(q.toLowerCase()));
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!deleteTarget) return;
-    const res = data.deleteTeacher(deleteTarget.id);
+    const res = await data.deleteTeacher(deleteTarget.id);
     toast(res.ok ? `${deleteTarget.name} was deleted.` : res.message, res.ok ? "success" : "error");
     setDeleteTarget(null);
   }
@@ -1378,13 +1602,13 @@ function TeachersPage({ onMessage }) {
                 <button onClick={() => onMessage(t.id)} className="flex-1 text-xs text-sky-600 font-medium flex items-center justify-center gap-1 border border-sky-100 rounded-lg py-1.5 hover:bg-sky-50"><MessageSquare size={13} /> Message</button>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => { data.setAccountStatus(t.id, t.status === "ACTIVE" ? "DISABLED" : "ACTIVE"); toast(`${t.name}'s account access is now ${t.status === "ACTIVE" ? "disabled" : "active"}.`, "info"); }} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">{t.status === "ACTIVE" ? "Disable" : "Enable"}</button>
+                <button disabled={isBusy(`teacher-status:${t.id}`)} onClick={() => run(async () => { const next = t.status === "ACTIVE" ? "DISABLED" : "ACTIVE"; const res = await data.setAccountStatus(t.id, next); toast(res.ok ? `${t.name}'s account access is now ${next === "ACTIVE" ? "active" : "disabled"}.` : res.message, res.ok ? "info" : "error"); }, { key: `teacher-status:${t.id}` })} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50 disabled:opacity-50">{t.status === "ACTIVE" ? "Disable" : "Enable"}</button>
                 <button onClick={() => setDeleteTarget(t)} className="flex-1 text-xs text-red-500 font-medium flex items-center justify-center gap-1 border border-red-100 rounded-lg py-1.5 hover:bg-red-50"><Trash2 size={13} /> Delete</button>
               </div>
               {staffRec && (
                 <div className="flex gap-2 mt-2">
                   {employmentEnded ? (
-                    <button onClick={() => { data.reactivateEmployment(staffRec.id); toast(`${t.name}'s employment was reactivated.`, "success"); }} className="flex-1 text-xs text-emerald-600 font-medium border border-emerald-200 rounded-lg py-1.5 hover:bg-emerald-50">Reactivate Employment</button>
+                    <button disabled={isBusy(`reactivate-emp:${staffRec.id}`)} onClick={() => run(async () => { const res = await data.reactivateEmployment(staffRec.id); toast(res.ok ? `${t.name}'s employment was reactivated.` : res.message, res.ok ? "success" : "error"); }, { key: `reactivate-emp:${staffRec.id}` })} className="flex-1 text-xs text-emerald-600 font-medium border border-emerald-200 rounded-lg py-1.5 hover:bg-emerald-50 disabled:opacity-50">Reactivate Employment</button>
                   ) : (
                     <button onClick={() => setEndEmploymentTarget(staffRec)} className="flex-1 text-xs text-red-500 font-medium border border-red-100 rounded-lg py-1.5 hover:bg-red-50">End Employment</button>
                   )}
@@ -1413,16 +1637,20 @@ function EndEmploymentModal({ staff, onClose }) {
   const data = useData();
   const toast = useToast();
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (staff) setEndDate(new Date().toISOString().slice(0, 10)); }, [staff]);
 
   if (!staff) return null;
 
-  function submit() {
+  async function submit() {
     if (!endDate) { toast("Please choose the last employed day.", "error"); return; }
-    data.endEmployment(staff.id, endDate);
-    toast(`${staff.name}'s employment ended effective ${fmtDate(endDate)}.`, "success");
-    onClose();
+    await run(async () => {
+      const res = await data.endEmployment(staff.id, endDate);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast(`${staff.name}'s employment ended effective ${fmtDate(endDate)}.`, "success");
+      onClose();
+    }, { key: `end-employment:${staff.id}` });
   }
 
   return (
@@ -1431,7 +1659,7 @@ function EndEmploymentModal({ staff, onClose }) {
       <Field label="Last employed day" required><input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>End Employment</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Working…">End Employment</PrimaryButton>
       </div>
     </Modal>
   );
@@ -1452,6 +1680,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
   const [createdCreds, setCreatedCreds] = useState(null); // one-time reveal after creating a teacher
   const [resetReveal, setResetReveal] = useState(null); // one-time reveal after resetting a password
   const [confirmReset, setConfirmReset] = useState(false);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (!open) return;
@@ -1536,7 +1765,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
     setForm((f) => (f.subjects.includes(subjectName) ? f : { ...f, subjects: [...f.subjects, subjectName] }));
   }
 
-  function submit(e) {
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     const nextErrors = {};
     if (!form.firstName.trim()) nextErrors.firstName = "Please enter the teacher's first name.";
@@ -1558,19 +1787,21 @@ function TeacherFormModal({ open, onClose, teacher }) {
       .map((k) => { const i = k.indexOf("|"); return { classId: k.slice(0, i), subject: k.slice(i + 1) }; })
       .filter((r) => form.subjects.includes(r.subject) && form.classIds.includes(r.classId));
 
+    await run(async () => {
     if (isEdit) {
-      data.updateTeacher(teacher.id, {
+      const updateRes = await data.updateTeacher(teacher.id, {
         firstName: form.firstName.trim(), middleName: form.middleName.trim(), lastName: form.lastName.trim(),
         name: fullName(form.firstName, form.middleName, form.lastName),
         email: form.email.trim(), phone: form.phone.trim(), photo: form.photo,
         bankAccount: form.bankAccount.trim() || null,
       });
-      const res = data.updateTeacherAssignments(teacher.id, form.subjects, form.classIds, reassignPairs);
+      if (!updateRes.ok) { toast(updateRes.message, "error"); return; }
+      const res = await data.updateTeacherAssignments(teacher.id, form.subjects, form.classIds, reassignPairs);
       if (!res.ok) { setErrors({ subjects: res.message }); toast(res.message, "error"); return; }
       toast("Teacher updated.", "success");
       onClose();
     } else {
-      const res = data.createTeacher({
+      const res = await data.createTeacher({
         firstName: form.firstName.trim(), middleName: form.middleName.trim(), lastName: form.lastName.trim(),
         email: form.email.trim(), phone: form.phone.trim(), subjects: form.subjects, classIds: form.classIds, password: form.password,
         reassignments: reassignPairs, photo: form.photo, bankAccount: form.bankAccount.trim() || null,
@@ -1588,12 +1819,16 @@ function TeacherFormModal({ open, onClose, teacher }) {
         subjects: form.subjects, classIds: form.classIds,
       });
     }
+    }, { key: isEdit ? `update-teacher:${teacher.id}` : `create-teacher:${form.email.trim().toLowerCase()}` });
   }
-  function doResetPassword() {
-    const newPw = generatePassword();
-    data.resetTeacherPassword(teacher.id, newPw);
-    setResetReveal(newPw);
-    toast("Password reset. Share the new password privately with the teacher.", "success");
+  async function doResetPassword() {
+    await run(async () => {
+      const newPw = generatePassword();
+      const res = await data.resetTeacherPassword(teacher.id, newPw);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setResetReveal(newPw);
+      toast("Password reset. Share the new password privately with the teacher.", "success");
+    }, { key: `reset-teacher-pw:${teacher.id}` });
   }
   function close() { setForm(empty); setErrors({}); setReassignments(new Set()); setCreatedCreds(null); setResetReveal(null); onClose(); }
 
@@ -1752,7 +1987,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
 
         <div className="flex justify-end gap-2 pt-3">
           <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>{isEdit ? "Save Changes" : "Add Teacher"}</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText={isEdit ? "Saving…" : "Adding…"}>{isEdit ? "Save Changes" : "Add Teacher"}</PrimaryButton>
         </div>
       </div>
       <ConfirmDialog open={confirmReset} onClose={() => setConfirmReset(false)} confirmLabel="Reset Password"
@@ -1771,9 +2006,9 @@ function ClassesPage() {
   const toast = useToast();
   const gradeCount = new Set(db.classes.map((c) => c.grade)).size;
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!deleteTarget) return;
-    const res = data.deleteClass(deleteTarget.id);
+    const res = await data.deleteClass(deleteTarget.id);
     toast(res.message || (res.ok ? "Class deleted." : "Couldn't delete this class."), res.ok ? "info" : "error");
     setDeleteTarget(null);
   }
@@ -1836,6 +2071,7 @@ function ClassFormModal({ open, onClose, cls }) {
   const [newSubject, setNewSubject] = useState("");
   const [renameTarget, setRenameTarget] = useState(null); // subject being renamed { id, name }
   const [renameValue, setRenameValue] = useState("");
+  const { busy, run, isBusy } = useMutationGuard();
 
   useEffect(() => {
     if (!open) return;
@@ -1859,46 +2095,55 @@ function ClassFormModal({ open, onClose, cls }) {
     const trimmed = newSubject.trim();
     if (!trimmed) return;
     if (data.db.subjects.some((s) => s.name.toLowerCase() === trimmed.toLowerCase())) { toast("This subject already exists.", "error"); return; }
-    const res = await data.createSubject(trimmed);
-    if (!res.ok) { toast(res.message, "error"); return; }
-    setForm((f) => (f.subjects.includes(trimmed) ? f : { ...f, subjects: [...f.subjects, trimmed] }));
-    setNewSubject("");
+    await run(async () => {
+      const res = await data.createSubject(trimmed);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setForm((f) => (f.subjects.includes(trimmed) ? f : { ...f, subjects: [...f.subjects, trimmed] }));
+      setNewSubject("");
+    }, { key: `create-subject:${trimmed.toLowerCase()}` });
   }
 
   async function submitRename() {
     if (!renameTarget) return;
     const trimmed = renameValue.trim();
     if (!trimmed) { toast("Please enter a subject name.", "error"); return; }
-    const res = await data.updateSubject(renameTarget.id, trimmed);
-    if (!res.ok) { toast(res.message, "error"); return; }
-    setForm((f) => ({ ...f, subjects: f.subjects.map((s) => (s === renameTarget.name ? trimmed : s)) }));
-    setRenameTarget(null);
+    await run(async () => {
+      const res = await data.updateSubject(renameTarget.id, trimmed);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setForm((f) => ({ ...f, subjects: f.subjects.map((s) => (s === renameTarget.name ? trimmed : s)) }));
+      setRenameTarget(null);
+    }, { key: `update-subject:${renameTarget.id}` });
   }
 
   async function deleteGlobalSubject(subj) {
-    const res = await data.deleteSubject(subj.id);
-    if (!res.ok) { toast(res.message, "error"); return; }
-    setForm((f) => ({ ...f, subjects: f.subjects.filter((s) => s !== subj.name) }));
-    toast("Subject deleted.", "info");
+    await run(async () => {
+      const res = await data.deleteSubject(subj.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setForm((f) => ({ ...f, subjects: f.subjects.filter((s) => s !== subj.name) }));
+      toast("Subject deleted.", "info");
+    }, { key: `delete-subject:${subj.id}` });
   }
 
-  function submit(e) {
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!GRADES.includes(form.gradeLabel)) {
       toast("Please select a grade.", "error");
       return;
     }
     const grade = form.gradeLabel;
-    if (isEdit) {
-      const res = data.updateClass(cls.id, { grade, section: form.section, headTeacherId: form.headTeacherId, subjects: form.subjects });
-      if (!res.ok) { toast(res.message, "error"); return; }
-    } else {
-      const exists = data.db.classes.some((c) => c.grade === grade && c.section === form.section);
-      if (exists) { toast(`${grade}${form.section} already exists.`, "error"); return; }
-      data.createClass({ grade, section: form.section, headTeacherId: form.headTeacherId, subjects: form.subjects });
-    }
-    toast(isEdit ? "Class updated." : "Class created.", "success");
-    onClose();
+    await run(async () => {
+      if (isEdit) {
+        const res = await data.updateClass(cls.id, { grade, section: form.section, headTeacherId: form.headTeacherId, subjects: form.subjects });
+        if (!res.ok) { toast(res.message, "error"); return; }
+      } else {
+        const exists = data.db.classes.some((c) => c.grade === grade && c.section === form.section);
+        if (exists) { toast(`${grade}${form.section} already exists.`, "error"); return; }
+        const res = await data.createClass({ grade, section: form.section, headTeacherId: form.headTeacherId, subjects: form.subjects });
+        if (!res.ok) { toast(res.message, "error"); return; }
+      }
+      toast(isEdit ? "Class updated." : "Class created.", "success");
+      onClose();
+    }, { key: isEdit ? `update-class:${cls.id}` : `create-class:${grade}-${form.section}` });
   }
 
   // New-assignment picker (Blocker 3): a teacher whose employment has ended shouldn't be pickable
@@ -1944,7 +2189,7 @@ function ClassFormModal({ open, onClose, cls }) {
               renameTarget?.id === s.id ? (
                 <div key={s.id} className="flex items-center gap-1.5 py-1">
                   <input autoFocus className={inputCls + " py-1 text-sm"} value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitRename()} />
-                  <button type="button" onClick={submitRename} className="text-emerald-600 hover:text-emerald-700 shrink-0"><Check size={15} /></button>
+                  <button type="button" disabled={isBusy(`update-subject:${s.id}`)} onClick={submitRename} className="text-emerald-600 hover:text-emerald-700 shrink-0 disabled:opacity-40"><Check size={15} /></button>
                   <button type="button" onClick={() => setRenameTarget(null)} className="text-slate-400 hover:text-slate-600 shrink-0"><X size={15} /></button>
                 </div>
               ) : (
@@ -1955,7 +2200,7 @@ function ClassFormModal({ open, onClose, cls }) {
                   </label>
                   <div className="flex items-center gap-2 shrink-0 text-slate-400">
                     <button type="button" onClick={() => { setRenameTarget(s); setRenameValue(s.name); }} className="hover:text-slate-600" title="Rename subject"><Edit2 size={12} /></button>
-                    <button type="button" onClick={() => deleteGlobalSubject(s)} className="hover:text-red-500" title="Delete subject"><Trash2 size={12} /></button>
+                    <button type="button" disabled={isBusy(`delete-subject:${s.id}`)} onClick={() => deleteGlobalSubject(s)} className="hover:text-red-500 disabled:opacity-40" title="Delete subject"><Trash2 size={12} /></button>
                   </div>
                 </div>
               )
@@ -1963,13 +2208,13 @@ function ClassFormModal({ open, onClose, cls }) {
           </div>
           <div className="flex items-center gap-1.5 mt-2">
             <input className={inputCls + " py-1.5 text-sm"} placeholder="New subject name" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addNewSubject())} />
-            <button type="button" onClick={addNewSubject} className="inline-flex items-center gap-1 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-2 whitespace-nowrap hover:bg-sky-50"><Plus size={13} /> Add</button>
+            <button type="button" disabled={isBusy(`create-subject:${newSubject.trim().toLowerCase()}`)} onClick={addNewSubject} className="inline-flex items-center gap-1 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-2 whitespace-nowrap hover:bg-sky-50 disabled:opacity-50"><Plus size={13} /> Add</button>
           </div>
           <p className="text-xs text-slate-400 mt-1.5">Check the subjects this class teaches. Add a new one if it's not in the list yet.</p>
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>{isEdit ? "Save Changes" : "Create Class"}</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">{isEdit ? "Save Changes" : "Create Class"}</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -1998,9 +2243,10 @@ function AdminTimetablePage() {
   function logFor(entry) { return entry ? db.periodLogs.find((l) => l.timetableEntryId === entry.id && l.date === todayKeyStr()) : null; }
   function subFor(entry) { return entry ? db.substitutions.find((s) => s.timetableEntryId === entry.id && s.date === todayKeyStr()) : null; }
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!deleteTarget) return;
-    data.deleteTimetableEntry(deleteTarget.id);
+    const res = await data.deleteTimetableEntry(deleteTarget.id);
+    if (res && !res.ok) { toast(res.message || "Couldn't remove the period.", "error"); return; }
     toast("Period removed from the timetable.", "info");
     setDeleteTarget(null);
   }
@@ -2112,7 +2358,7 @@ function AdminTimetablePage() {
                                 {!log?.attendance && (
                                   <>
                                     <GhostButton onClick={() => setSubEntry(e)}>Change</GhostButton>
-                                    <GhostButton onClick={() => data.removeSubstitute(e.id, todayKeyStr())}>Remove</GhostButton>
+                                    <GhostButton onClick={async () => { const r = await data.removeSubstitute(e.id, todayKeyStr()); if (r && !r.ok) toast(r.message || "Couldn't remove the substitute.", "error"); }}>Remove</GhostButton>
                                   </>
                                 )}
                               </>
@@ -2205,6 +2451,7 @@ function AssignSubstituteModal({ open, onClose, entry }) {
   const auth = useAuth();
   const toast = useToast();
   const [substituteId, setSubstituteId] = useState("");
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (open) setSubstituteId(""); }, [open, entry]);
 
@@ -2216,10 +2463,12 @@ function AssignSubstituteModal({ open, onClose, entry }) {
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!substituteId) { toast("Please choose a substitute teacher.", "error"); return; }
-    const res = data.assignSubstitute(entry.id, todayKeyStr(), substituteId, auth.currentUser.id);
-    if (!res.ok) { toast(res.message, "error"); return; }
-    toast("Substitute assigned. Parents and the substitute teacher have been notified.", "success");
-    onClose();
+    run(async () => {
+      const res = await data.assignSubstitute(entry.id, todayKeyStr(), substituteId, auth.currentUser.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Substitute assigned. Parents and the substitute teacher have been notified.", "success");
+      onClose();
+    }, { key: `assign-substitute:${entry.id}:${todayKeyStr()}` });
   }
 
   return (
@@ -2235,7 +2484,7 @@ function AssignSubstituteModal({ open, onClose, entry }) {
         <p className="text-xs text-slate-400 mb-3">Parents of {cls ? data.classLabel(cls) : "this class"} and the substitute teacher will be notified immediately.</p>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>Assign Substitute</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Assigning…">Assign Substitute</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -2248,16 +2497,19 @@ function SelectSubjectModal({ open, onClose, cls, day, period }) {
   const options = open && cls && day && period ? data.availableSubjectsForSlot(cls.id, day, period) : [];
   const hasAnyAssignment = cls ? data.db.teacherAssignments.some((ta) => ta.classId === cls.id) : false;
   const [subject, setSubject] = useState("");
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (open) setSubject(options[0] || ""); }, [open, cls?.id, day, period]);
 
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!subject) { toast("Choose a subject to assign.", "error"); return; }
-    const res = data.createTimetableEntry({ classId: cls.id, day, period, subject });
-    if (!res.ok) { toast(res.message, "error"); return; }
-    toast("Subject added to the timetable.", "success");
-    onClose();
+    run(async () => {
+      const res = await data.createTimetableEntry({ classId: cls.id, day, period, subject });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Subject added to the timetable.", "success");
+      onClose();
+    }, { key: `timetable-entry:${cls.id}:${day}:${period}` });
   }
 
   return (
@@ -2281,7 +2533,7 @@ function SelectSubjectModal({ open, onClose, cls, day, period }) {
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          {options.length > 0 && <PrimaryButton type="button" onClick={submit} icon={Check}>Add Subject</PrimaryButton>}
+          {options.length > 0 && <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Adding…">Add Subject</PrimaryButton>}
         </div>
       </div>
     </Modal>
@@ -2294,6 +2546,7 @@ function TimetableSettingsModal({ open, onClose }) {
   const toast = useToast();
   const { db } = data;
   const [form, setForm] = useState(db.timetableConfig);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (open) setForm(db.timetableConfig); }, [open]);
 
@@ -2305,12 +2558,14 @@ function TimetableSettingsModal({ open, onClose }) {
 
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    const res = data.updateTimetableConfig({
-      periodsCount, startTime: form.startTime, periodDurationMins: Number(form.periodDurationMins), breakDurationMins: Number(form.breakDurationMins), breakAfterPeriod: form.breakAfterPeriod ? Number(form.breakAfterPeriod) : null,
-    }, auth.currentUser.id);
-    if (!res.ok) { toast(res.message, "error"); return; }
-    toast("Timetable settings updated.", "success");
-    onClose();
+    run(async () => {
+      const res = await data.updateTimetableConfig({
+        periodsCount, startTime: form.startTime, periodDurationMins: Number(form.periodDurationMins), breakDurationMins: Number(form.breakDurationMins), breakAfterPeriod: form.breakAfterPeriod ? Number(form.breakAfterPeriod) : null,
+      }, auth.currentUser.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Timetable settings updated.", "success");
+      onClose();
+    });
   }
 
   return (
@@ -2360,7 +2615,7 @@ function TimetableSettingsModal({ open, onClose }) {
 
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>Save timetable configuration</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save timetable configuration</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -2476,6 +2731,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   const students = cls ? data.attendanceRosterForClass(cls.id) : [];
   const readOnly = mode === "view";
   const [draft, setDraft] = useState({});
+  const { busy, run } = useMutationGuard();
   const dayRecords = cls ? db.attendance.filter((a) => a.classId === cls.id && a.date === dateKey) : [];
   const latestRecord = dayRecords.reduce((latest, r) => (!latest || (r.markedAt || 0) > (latest.markedAt || 0)) ? r : latest, null);
 
@@ -2496,9 +2752,11 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
     if (!cls) return;
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
     const records = students.map((s) => ({ studentId: s.id, status: draft[s.id].status, note: draft[s.id]?.note || "" }));
-    data.saveAttendance(cls.id, dateKey, records, auth.currentUser.id);
-    toast(`Attendance saved for ${dateKeyLabel(dateKey)}.`, "success");
-    onClose();
+    run(async () => {
+      await data.saveAttendance(cls.id, dateKey, records, auth.currentUser.id);
+      toast(`Attendance saved for ${dateKeyLabel(dateKey)}.`, "success");
+      onClose();
+    }, { key: `save-attendance:${cls.id}:${dateKey}` });
   }
 
   return (
@@ -2534,7 +2792,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
               {!readOnly && (
                 <div className="mt-4 flex justify-end gap-2">
                   <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-                  <PrimaryButton icon={Check} onClick={save}>Save Attendance</PrimaryButton>
+                  <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton>
                 </div>
               )}
             </>
@@ -2674,6 +2932,7 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
   const toast = useToast();
   const cal = data.db.academicCalendar;
   const [form, setForm] = useState(cal);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (open) setForm(cal); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2689,7 +2948,7 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
     setForm((f) => ({ ...f, sem2End: suggestSemester2(f).sem2End }));
   }
 
-  function save() {
+  async function save() {
     if (!form.yearName.trim()) { toast("Please give the academic year a name.", "error"); return; }
     if (!(form.yearStart < form.yearEnd)) { toast("The academic year's start date must be before its end date.", "error"); return; }
     if (!(form.sem1Start >= form.yearStart)) { toast("Semester 1 can't start before the academic year begins.", "error"); return; }
@@ -2697,14 +2956,17 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
     if (!(form.sem1End <= form.yearEnd)) { toast("Semester 1 must end on or before the academic year ends.", "error"); return; }
     if (!(form.sem2End > sem2Start)) { toast("Semester 2's end date must be after the school break ends.", "error"); return; }
     if (!(form.sem2End <= form.yearEnd)) { toast("Semester 2 must end on or before the academic year ends.", "error"); return; }
-    data.saveAcademicCalendar({
-      yearName: form.yearName.trim(), yearStart: form.yearStart, yearEnd: form.yearEnd,
-      sem1Start: form.sem1Start, sem1End: form.sem1End, breakDays: Number(form.breakDays) || 0,
-      sem2Start, sem2End: form.sem2End,
-      resultFinalizationGraceDays: Math.max(0, parseInt(form.resultFinalizationGraceDays, 10) || 0),
-    }, auth.currentUser.id);
-    toast("Academic calendar updated.", "success");
-    onClose();
+    await run(async () => {
+      const res = await data.saveAcademicCalendar({
+        yearName: form.yearName.trim(), yearStart: form.yearStart, yearEnd: form.yearEnd,
+        sem1Start: form.sem1Start, sem1End: form.sem1End, breakDays: Number(form.breakDays) || 0,
+        sem2Start, sem2End: form.sem2End,
+        resultFinalizationGraceDays: Math.max(0, parseInt(form.resultFinalizationGraceDays, 10) || 0),
+      }, auth.currentUser.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Academic calendar updated.", "success");
+      onClose();
+    });
   }
 
   return (
@@ -2764,7 +3026,7 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
 
       <div className="flex justify-end gap-2 mt-5 mb-5">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton icon={Check} onClick={save}>Save Calendar</PrimaryButton>
+        <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Calendar</PrimaryButton>
       </div>
 
       <div className="border-t border-slate-100 pt-4 mb-4">
@@ -2796,15 +3058,18 @@ function AcademicYearsPanel() {
   const [creating, setCreating] = useState(false);
   const [newStart, setNewStart] = useState(latest ? addYearToDateStr(latest.yearStart) : new Date().toISOString().slice(0, 10));
   const preview = defaultAcademicCalendar(new Date(newStart + "T00:00:00"));
+  const { busy, run, isBusy } = useMutationGuard();
 
   async function create() {
-    const result = await data.createAcademicYear({ yearStart: newStart }, auth.currentUser.id);
-    if (result.ok) {
-      toast(`${formatAcademicYearLabel(preview)} was created.`, "success");
-      setCreating(false);
-    } else {
-      toast(result.message || "Couldn't create the academic year.", "error");
-    }
+    await run(async () => {
+      const result = await data.createAcademicYear({ yearStart: newStart }, auth.currentUser.id);
+      if (result.ok) {
+        toast(`${formatAcademicYearLabel(preview)} was created.`, "success");
+        setCreating(false);
+      } else {
+        toast(result.message || "Couldn't create the academic year.", "error");
+      }
+    }, { key: `create-academic-year:${newStart}` });
   }
 
   return (
@@ -2819,7 +3084,7 @@ function AcademicYearsPanel() {
           <p className="text-xs text-slate-500 mb-3">Will be created as <span className="font-medium text-slate-700">{formatAcademicYearLabel(preview)}</span>.</p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setCreating(false)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-            <PrimaryButton icon={Check} onClick={create}>Create Year</PrimaryButton>
+            <PrimaryButton icon={Check} onClick={create} loading={busy} loadingText="Creating…">Create Year</PrimaryButton>
           </div>
         </Card>
       )}
@@ -2827,10 +3092,10 @@ function AcademicYearsPanel() {
         {years.map((y) => (
           <div key={y.id} className="flex items-center justify-between text-sm px-3 py-2 rounded-lg border border-slate-100">
             <span className="text-slate-700">{formatAcademicYearLabel(y)}</span>
-            {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" onClick={async () => {
+            {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" disabled={isBusy(`set-current-year:${y.id}`)} onClick={() => run(async () => {
               const result = await data.setCurrentAcademicYear(y.id);
               toast(result.ok ? `${formatAcademicYearLabel(y)} is now current.` : (result.message || "Couldn't update the current academic year."), result.ok ? "success" : "error");
-            }} className="text-xs text-sky-600 font-medium">Set as Current</button>}
+            }, { key: `set-current-year:${y.id}` })} className="text-xs text-sky-600 font-medium disabled:opacity-50">Set as Current</button>}
           </div>
         ))}
       </div>
@@ -2849,15 +3114,18 @@ function SchoolClosuresPanel() {
   const [date, setDate] = useState(todayKeyStr());
   const [reason, setReason] = useState(CLOSURE_REASON_PRESETS[0]);
   const [customReason, setCustomReason] = useState("");
+  const { busy, run, isBusy } = useMutationGuard();
 
   function addClosure() {
     const finalReason = reason === "Other" ? customReason.trim() : reason;
     if (!date) { toast("Pick a date for the closure.", "error"); return; }
     if (!finalReason) { toast("Give the closure a reason.", "error"); return; }
-    const result = data.createSchoolClosure({ date, reason: finalReason }, auth.currentUser.id);
-    if (!result.ok) { toast(result.message, "error"); return; }
-    toast(`${fmtDate(date)} marked as a school closure.`, "success");
-    setCustomReason("");
+    run(async () => {
+      const result = await data.createSchoolClosure({ date, reason: finalReason }, auth.currentUser.id);
+      if (!result.ok) { toast(result.message, "error"); return; }
+      toast(`${fmtDate(date)} marked as a school closure.`, "success");
+      setCustomReason("");
+    }, { key: `create-closure:${date}` });
   }
 
   return (
@@ -2881,7 +3149,7 @@ function SchoolClosuresPanel() {
             <input className={inputCls} value={customReason} onChange={(e) => setCustomReason(e.target.value)} placeholder="e.g. Heavy flooding" />
           </Field>
         )}
-        <div className="flex justify-end"><PrimaryButton icon={Plus} onClick={addClosure}>Save School Closure</PrimaryButton></div>
+        <div className="flex justify-end"><PrimaryButton icon={Plus} onClick={addClosure} loading={busy} loadingText="Saving…">Save School Closure</PrimaryButton></div>
       </Card>
 
       {closures.length === 0 ? <p className="text-xs text-slate-300">No school closures recorded.</p> : (
@@ -2893,7 +3161,7 @@ function SchoolClosuresPanel() {
                 <span className="text-slate-600">{fmtDate(c.date)}</span>
                 <span className="text-xs text-slate-400">{c.reason}</span>
               </div>
-              <button onClick={() => data.deleteSchoolClosure(c.id)} className="text-slate-400 hover:text-red-500 p-1" title="Remove closure"><Trash2 size={14} /></button>
+              <button disabled={isBusy(`delete-closure:${c.id}`)} onClick={() => run(async () => { const r = await data.deleteSchoolClosure(c.id); if (r && !r.ok) toast(r.message || "Couldn't remove the closure.", "error"); }, { key: `delete-closure:${c.id}` })} className="text-slate-400 hover:text-red-500 p-1 disabled:opacity-40" title="Remove closure"><Trash2 size={14} /></button>
             </div>
           ))}
         </Card>
@@ -2920,6 +3188,7 @@ function StaffAttendancePage() {
   const [dateKey, setDateKey] = useState(todayKeyStr());
   const [draft, setDraft] = useState({});
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const { busy: saveBusy, run: runSave } = useMutationGuard();
   const [subEntry, setSubEntry] = useState(null); // timetableEntry | null — "Assign Substitute" from an affected period below
   const classification = data.classifyStaffAttendanceDay(dateKey);
   const dayEditable = classification.available;
@@ -2971,7 +3240,7 @@ function StaffAttendancePage() {
     });
     setDraft(next);
   }
-  function save(groupItems) {
+  async function save(groupItems) {
     const editableStaff = groupItems.filter((s) => data.canEditStaffAttendanceFor(s, auth.currentUser));
     const records = [];
     editableStaff.forEach((s) => {
@@ -2979,8 +3248,11 @@ function StaffAttendancePage() {
         records.push({ staffId: s.id, period, status: draft[s.id]?.[period]?.status || "Present", arrivalTime: draft[s.id]?.[period]?.arrivalTime || "" });
       });
     });
-    data.saveStaffAttendance(dateKey, records, auth.currentUser.id);
-    toast(`Staff attendance saved for ${dateKeyLabel(dateKey)}.`, "success");
+    await runSave(async () => {
+      const res = await data.saveStaffAttendance(dateKey, records, auth.currentUser.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast(`Staff attendance saved for ${dateKeyLabel(dateKey)}.`, "success");
+    }, { key: `save-staff-attendance:${dateKey}` });
   }
   function roleSubtext(s) {
     if (s.position !== "Teacher") return s.position;
@@ -3101,7 +3373,7 @@ function StaffAttendancePage() {
                     );
                   })}
                 </Card>
-                {canEditGroup && <div className="mt-4 flex justify-end"><PrimaryButton icon={Check} onClick={() => save(activeGroup.items)}>Save Attendance</PrimaryButton></div>}
+                {canEditGroup && <div className="mt-4 flex justify-end"><PrimaryButton icon={Check} onClick={() => save(activeGroup.items)} loading={saveBusy} loadingText="Saving…">Save Attendance</PrimaryButton></div>}
               </>
             );
           })()}
@@ -3165,13 +3437,16 @@ function StaffLeaveRequestForm({ staffId, requestedBy, onSubmitted }) {
   const data = useData();
   const toast = useToast();
   const [form, setForm] = useState({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
-    data.createLeaveRequest({ kind: "STAFF", subjectId: staffId, requestedBy, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
-    toast("Leave request submitted.", "success");
-    setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
-    onSubmitted && onSubmitted();
+    run(async () => {
+      await data.createLeaveRequest({ kind: "STAFF", subjectId: staffId, requestedBy, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      toast("Leave request submitted.", "success");
+      setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+      onSubmitted && onSubmitted();
+    }, { key: `leave-request:${staffId}:${form.fromDate}:${form.toDate}` });
   }
   return (
     <Card className="p-4 mb-5">
@@ -3186,7 +3461,7 @@ function StaffLeaveRequestForm({ staffId, requestedBy, onSubmitted }) {
         <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
       </div>
       <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details for whoever decides this" /></Field>
-      <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit}>Submit Request</PrimaryButton></div>
+      <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Submitting…">Submit Request</PrimaryButton></div>
     </Card>
   );
 }
@@ -3199,12 +3474,15 @@ function OwnerLeavePanel() {
   const toast = useToast();
   const log = data.db.ownerLeaveLog || [];
   const [form, setForm] = useState({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
-    data.logOwnerLeave(form, auth.currentUser.id);
-    toast("Leave logged — the Educational Director has been notified.", "success");
-    setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+    run(async () => {
+      await data.logOwnerLeave(form, auth.currentUser.id);
+      toast("Leave logged — the Educational Director has been notified.", "success");
+      setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+    }, { key: `owner-leave:${form.fromDate}:${form.toDate}` });
   }
   return (
     <div>
@@ -3221,7 +3499,7 @@ function OwnerLeavePanel() {
           <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
         </div>
         <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details" /></Field>
-        <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit}>Log Leave</PrimaryButton></div>
+        <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Logging…">Log Leave</PrimaryButton></div>
       </Card>
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Your leave history</p>
       {log.length === 0 ? <EmptyState title="No leave logged yet" /> : (
@@ -3253,6 +3531,7 @@ function LeaveApprovalsPage() {
   const [section, setSection] = useState("approvals"); // "approvals" | "mine"
   const [tab, setTab] = useState(role === ROLES.FINANCE ? "STAFF" : "STUDENT");
   const [rejectTarget, setRejectTarget] = useState(null);
+  const { isBusy, run } = useMutationGuard();
 
   const pendingStudent = data.pendingLeaveRequests("STUDENT").filter((r) => data.canDecideLeaveRequest(r, auth.currentUser));
   const pendingStaff = data.pendingLeaveRequests("STAFF").filter((r) => data.canDecideLeaveRequest(r, auth.currentUser));
@@ -3263,14 +3542,20 @@ function LeaveApprovalsPage() {
 
   function subjectName(r) { return data.leaveSubjectIdentity(r.kind, r.subjectId); }
   function requesterName(r) { return data.userIdentity(r.requestedBy).display; }
-  function decide(id, approvalStatus) {
-    data.decideLeaveRequest(id, approvalStatus, auth.currentUser.id);
-    toast(`Leave request ${approvalStatus === "APPROVED" ? "approved" : "rejected"}.`, approvalStatus === "APPROVED" ? "success" : "info");
+  async function decide(id, approvalStatus) {
+    await run(async () => {
+      const res = await data.decideLeaveRequest(id, approvalStatus, auth.currentUser.id);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast(`Leave request ${approvalStatus === "APPROVED" ? "approved" : "rejected"}.`, approvalStatus === "APPROVED" ? "success" : "info");
+    }, { key: `decide-leave:${id}` });
   }
-  function confirmReject(reason) {
-    data.decideLeaveRequest(rejectTarget.id, "REJECTED", auth.currentUser.id, reason);
-    toast("Leave request rejected.", "info");
-    setRejectTarget(null);
+  async function confirmReject(reason) {
+    await run(async () => {
+      const res = await data.decideLeaveRequest(rejectTarget.id, "REJECTED", auth.currentUser.id, reason);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Leave request rejected.", "info");
+      setRejectTarget(null);
+    }, { key: `decide-leave:${rejectTarget.id}` });
   }
 
   const myStaffRec = (role === ROLES.ADMIN || role === ROLES.FINANCE) ? db.staff.find((s) => s.userId === auth.currentUser.id) : null;
@@ -3321,8 +3606,8 @@ function LeaveApprovalsPage() {
                     {r.note && <p className="text-xs text-slate-400 mt-0.5">{r.note}</p>}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <button onClick={() => setRejectTarget(r)} className="px-3 py-1.5 rounded-lg text-xs font-medium border border-red-200 text-red-600 hover:bg-red-50 inline-flex items-center gap-1"><X size={13} /> Reject</button>
-                    <PrimaryButton icon={Check} onClick={() => decide(r.id, "APPROVED")}>Approve</PrimaryButton>
+                    <button disabled={isBusy(`decide-leave:${r.id}`)} onClick={() => setRejectTarget(r)} className="px-3 py-1.5 rounded-lg text-xs font-medium border border-red-200 text-red-600 hover:bg-red-50 inline-flex items-center gap-1 disabled:opacity-50"><X size={13} /> Reject</button>
+                    <PrimaryButton icon={Check} onClick={() => decide(r.id, "APPROVED")} loading={isBusy(`decide-leave:${r.id}`)} loadingText="Approving…">Approve</PrimaryButton>
                   </div>
                 </div>
               ))}
@@ -3370,19 +3655,20 @@ function HomeworkAdminPage({ focus, clearFocus }) {
 
   const classOptions = [...db.classes].sort(gradeSectionCompare).map((c) => data.classLabel(c));
   const subjectOptions = db.subjects.map((s) => s.name);
-  const teacherIdsWithHomework = new Set(db.homework.map((h) => h.teacherId));
-  const teacherOptions = db.users.filter((u) => teacherIdsWithHomework.has(u.id)).map((u) => u.name).sort();
+  // Resolve the teacher name live from the profile while teacher_id points at one; fall back to the
+  // teacher_name snapshot once the account has been deleted (homework is kept as academic history).
+  const hwTeacherName = (h) => data.getUser(h.teacherId)?.name || h.teacherName || null;
+  const teacherOptions = [...new Set(db.homework.map(hwTeacherName).filter(Boolean))].sort();
 
   const filtered = [...db.homework].filter((h) => {
     if (classFilter && `${h.grade}${h.section}` !== classFilter) return false;
     if (subjectFilter && h.subject !== subjectFilter) return false;
-    if (teacherFilter && data.getUser(h.teacherId)?.name !== teacherFilter) return false;
+    if (teacherFilter && hwTeacherName(h) !== teacherFilter) return false;
     if (q.trim() && !h.title.toLowerCase().includes(q.trim().toLowerCase())) return false;
     return true;
   }).sort((a, b) => a.dueDate.localeCompare(b.dueDate) || b.createdAt - a.createdAt);
 
   const summary = homeworkSummary(db.homework);
-  const openTeacher = open ? data.getUser(open.teacherId) : null;
 
   return (
     <div>
@@ -3405,13 +3691,13 @@ function HomeworkAdminPage({ focus, clearFocus }) {
 
       <HomeworkList
         list={filtered}
-        getTeacherName={(h) => data.getUser(h.teacherId)?.name}
+        getTeacherName={hwTeacherName}
         onOpen={setOpen}
         emptyTitle={db.homework.length === 0 ? "No homework yet" : "No homework matches these filters"}
         emptyDescription={db.homework.length === 0 ? "Homework created by teachers will appear here." : "Try clearing a filter or search term."}
       />
 
-      <HomeworkDetailsModal homework={open} teacherName={openTeacher?.name} classLabel={open ? `${open.grade}${open.section}` : ""} onClose={() => setOpen(null)} />
+      <HomeworkDetailsModal homework={open} teacherName={open ? hwTeacherName(open) : null} classLabel={open ? `${open.grade}${open.section}` : ""} onClose={() => setOpen(null)} />
     </div>
   );
 }
@@ -3677,6 +3963,7 @@ function AnnounceExamModal({ open, onClose }) {
   const toast = useToast();
   const empty = { title: "Midterm Exams", audienceType: "GRADE", grade: "Grade 1", section: "A", date: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), message: "", priority: "Important" };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
@@ -3685,9 +3972,12 @@ function AnnounceExamModal({ open, onClose }) {
     if (form.audienceType === "GRADE") audience.grade = form.grade;
     if (form.audienceType === "SECTION") { audience.grade = form.grade; audience.section = form.section; }
     const message = form.message.trim() || `${form.title} is coming up. Please make sure your child is prepared.`;
-    data.announceExam({ title: form.title, audience, date: form.date, message, priority: form.priority }, auth.currentUser.id);
-    toast("Exam announced to parents and the head teacher.", "success");
-    setForm(empty); onClose();
+    run(async () => {
+      const res = await data.announceExam({ title: form.title, audience, date: form.date, message, priority: form.priority }, auth.currentUser.id);
+      if (res && res.ok === false) { toast(res.message || "Couldn't announce the exam.", "error"); return; }
+      toast("Exam announced to parents and the head teacher.", "success");
+      setForm(empty); onClose();
+    });
   }
   return (
     <Modal open={open} onClose={onClose} title="Announce Exam" wide>
@@ -3714,7 +4004,7 @@ function AnnounceExamModal({ open, onClose }) {
         <p className="text-xs text-slate-400 mb-3">This notifies matching parents immediately, and appears on their dashboard until the exam date. The class's head teacher is also notified to enter results once it's complete.</p>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Megaphone}>Announce Exam</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Megaphone} loading={busy} loadingText="Announcing…">Announce Exam</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -3747,6 +4037,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   // teacher explicitly clicks Save, and Save is blocked while any edited score is out of range.
   const [drafts, setDrafts] = useState({});
   const [saving, setSaving] = useState(false);
+  const { isBusy, run } = useMutationGuard();
 
   const ctx = { classId, subject, teacherAssignments: db.teacherAssignments };
 
@@ -3780,8 +4071,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   }
   const dirtyKeys = Object.keys(drafts).filter((key) => { const [sid, c] = key.split("::"); return isScoreDirty(sid, c); });
   const invalidKey = dirtyKeys.find((key) => { const [sid, c] = key.split("::"); return !!scoreError(sid, c); });
-  function saveAllScores() {
-    if (dirtyKeys.length === 0) return;
+  async function saveAllScores() {
+    if (dirtyKeys.length === 0 || saving) return;
     if (invalidKey) {
       const [sid, c] = invalidKey.split("::");
       const student = students.find((s) => s.id === sid);
@@ -3791,13 +4082,14 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
     setSaving(true);
     const savedKeys = [];
     let firstError = null;
-    dirtyKeys.forEach((key) => {
+    for (const key of dirtyKeys) {
       const [sid, c] = key.split("::");
       const val = drafts[key];
-      const res = data.saveResultComponent({ studentId: sid, classId, subject, semester, component: c, score: val === "" ? null : Number(val) }, auth.realUser.id, auth.realUser.role);
+      // eslint-disable-next-line no-await-in-loop
+      const res = await data.saveResultComponent({ studentId: sid, classId, subject, semester, component: c, score: val === "" ? null : Number(val) }, auth.realUser.id, auth.realUser.role);
       if (res.ok) savedKeys.push(key);
       else if (!firstError) firstError = res.message;
-    });
+    }
     setSaving(false);
     setDrafts((d) => { const next = { ...d }; savedKeys.forEach((k) => delete next[k]); return next; });
     if (firstError) toast(firstError, "error");
@@ -3806,28 +4098,45 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   async function uploadEvidencePages(studentId, component, fileList) {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
-    let added = 0;
-    let firstError = null;
-    for (const file of files) {
-      const dataUrl = await readFileAsDataURL(file);
-      const res = data.addResultEvidencePage({ studentId, classId, subject, semester, component, fileDataUrl: dataUrl, fileType: inferFileType(dataUrl), fileName: file.name }, auth.realUser.id, auth.realUser.role);
-      if (res.ok) added += 1; else if (!firstError) firstError = res.message;
-    }
-    if (added > 0) toast(`${added} evidence page${added === 1 ? "" : "s"} attached.`, "success");
-    if (firstError) toast(firstError, "error");
+    // One File per row upload; the mutation guard de-dupes a double-fired picker for the same
+    // student+component while a batch is in flight. Uploads are sequential (real Storage writes).
+    await run(async () => {
+      let added = 0;
+      let firstError = null;
+      for (const file of files) {
+        // eslint-disable-next-line no-await-in-loop
+        const res = await data.addResultEvidencePage({ studentId, classId, subject, semester, component, file }, auth.realUser.id, auth.realUser.role);
+        if (res.ok) added += 1; else if (!firstError) firstError = res.message;
+      }
+      if (added > 0) toast(`${added} evidence page${added === 1 ? "" : "s"} attached.`, "success");
+      if (firstError) toast(firstError, "error");
+    }, { key: `evidence-upload:${studentId}:${component}` });
   }
-  function removeEvidencePage(evidenceId) {
-    const res = data.removeResultEvidencePage(evidenceId, auth.realUser.id, auth.realUser.role);
-    if (!res.ok) toast(res.message, "error");
+  async function replaceEvidencePage(evidenceId, file) {
+    if (!file) return;
+    await run(async () => {
+      const res = await data.replaceResultEvidencePage(evidenceId, file, auth.realUser.id, auth.realUser.role);
+      toast(res.ok ? "Evidence page replaced." : res.message, res.ok ? "success" : "error");
+    }, { key: `evidence-replace:${evidenceId}` });
   }
-  function reorderPage(record, component, pages, fromIdx, toIdx) {
+  async function removeEvidencePage(evidenceId) {
+    await run(async () => {
+      const res = await data.removeResultEvidencePage(evidenceId, auth.realUser.id, auth.realUser.role);
+      if (!res.ok) toast(res.message, "error");
+    }, { key: `evidence-remove:${evidenceId}` });
+  }
+  async function reorderPage(record, component, pages, fromIdx, toIdx) {
     const ids = pages.map((p) => p.id);
     const [moved] = ids.splice(fromIdx, 1);
     ids.splice(toIdx, 0, moved);
-    data.reorderResultEvidencePages(record.id, component, ids, auth.realUser.id, auth.realUser.role);
+    await run(async () => {
+      const res = await data.reorderResultEvidencePages(record.id, component, ids, auth.realUser.id, auth.realUser.role);
+      if (!res.ok) toast(res.message, "error");
+    }, { key: `evidence-reorder:${record.id}:${component}` });
   }
-  function toggleShare(studentId, component, current) {
-    data.saveResultComponent({ studentId, classId, subject, semester, component, sharedWithParents: !current }, auth.realUser.id, auth.realUser.role);
+  async function toggleShare(studentId, component, current) {
+    const res = await data.saveResultComponent({ studentId, classId, subject, semester, component, sharedWithParents: !current }, auth.realUser.id, auth.realUser.role);
+    if (!res.ok) toast(res.message, "error");
   }
   function toggleSelect(studentId) {
     setSelectedIds((ids) => (ids.includes(studentId) ? ids.filter((id) => id !== studentId) : [...ids, studentId]));
@@ -3836,29 +4145,35 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   function publishSelected() {
     if (selectedIds.length === 0) { toast("Select at least one student to publish.", "error"); return; }
     if (dirtyKeys.length > 0) { toast("You have unsaved score changes — click Save before publishing.", "error"); return; }
-    const res = data.publishResults(classId, subject, semester, selectedIds, auth.realUser.id, auth.realUser.role);
-    toast(res.ok ? "Results published — parents have been notified." : res.message, res.ok ? "success" : "error");
-    if (res.ok) setSelectedIds([]);
+    run(async () => {
+      const res = await data.publishResults(classId, subject, semester, selectedIds, auth.realUser.id, auth.realUser.role);
+      toast(res.ok ? "Results published — parents have been notified." : res.message, res.ok ? "success" : "error");
+      if (res.ok) setSelectedIds([]);
+    }, { key: `publish-results:${classId}:${subject}:${semester}` });
   }
   function requestLock(record) {
-    const res = data.lockResult(record.id, auth.realUser.id, auth.realUser.role);
-    toast(res.ok ? "Result locked." : res.message, res.ok ? "success" : "error");
+    run(async () => {
+      const res = await data.lockResult(record.id, auth.realUser.id, auth.realUser.role);
+      toast(res.ok ? "Result locked." : res.message, res.ok ? "success" : "error");
+    }, { key: `lock-result:${record.id}` });
   }
   function requestUnlock(record, studentId, rowLock) {
     setUnlockTarget({ mode: rowLock.source === "manual" ? "manual" : "auto", record, studentId, lockMessage: rowLock.message });
   }
-  function confirmUnlock(reason) {
+  async function confirmUnlock(reason) {
     if (!unlockTarget) return;
     const { mode, record, studentId } = unlockTarget;
     const res = mode === "manual"
-      ? data.unlockResult(record.id, auth.realUser.id, auth.realUser.role, reason)
-      : data.overrideAutoLock({ studentId, classId, subject, semester }, auth.realUser.id, auth.realUser.role, reason);
+      ? await data.unlockResult(record.id, auth.realUser.id, auth.realUser.role, reason)
+      : await data.overrideAutoLock({ studentId, classId, subject, semester }, auth.realUser.id, auth.realUser.role, reason);
     toast(res.ok ? "Result unlocked." : res.message, res.ok ? "success" : "error");
     setUnlockTarget(null);
   }
   function reLock(record) {
-    const res = data.reinstateAutoLock(record.id, auth.realUser.id, auth.realUser.role);
-    toast(res.ok ? "Result re-locked." : res.message, res.ok ? "success" : "error");
+    run(async () => {
+      const res = await data.reinstateAutoLock(record.id, auth.realUser.id, auth.realUser.role);
+      toast(res.ok ? "Result re-locked." : res.message, res.ok ? "success" : "error");
+    }, { key: `relock-result:${record.id}` });
   }
 
   const canPublish = canPublishResult(auth.currentUser);
@@ -3881,7 +4196,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
             className={`text-sm font-medium rounded-lg px-4 py-2 flex items-center gap-1.5 transition-colors ${dirtyKeys.length > 0 && !invalidKey ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
             <Check size={15} /> {saving ? "Saving…" : dirtyKeys.length > 0 ? `Save (${dirtyKeys.length} unsaved)` : "Save"}
           </button>
-          {canPublish && <PrimaryButton icon={Send} onClick={publishSelected}>Publish selected ({selectedIds.length})</PrimaryButton>}
+          {canPublish && <PrimaryButton icon={Send} onClick={publishSelected} loading={isBusy(`publish-results:${classId}:${subject}:${semester}`)} loadingText="Publishing…">Publish selected ({selectedIds.length})</PrimaryButton>}
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-4">{cls ? data.classLabel(cls) : ""} • Midterm 1 (20), Midterm 2 (20), Student Book (10), Final Exam (50) — total out of 100, calculated automatically.</p>
@@ -3944,26 +4259,35 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
                             <div className="flex flex-col gap-1">
                               {pages.length > 0 && (
                                 <div className="flex items-center gap-1 flex-wrap max-w-[6.5rem]">
-                                  {pages.map((p, idx) => (
+                                  {pages.map((p, idx) => {
+                                    const pageBusy = isBusy(`evidence-remove:${p.id}`) || isBusy(`evidence-replace:${p.id}`) || isBusy(`evidence-reorder:${record.id}:${c}`);
+                                    return (
                                     <div key={p.id} className="flex flex-col items-center">
-                                      <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages, initialIndex: idx })}>
-                                        <img src={p.fileDataUrl} alt="" className="w-6 h-6 rounded object-cover border border-slate-200 hover:border-sky-400" />
+                                      <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages, initialIndex: idx })} className="w-6 h-6 rounded border border-slate-200 hover:border-sky-400 overflow-hidden flex items-center justify-center bg-slate-50">
+                                        {p.fileType === "pdf" || !p.fileDataUrl
+                                          ? <FileText size={12} className="text-slate-400" />
+                                          : <img src={p.fileDataUrl} alt="" className="w-full h-full object-cover" />}
                                       </button>
                                       {canEdit && (
                                         <div className="flex items-center gap-0.5">
-                                          <button type="button" disabled={idx === 0} onClick={() => reorderPage(record, c, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
-                                          <button type="button" disabled={idx === pages.length - 1} onClick={() => reorderPage(record, c, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
-                                          <button type="button" onClick={() => removeEvidencePage(p.id)} className="text-red-500"><X size={9} /></button>
+                                          <button type="button" disabled={idx === 0 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
+                                          <button type="button" disabled={idx === pages.length - 1 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
+                                          <label className={`text-slate-400 hover:text-sky-600 cursor-pointer ${pageBusy ? "opacity-30 pointer-events-none" : ""}`} title="Replace this page">
+                                            <RefreshCw size={9} />
+                                            <input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) replaceEvidencePage(p.id, f); }} />
+                                          </label>
+                                          <button type="button" disabled={pageBusy} onClick={() => removeEvidencePage(p.id)} className="text-red-500 disabled:opacity-30"><X size={9} /></button>
                                         </div>
                                       )}
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               )}
                               <div className="flex items-center gap-1">
                                 {canEdit && (
-                                  <button type="button" onClick={() => setCameraChooserFor({ studentId: s.id, component: c })} className="text-slate-400 hover:text-sky-600" title="Add evidence page">
-                                    <Camera size={14} />
+                                  <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${c}`)} onClick={() => setCameraChooserFor({ studentId: s.id, component: c })} className="text-slate-400 hover:text-sky-600 disabled:opacity-30" title="Add evidence page">
+                                    {isBusy(`evidence-upload:${s.id}:${c}`) ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
                                   </button>
                                 )}
                                 {pages.length > 0 && canEdit && (
@@ -3983,13 +4307,13 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
                       <div className="flex justify-end gap-1.5">
                         {canAudit && <GhostButton icon={History} onClick={() => setHistoryFor(s.id)}>History</GhostButton>}
                         {canLock && !rowLock.locked && rowLock.source === "none" && record?.publishStatus === "PUBLISHED" && (
-                          <GhostButton icon={Lock} onClick={() => requestLock(record)}>Lock</GhostButton>
+                          <GhostButton icon={Lock} onClick={() => requestLock(record)} loading={isBusy(`lock-result:${record.id}`)}>Lock</GhostButton>
                         )}
                         {canUnlock && rowLock.locked && (rowLock.source === "manual" || rowLock.source === "auto") && (
                           <GhostButton danger icon={Lock} onClick={() => requestUnlock(record, s.id, rowLock)}>Unlock</GhostButton>
                         )}
                         {canLock && rowLock.source === "override" && record && (
-                          <GhostButton icon={Lock} onClick={() => reLock(record)}>Re-lock</GhostButton>
+                          <GhostButton icon={Lock} onClick={() => reLock(record)} loading={isBusy(`relock-result:${record.id}`)}>Re-lock</GhostButton>
                         )}
                       </div>
                     </td>
@@ -4035,31 +4359,40 @@ function ReportCardsPage() {
   const [classId, setClassId] = useState(db.classes[0]?.id || null);
   const [viewCard, setViewCard] = useState(null);
   const [promotionFor, setPromotionFor] = useState(null); // student | null
+  const { isBusy, run } = useMutationGuard();
   const students = db.students.filter((s) => s.classId === classId);
 
   function statusFor(studentId) { return data.getReportCard(studentId, classId)?.status || null; }
 
   function handleGenerate(studentId) {
-    const res = data.generateReportCard(studentId, classId, auth.realUser.id);
-    toast(res.ok ? "Report card generated." : res.message, res.ok ? "success" : "error");
+    run(async () => {
+      const res = await data.generateReportCard(studentId, classId, auth.realUser.id);
+      toast(res.ok ? "Report card generated." : res.message, res.ok ? "success" : "error");
+    }, { key: `report-card-generate:${studentId}:${classId}` });
   }
   function handlePublish(studentId) {
     const rc = data.getReportCard(studentId, classId);
     if (!rc) return;
-    const res = data.publishReportCard(rc.id, auth.realUser.id);
-    toast(res.ok ? "Report card published — the parent can now view it." : res.message, res.ok ? "success" : "error");
+    run(async () => {
+      const res = await data.publishReportCard(rc.id, auth.realUser.id);
+      toast(res.ok ? "Report card published — the parent can now view it." : res.message, res.ok ? "success" : "error");
+    }, { key: `report-card-publish:${rc.id}` });
   }
   function handleLock(studentId) {
     const rc = data.getReportCard(studentId, classId);
     if (!rc) return;
-    data.lockReportCard(rc.id, auth.realUser.id);
-    toast("Report card locked. Results can no longer be edited.", "success");
+    run(async () => {
+      const res = await data.lockReportCard(rc.id, auth.realUser.id);
+      toast(res.ok ? "Report card locked. Results can no longer be edited." : res.message, res.ok ? "success" : "error");
+    }, { key: `report-card-lock:${rc.id}` });
   }
   function handleReopen(studentId) {
     const rc = data.getReportCard(studentId, classId);
     if (!rc) return;
-    data.reopenReportCard(rc.id, auth.realUser.id);
-    toast("Report card reopened for editing.", "info");
+    run(async () => {
+      const res = await data.reopenReportCard(rc.id, auth.realUser.id);
+      toast(res.ok ? "Report card reopened for editing." : res.message, res.ok ? "info" : "error");
+    }, { key: `report-card-reopen:${rc.id}` });
   }
 
   return (
@@ -4141,18 +4474,26 @@ function PromotionModal({ student, classId, onClose }) {
     if (rc) { setPromoted(rc.promoted !== false); setNote(rc.promotionNote || ""); }
   }, [rc?.id, student?.id]);
 
+  const { busy, run } = useMutationGuard();
+
   if (!student || !rc) return null;
   const cls = data.getClass(classId);
-  const readiness = data.computeReportReadiness(student.id, classId);
+  // Scope the S2 lookup to the year this report card belongs to — classId alone collides for a
+  // repeating/retained student who keeps the same classId across years (same fallback pattern as
+  // DataContext.computeReportReadiness). Never derive the year from the calendar date.
+  const yearId = rc.academicYearId || (currentAcademicYear(data.db.academicYears) || {}).id || null;
+  const readiness = data.computeReportReadiness(student.id, classId, yearId);
   const s2Pcts = readiness.required
-    .map((subject) => resultTotals(data.db.results.find((r) => r.studentId === student.id && r.classId === classId && r.subject === subject && r.semester === "S2")).pct)
+    .map((subject) => resultTotals(data.db.results.find((r) => r.studentId === student.id && r.classId === classId && r.subject === subject && r.semester === "S2" && (!r.academicYearId || r.academicYearId === yearId))).pct)
     .filter((pct) => pct !== null);
   const avg = s2Pcts.length ? Math.round(s2Pcts.reduce((a, b) => a + b, 0) / s2Pcts.length) : null;
 
   function save() {
-    const res = data.setReportCardPromotion(rc.id, promoted, note, auth.realUser.id);
-    toast(res.ok ? "Promotion decision saved." : res.message, res.ok ? "success" : "error");
-    if (res.ok) onClose();
+    run(async () => {
+      const res = await data.setReportCardPromotion(rc.id, promoted, note, auth.realUser.id);
+      toast(res.ok ? "Promotion decision saved." : res.message, res.ok ? "success" : "error");
+      if (res.ok) onClose();
+    }, { key: `report-card-promotion:${rc.id}` });
   }
 
   return (
@@ -4165,7 +4506,7 @@ function PromotionModal({ student, classId, onClose }) {
       <Field label="Note (optional)"><textarea className={inputCls} rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Visible to the parent on the report card." /></Field>
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton type="button" onClick={save} icon={Check}>Save</PrimaryButton>
+        <PrimaryButton type="button" onClick={save} icon={Check} loading={busy} loadingText="Saving…">Save</PrimaryButton>
       </div>
     </Modal>
   );
@@ -4226,8 +4567,9 @@ function AnnouncementsPage({ role }) {
     if (role === ROLES.TEACHER && a.audience.type === "ALL_TEACHERS") return true;
     if (role === ROLES.FINANCE && a.audience.type === "DIRECTORS") return true;
     if (role === ROLES.PARENT) {
-      if (a.audience.type === "GRADE") return (auth.currentUser.childIds || []).some((cid) => db.students.find((s) => s.id === cid)?.grade === a.audience.grade);
-      if (a.audience.type === "SECTION") return (auth.currentUser.childIds || []).some((cid) => { const s = db.students.find((x) => x.id === cid); return s?.grade === a.audience.grade && s?.section === a.audience.section; });
+      const myChildIds = data.getUser(auth.currentUser.id)?.childIds || [];
+      if (a.audience.type === "GRADE") return myChildIds.some((cid) => db.students.find((s) => s.id === cid)?.grade === a.audience.grade);
+      if (a.audience.type === "SECTION") return myChildIds.some((cid) => { const s = db.students.find((x) => x.id === cid); return s?.grade === a.audience.grade && s?.section === a.audience.section; });
     }
     if (a.audience.type === "USER" && a.audience.userId === auth.currentUser.id) return true;
     return false;
@@ -4308,6 +4650,7 @@ function CreateAnnouncementModal({ open, onClose, role }) {
   const isFinance = role === ROLES.FINANCE;
   const empty = { title: "", message: "", audienceType: isFinance ? "ALL_PARENTS" : "ALL", grade: "Grade 1", section: "A", priority: "Normal", attachment: null, pinned: false, publishMode: "NOW", scheduleAt: "", expiresAt: "" };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
@@ -4326,9 +4669,11 @@ function CreateAnnouncementModal({ open, onClose, role }) {
       expiresAt = new Date(`${form.expiresAt}T23:59:59`).getTime();
       if (expiresAt <= (publishAt || Date.now())) { toast("Expiry date must be after the publish date.", "error"); return; }
     }
-    data.createAnnouncement({ title: form.title, message: form.message, audience, priority: form.priority, authorId: auth.currentUser.id, attachment: form.attachment, pinned: form.pinned, publishAt, expiresAt });
-    toast(publishAt ? "Announcement scheduled." : "Announcement published.", "success");
-    setForm(empty); onClose();
+    run(async () => {
+      await data.createAnnouncement({ title: form.title, message: form.message, audience, priority: form.priority, authorId: auth.currentUser.id, attachment: form.attachment, pinned: form.pinned, publishAt, expiresAt });
+      toast(publishAt ? "Announcement scheduled." : "Announcement published.", "success");
+      setForm(empty); onClose();
+    });
   }
   return (
     <Modal open={open} onClose={onClose} title="New Announcement" wide>
@@ -4372,7 +4717,7 @@ function CreateAnnouncementModal({ open, onClose, role }) {
         </label>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>{form.publishMode === "SCHEDULE" ? "Schedule" : "Publish"}</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Publishing…">{form.publishMode === "SCHEDULE" ? "Schedule" : "Publish"}</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -4621,6 +4966,7 @@ function FeeSettingsModal({ open, onClose }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const empty = { name: "", category: "TUITION", description: "", defaultUnitAmount: "", defaultUnitMonths: "1", defaultUnitsPerYear: "" };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (editing && editing !== "new") {
@@ -4641,14 +4987,16 @@ function FeeSettingsModal({ open, onClose }) {
     if (!form.name.trim() || !form.defaultUnitAmount) { toast("Please fill in all fee fields.", "error"); return; }
     if (!isTuition && (!form.defaultUnitMonths || !form.defaultUnitsPerYear)) { toast("Please fill in all fee fields.", "error"); return; }
     const payload = { ...form, defaultUnitMonths: isTuition ? 2.5 : form.defaultUnitMonths, defaultUnitsPerYear: isTuition ? 4 : form.defaultUnitsPerYear };
-    if (editing === "new") {
-      data.createFeeType(payload);
-      toast("Fee type added.", "success");
-    } else {
-      data.updateFeeType(editing.id, payload);
-      toast("Fee type updated.", "success");
-    }
-    setEditing(null);
+    run(async () => {
+      if (editing === "new") {
+        await data.createFeeType(payload);
+        toast("Fee type added.", "success");
+      } else {
+        await data.updateFeeType(editing.id, payload);
+        toast("Fee type updated.", "success");
+      }
+      setEditing(null);
+    }, { key: editing === "new" ? `create-fee-type:${form.name.trim().toLowerCase()}` : `update-fee-type:${editing.id}` });
   }
   function confirmDelete() {
     if (!deleteTarget) return;
@@ -4684,7 +5032,7 @@ function FeeSettingsModal({ open, onClose }) {
           <Field label="Description"><textarea className={inputCls} rows={2} value={form.description} onChange={(e) => set("description", e.target.value)} /></Field>
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-            <PrimaryButton type="button" onClick={submit} icon={Check}>{editing === "new" ? "Add Fee Type" : "Save Changes"}</PrimaryButton>
+            <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">{editing === "new" ? "Add Fee Type" : "Save Changes"}</PrimaryButton>
           </div>
         </div>
       </Modal>
@@ -4751,6 +5099,7 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   const [unitMonths, setUnitMonths] = useState(String(feeType.defaultUnitMonths || "1"));
   const [unitsPerYear, setUnitsPerYear] = useState(String(feeType.defaultUnitsPerYear || ""));
   const [installments, setInstallments] = useState(isTuition ? defaultInstallments() : []);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (!open) return;
@@ -4796,12 +5145,14 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     } else if (!unitMonths || !unitsPerYear) {
       toast("Please fill in all fields.", "error"); return;
     }
-    const res = data.rolloutFeeTypeForYear(feeType.id, currentYear.id, {
-      unitAmount: Number(unitAmount), unitMonths: isTuition ? 2.5 : Number(unitMonths), unitsPerYear: isTuition ? 4 : Number(unitsPerYear),
-      installments: isTuition ? installments : undefined,
-    }, auth.currentUser.id);
-    toast(res.message || "Fee type rolled out for this year.", res.ok ? "success" : "error");
-    if (res.ok) onClose();
+    run(async () => {
+      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, {
+        unitAmount: Number(unitAmount), unitMonths: isTuition ? 2.5 : Number(unitMonths), unitsPerYear: isTuition ? 4 : Number(unitsPerYear),
+        installments: isTuition ? installments : undefined,
+      }, auth.currentUser.id);
+      toast(res.message || "Fee type rolled out for this year.", res.ok ? "success" : "error");
+      if (res.ok) onClose();
+    }, { key: `rollout-fee-type:${feeType.id}:${currentYear.id}` });
   }
 
   return (
@@ -4830,7 +5181,7 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>Roll Out</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Rolling out…">Roll Out</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -4959,6 +5310,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   const [note, setNote] = useState("");
   const [receiptPages, setReceiptPages] = useState(null);
   const [receiptNo, setReceiptNo] = useState("");
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (!open) return;
@@ -5044,12 +5396,18 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     if (!finalMethod) { toast("Please choose or enter a payment method.", "error"); return; }
     const lines = buildLines();
     if (lines.length === 0) { toast("Enter at least one amount to record.", "error"); return; }
-    const result = data.recordPaymentBatch(lines, auth.currentUser.id);
-    if (!result.receiptNo) { toast("Couldn't record this payment.", "error"); return; }
-    const rows = result.entries.map((entry) => ({ studentId: entry.studentId, studentName: entry.studentName, grade: entry.grade, amount: entry.amount, isBus: entry.isBus, label: entry.description }));
-    setReceiptPages(buildReceiptPages(rows));
-    setReceiptNo(result.receiptNo);
-    toast("Payment recorded.", "success");
+    // Financial mutation: guard hard against double-submit. The key encodes this exact
+    // intentional action (who/how-much/when/how) so a rapid second click or repeated Enter
+    // is dropped, while a genuinely separate later payment for the same family still runs.
+    const opKey = `record-payment:${selectedIds.slice().sort().join(",")}:${date}:${finalMethod}:${lines.reduce((s, l) => s + l.amount, 0)}:${lines.length}`;
+    run(async () => {
+      const result = await data.recordPaymentBatch(lines, auth.currentUser.id);
+      if (!result.receiptNo) { toast("Couldn't record this payment.", "error"); return; }
+      const rows = result.entries.map((entry) => ({ studentId: entry.studentId, studentName: entry.studentName, grade: entry.grade, amount: entry.amount, isBus: entry.isBus, label: entry.description }));
+      setReceiptPages(buildReceiptPages(rows));
+      setReceiptNo(result.receiptNo);
+      toast("Payment recorded.", "success");
+    }, { key: opKey });
   }
 
   function closeAll() {
@@ -5178,7 +5536,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
             <p className="text-sm font-semibold text-slate-700">Total: {formatMoney(previewTotal)}</p>
             <div className="flex gap-2">
               <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-              <PrimaryButton type="button" onClick={submit} icon={Check}>Record Payment</PrimaryButton>
+              <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Recording…">Record Payment</PrimaryButton>
             </div>
           </div>
         </div>
@@ -5204,6 +5562,7 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
   const toast = useToast();
   const [message, setMessage] = useState("");
   const [image, setImage] = useState(null);
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (!open) return;
@@ -5219,17 +5578,19 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
 
   function submit() {
     if (!message.trim()) { toast("Please write a reminder message.", "error"); return; }
-    if (mode === "single") {
-      const parentIds = data.parentsOfStudent(student.id);
-      if (parentIds.length === 0) { toast("This student has no connected parent account yet.", "error"); return; }
-      data.sendPaymentReminder({ parentIds, message, image, feeTypeName: null }, auth.currentUser.id);
-      toast("Reminder sent.", "success");
-    } else {
-      if (bulkParentIds.length === 0) { toast("No parents currently have an outstanding balance.", "info"); onClose(); return; }
-      data.sendPaymentReminder({ parentIds: bulkParentIds, message, image, feeTypeName: null }, auth.currentUser.id);
-      toast(`Reminder sent to ${bulkParentIds.length} parent${bulkParentIds.length === 1 ? "" : "s"}.`, "success");
-    }
-    onClose();
+    if (mode === "single" && data.parentsOfStudent(student.id).length === 0) { toast("This student has no connected parent account yet.", "error"); return; }
+    if (mode === "bulk" && bulkParentIds.length === 0) { toast("No parents currently have an outstanding balance.", "info"); onClose(); return; }
+    run(async () => {
+      if (mode === "single") {
+        const parentIds = data.parentsOfStudent(student.id);
+        await data.sendPaymentReminder({ parentIds, message, image, feeTypeName: null }, auth.currentUser.id);
+        toast("Reminder sent.", "success");
+      } else {
+        await data.sendPaymentReminder({ parentIds: bulkParentIds, message, image, feeTypeName: null }, auth.currentUser.id);
+        toast(`Reminder sent to ${bulkParentIds.length} parent${bulkParentIds.length === 1 ? "" : "s"}.`, "success");
+      }
+      onClose();
+    }, { key: `payment-reminder:${mode}:${mode === "single" ? student?.id : "bulk"}` });
   }
 
   return (
@@ -5255,7 +5616,7 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
         </Field>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={BellRing}>Send Reminder</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={BellRing} loading={busy} loadingText="Sending…">Send Reminder</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -5467,6 +5828,7 @@ function MessagesPage({ target, clearTarget }) {
   const myConvos = db.conversations.filter((c) => c.participantIds.includes(myId));
   const [activeConv, setActiveConv] = useState(null);
   const [text, setText] = useState("");
+  const { run: runSend } = useMutationGuard();
   const bottomRef = useRef(null);
   const presenceMap = usePresenceMap();
   const otherTypingId = useOtherTyping(activeConv, myId);
@@ -5491,9 +5853,10 @@ function MessagesPage({ target, clearTarget }) {
   function send(e) {
     e && e.preventDefault && e.preventDefault();
     if (!text.trim() || !activeConv) return;
-    data.sendMessage(activeConv, myId, text.trim());
+    const body = text.trim();
     setText("");
     notifyStopTyping();
+    runSend(async () => { await data.sendMessage(activeConv, myId, body); }, { key: `send-message:${activeConv}:${body}` });
   }
 
   // Directory to start new conversations
@@ -5646,7 +6009,7 @@ function PayslipModal({ paymentId, onClose }) {
         <div className="payslip-print" ref={printRef}>
           <div className="flex flex-col items-center text-center mb-4">
             <Logo size={44} />
-            <p className="text-sm font-semibold text-slate-800 mt-1">Tilmaan Modern Academy</p>
+            <p className="text-sm font-semibold text-slate-800 mt-1">Hiil Model School</p>
             <p className="text-xs text-slate-400">Salary Payslip — {slip.monthLabel}</p>
           </div>
           <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 mb-4">
@@ -5711,7 +6074,7 @@ function NotificationsPage({ onOpen }) {
   // Finance (who don't currently receive PAYMENT notifications, but may in future) see the
   // complete original receipt.
   const isParent = auth.currentUser.role === ROLES.PARENT;
-  const receipt = receiptPaymentId ? receiptForPayment(data, receiptPaymentId, isParent ? new Set(auth.currentUser.childIds || []) : null) : null;
+  const receipt = receiptPaymentId ? receiptForPayment(data, receiptPaymentId, isParent ? new Set(data.getUser(auth.currentUser.id)?.childIds || []) : null) : null;
 
   function navHintFor(n) {
     if (n.type === "PAYMENT" && n.paymentId) return "View Receipt";
@@ -5842,13 +6205,11 @@ function ReportsPage() {
   );
 }
 
-function SettingsPage({ role, connectChild }) {
+function SettingsPage({ role }) {
   const data = useData();
   const auth = useAuth();
   const toast = useToast();
   const [confirmReset, setConfirmReset] = useState(false);
-  const [connectId, setConnectId] = useState("");
-  const [connectMsg, setConnectMsg] = useState(null);
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
@@ -5859,6 +6220,8 @@ function SettingsPage({ role, connectChild }) {
   const [name, setName] = useState(auth.currentUser.name);
   const [phone, setPhone] = useState(auth.currentUser.phone || "");
   const [profileError, setProfileError] = useState("");
+  const { busy: profileBusy, run: runProfile } = useMutationGuard();
+  const { busy: pwBusy, run: runPw } = useMutationGuard();
 
   useEffect(() => { setName(auth.currentUser.name); setPhone(auth.currentUser.phone || ""); }, [auth.currentUser.id]);
 
@@ -5881,16 +6244,11 @@ function SettingsPage({ role, connectChild }) {
   async function saveProfile(e) {
     e && e.preventDefault && e.preventDefault();
     setProfileError("");
-    const res = await auth.updateOwnProfile({ name, phone });
-    if (!res.ok) { setProfileError(res.message); return; }
-    toast("Profile updated.", "success");
-  }
-
-  function doConnect(e) {
-    e && e.preventDefault && e.preventDefault();
-    const res = data.connectChild(auth.currentUser.id, connectId);
-    setConnectMsg(res);
-    if (res.ok) { setConnectId(""); toast(res.message, "success"); }
+    await runProfile(async () => {
+      const res = await auth.updateOwnProfile({ name, phone });
+      if (!res.ok) { setProfileError(res.message); return; }
+      toast("Profile updated.", "success");
+    });
   }
 
   async function submitPasswordChange(e) {
@@ -5898,11 +6256,13 @@ function SettingsPage({ role, connectChild }) {
     setPwError("");
     if (!currentPw || !newPw || !confirmPw) { setPwError("Please fill in all three fields."); return; }
     if (newPw !== confirmPw) { setPwError("New password and confirmation don't match."); return; }
-    const res = await auth.changePassword(currentPw, newPw);
-    if (!res.ok) { setPwError(res.message); return; }
-    setCurrentPw(""); setNewPw(""); setConfirmPw("");
-    setShowCurrentPw(false); setShowNewPw(false); setShowConfirmPw(false);
-    toast("Password changed successfully.", "success");
+    await runPw(async () => {
+      const res = await auth.changePassword(currentPw, newPw);
+      if (!res.ok) { setPwError(res.message); return; }
+      setCurrentPw(""); setNewPw(""); setConfirmPw("");
+      setShowCurrentPw(false); setShowNewPw(false); setShowConfirmPw(false);
+      toast("Password changed successfully.", "success");
+    });
   }
 
   return (
@@ -5929,7 +6289,7 @@ function SettingsPage({ role, connectChild }) {
           <Field label="Full name" required><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label="Phone"><input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+252 61..." /></Field>
           {profileError && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{profileError}</p>}
-          <PrimaryButton type="button" onClick={saveProfile} icon={Check}>Save Profile</PrimaryButton>
+          <PrimaryButton type="button" onClick={saveProfile} icon={Check} loading={profileBusy} loadingText="Saving…">Save Profile</PrimaryButton>
         </div>
       </Card>
 
@@ -5966,19 +6326,14 @@ function SettingsPage({ role, connectChild }) {
             </div>
           </Field>
           {pwError && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{pwError}</p>}
-          <PrimaryButton type="button" onClick={submitPasswordChange} icon={Check}>Update Password</PrimaryButton>
+          <PrimaryButton type="button" onClick={submitPasswordChange} icon={Check} loading={pwBusy} loadingText="Updating…">Update Password</PrimaryButton>
         </div>
       </Card>
 
-      {connectChild && (
+      {role === ROLES.PARENT && (
         <Card className="p-5 mb-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1 flex items-center gap-1.5"><UserPlus size={15} /> Connect a Child</h3>
-          <p className="text-xs text-slate-400 mb-3">Enter the Student ID given to you by the school to link another child.</p>
-          <div className="flex gap-2">
-            <input value={connectId} onChange={(e) => setConnectId(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") doConnect(e); }} placeholder="e.g. TMA-2026-00031" className={inputCls} />
-            <PrimaryButton type="button" onClick={doConnect} icon={Plus}>Connect</PrimaryButton>
-          </div>
-          {connectMsg && <p className={`text-xs mt-2 ${connectMsg.ok ? "text-emerald-600" : "text-red-600"}`}>{connectMsg.message}</p>}
+          <h3 className="text-sm font-semibold text-slate-700 mb-1 flex items-center gap-1.5"><UserPlus size={15} /> Connecting Another Child</h3>
+          <p className="text-xs text-slate-400">To connect another child to your account, please contact the school administration with the Student ID — this is done by the school to make sure only a verified parent gets connected to a student.</p>
         </Card>
       )}
 

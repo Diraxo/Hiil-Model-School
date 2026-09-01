@@ -31,6 +31,7 @@ import { AttendanceEditorModal, ClassMonthlyRegisterModal, StaffLeaveRequestForm
 import { AdvanceHistoryList } from "../owner/OwnerPages";
 import { LeaveRequestHistoryList } from "../../components/leave";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
+import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 
 function TeacherDashboard({ setPage, openStudent }) {
@@ -420,6 +421,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   const students = cls ? data.attendanceRosterForClass(cls.id) : [];
   const log = entry ? db.periodLogs.find((l) => l.timetableEntryId === entry.id && l.date === date) : null;
   const [draft, setDraft] = useState({});
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (!entry) return;
@@ -438,9 +440,11 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
     if (!entry) return;
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
     const records = students.map((s) => ({ studentId: s.id, status: draft[s.id].status, note: draft[s.id]?.note || "" }));
-    data.savePeriodAttendance(entry.id, date, records, auth.currentUser.id);
-    toast(`Attendance saved for Period ${entry.period} · ${entry.subject}.`, "success");
-    onClose();
+    run(async () => {
+      await data.savePeriodAttendance(entry.id, date, records, auth.currentUser.id);
+      toast(`Attendance saved for Period ${entry.period} · ${entry.subject}.`, "success");
+      onClose();
+    }, { key: `save-period-attendance:${entry.id}:${date}` });
   }
 
   return (
@@ -469,7 +473,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
               </div>
               <div className="mt-4 flex justify-end gap-2">
                 <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-                <PrimaryButton icon={Check} onClick={save}>Save Attendance</PrimaryButton>
+                <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton>
               </div>
             </>
           )}
@@ -496,12 +500,12 @@ function TeacherHomeworkPage() {
   const blockedByCalendar = !todayClassification.available;
   const blockedToday = blockedByCalendar || !data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr());
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!deleteTarget) return;
-    const res = data.deleteHomework(deleteTarget.id);
-    toast(res.ok ? "Homework deleted." : res.message, res.ok ? "info" : "error");
+    const res = await data.deleteHomework(deleteTarget.id);
     setDeleteTarget(null);
     setOpen(null);
+    toast(res.ok ? "Homework deleted." : res.message, res.ok ? "info" : "error");
   }
 
   return (
@@ -577,6 +581,7 @@ function CreateHomeworkModal({ open, onClose, classes, presetClassId, presetSubj
     return { classId, subject: presetSubject || subjectsForClass(classId)[0] || "", title: "", description: "", dueDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10) };
   }
   const [form, setForm] = useState(blank);
+  const { busy, run } = useMutationGuard();
   useEffect(() => {
     if (!open) return;
     if (editing) {
@@ -604,15 +609,17 @@ function CreateHomeworkModal({ open, onClose, classes, presetClassId, presetSubj
     const cls = classes.find((c) => c.id === form.classId);
     if (!cls) { toast("Please select a class.", "error"); return; }
     if (!isEdit && (!form.subject || !availableSubjects.includes(form.subject))) { toast("Please select a subject you teach in this class.", "error"); return; }
-    if (isEdit) {
-      const res = data.updateHomework(editing.id, { subject: form.subject, grade: cls.grade, section: cls.section, title: form.title, description: form.description, dueDate: form.dueDate });
-      toast(res.ok ? "Homework updated." : res.message, res.ok ? "success" : "error");
-      if (res.ok) onClose();
-    } else {
-      const res = data.createHomework({ subject: form.subject, grade: cls.grade, section: cls.section, title: form.title, description: form.description, dueDate: form.dueDate, teacherId: auth.currentUser.id });
-      toast(res.ok ? "Homework published to parents." : res.message, res.ok ? "success" : "error");
-      if (res.ok) { setForm(blank()); onClose(); }
-    }
+    run(async () => {
+      if (isEdit) {
+        const res = await data.updateHomework(editing.id, { subject: form.subject, grade: cls.grade, section: cls.section, title: form.title, description: form.description, dueDate: form.dueDate });
+        toast(res.ok ? "Homework updated." : res.message, res.ok ? "success" : "error");
+        if (res.ok) onClose();
+      } else {
+        const res = await data.createHomework({ subject: form.subject, grade: cls.grade, section: cls.section, title: form.title, description: form.description, dueDate: form.dueDate, teacherId: auth.currentUser.id });
+        toast(res.ok ? "Homework published to parents." : res.message, res.ok ? "success" : "error");
+        if (res.ok) { setForm(blank()); onClose(); }
+      }
+    }, { key: isEdit ? `update-homework:${editing.id}` : `create-homework:${form.classId}:${form.subject}:${form.title.trim()}:${form.dueDate}` });
   }
   return (
     <Modal open={open} onClose={onClose} title={isEdit ? "Edit Homework" : "Create Homework"} wide>
@@ -645,7 +652,7 @@ function CreateHomeworkModal({ open, onClose, classes, presetClassId, presetSubj
         </Field>
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check}>{isEdit ? "Save Changes" : "Publish Homework"}</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">{isEdit ? "Save Changes" : "Publish Homework"}</PrimaryButton>
         </div>
       </div>
     </Modal>

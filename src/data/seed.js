@@ -230,6 +230,14 @@ function buildSeed() {
     });
   }
 
+  // Dead code as of the Parents Supabase conversion: `mockDb.students`/`mockDb.users` built below
+  // are both fully superseded at read time (DataContext.jsx's `db` shadow always overlays real
+  // `studentsRaw` and merges real parent profiles over any PARENT entries here — see
+  // mergeParentsIntoUsers), so this mock parent/student/parentIds/childIds web is unreachable from
+  // the running app. Left in place (not deleted) only because `demoParent.id` is still referenced
+  // by this same seed's mock notifications/messages/conversations further down, which belong to
+  // still-unconverted domains (Messages, Notifications, Homework, Results, Behavior) — deleting it
+  // now would silently break those domains' demo data ahead of their own conversion pass.
   const parents = [];
   const demoParent = { id: "user_parent_demo", role: ROLES.PARENT, name: "Mohamed Hassan", email: "parent@tilmaan-demo.com", password: "Demo123!", phone: "+252 615 220 481", photo: null, childIds: [] };
   parents.push(demoParent);

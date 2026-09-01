@@ -18,7 +18,7 @@ function FinanceDashboard({ setPage, onOpenActivity }) {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-slate-800">Finance & Operations</h1>
-        <p className="text-sm text-slate-400 mt-0.5">Tilmaan Modern Academy — fees, payroll, and expenses at a glance.</p>
+        <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — fees, payroll, and expenses at a glance.</p>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="School Fee Collected" value={formatMoney(totalCollected)} icon={Wallet} tone="emerald" />

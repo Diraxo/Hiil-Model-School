@@ -23,7 +23,7 @@ function Root() {
   return <AppShell />;
 }
 
-function TilmaanApp() {
+function App() {
   return (
     <ToastProvider>
       <DataProvider>
@@ -35,4 +35,4 @@ function TilmaanApp() {
   );
 }
 
-export default TilmaanApp;
+export default App;

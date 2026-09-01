@@ -291,8 +291,8 @@ function SidebarContent({ nav, page, setPage, unreadByPage, needsPasswordChange,
       <div className="h-16 flex items-center gap-2.5 px-5 border-b border-slate-100 shrink-0">
         <Logo size={34} />
         <div className="leading-tight">
-          <p className="text-[13px] font-semibold text-slate-800 tracking-tight">Tilmaan Modern</p>
-          <p className="text-[10px] text-slate-400 -mt-0.5">Academy Portal</p>
+          <p className="text-[13px] font-semibold text-slate-800 tracking-tight">Hiil Model School</p>
+          <p className="text-[10px] text-slate-400 -mt-0.5">School Portal</p>
         </div>
       </div>
       <nav className="flex-1 overflow-y-auto py-3 px-3">
@@ -499,7 +499,7 @@ function PageRouter({ role, page, setPage }) {
   }
   // PARENT
   switch (page) {
-    case "dashboard": return <ParentDashboard activeChildId={activeChildId} setActiveChildId={setActiveChildId} setPage={setPage} />;
+    case "dashboard": return <ParentDashboard activeChildId={activeChildId} setActiveChildId={setActiveChildId} />;
     case "timetable": return <ParentTimetablePage activeChildId={activeChildId} setActiveChildId={setActiveChildId} />;
     case "homework": return <ParentHomeworkPage activeChildId={activeChildId} setActiveChildId={setActiveChildId} focus={activityFocus} clearFocus={clearActivityFocus} />;
     case "attendance": return <ParentAttendancePage activeChildId={activeChildId} setActiveChildId={setActiveChildId} focus={activityFocus} clearFocus={clearActivityFocus} />;
@@ -511,7 +511,7 @@ function PageRouter({ role, page, setPage }) {
     case "documents": return <ParentDocumentsPage activeChildId={activeChildId} setActiveChildId={setActiveChildId} />;
     case "messages": return <MessagesPage target={messageTarget} clearTarget={() => setMessageTarget(null)} />;
     case "notifications": return <NotificationsPage onOpen={openNotification} />;
-    case "settings": return <SettingsPage role={role} connectChild />;
+    case "settings": return <SettingsPage role={role} />;
     default: return null;
   }
 }

@@ -54,6 +54,23 @@ export function createAcademicYearService() {
       return mapYear(data);
     },
 
+    async update(id, fields, updatedBy) {
+      const payload = { updated_by: updatedBy ?? null };
+      if (fields.gcLabel !== undefined) payload.gc_label = fields.gcLabel;
+      if (fields.ecLabel !== undefined) payload.ec_label = fields.ecLabel ?? null;
+      if (fields.yearStart !== undefined) payload.year_start = fields.yearStart;
+      if (fields.yearEnd !== undefined) payload.year_end = fields.yearEnd;
+      if (fields.sem1Start !== undefined) payload.sem1_start = fields.sem1Start;
+      if (fields.sem1End !== undefined) payload.sem1_end = fields.sem1End;
+      if (fields.breakDays !== undefined) payload.break_days = fields.breakDays;
+      if (fields.sem2Start !== undefined) payload.sem2_start = fields.sem2Start;
+      if (fields.sem2End !== undefined) payload.sem2_end = fields.sem2End;
+      if (fields.resultFinalizationGraceDays !== undefined) payload.result_finalization_grace_days = fields.resultFinalizationGraceDays;
+      const { data, error } = await supabase.from("academic_years").update(payload).eq("id", id).select().single();
+      if (error) throw error;
+      return mapYear(data);
+    },
+
     // Not a single atomic statement (no RPC for this yet) -- clear the existing current flag first,
     // then set the target. A failure between the two calls leaves zero rows flagged current, which
     // utils/academicCalendar.js `currentAcademicYear()` already tolerates (falls back to the

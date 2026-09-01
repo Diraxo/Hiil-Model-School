@@ -20,14 +20,15 @@ import {
 } from "../utils/helpers";
 import { displayActorLabel } from "../utils/resultAudit";
 import { useToast } from "../context/ToastContext";
+import { useMutationGuard } from "../hooks/useMutationGuard";
 
 
 function Logo({ size = 40 }) {
   return (
     <img
       src={LOGO_DATA_URI}
-      alt="Tilmaan Modern Academy"
-      className="shrink-0 object-contain"
+      alt="Hiil Model School"
+      className="shrink-0 object-contain rounded-xl"
       style={{ width: size, height: size }}
     />
   );
@@ -134,6 +135,7 @@ function ResultAuditTrail({ entries, viewerRole }) {
 // the person unlocking sees exactly what they're overriding before they type a reason.
 function UnlockReasonModal({ open, onClose, lockMessage, onConfirm }) {
   const [reason, setReason] = useState("");
+  const { busy, run } = useMutationGuard();
   useEffect(() => { if (open) setReason(""); }, [open]);
   return (
     <Modal open={open} onClose={onClose} title="Unlock Result">
@@ -146,11 +148,11 @@ function UnlockReasonModal({ open, onClose, lockMessage, onConfirm }) {
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
         <button
           type="button"
-          disabled={!reason.trim()}
-          onClick={() => { const r = reason.trim(); onClose(); onConfirm(r); }}
-          className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${reason.trim() ? "bg-red-600 hover:bg-red-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+          disabled={!reason.trim() || busy}
+          onClick={() => run(async () => { const r = reason.trim(); await onConfirm(r); onClose(); })}
+          className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${reason.trim() && !busy ? "bg-red-600 hover:bg-red-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
         >
-          Unlock & Record
+          {busy ? "Working…" : "Unlock & Record"}
         </button>
       </div>
     </Modal>
@@ -184,13 +186,23 @@ function Modal({ open, onClose, title, children, wide, maxWidthClass }) {
 }
 
 function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = "Confirm", danger }) {
+  const { busy, run } = useMutationGuard();
   if (!open) return null;
+  // One authoritative confirm path, guarded against double-clicks / repeated Enter:
+  // the button is disabled while onConfirm is in flight, and onClose runs only after
+  // it resolves (a throwing onConfirm leaves the dialog open so the user can retry).
+  function handleConfirm() {
+    run(async () => {
+      await onConfirm();
+      onClose();
+    });
+  }
   return (
-    <Modal open={open} onClose={onClose} title={title}>
+    <Modal open={open} onClose={busy ? () => {} : onClose} title={title}>
       <p className="text-sm text-slate-600 mb-5">{description}</p>
       <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <button onClick={() => { onConfirm(); onClose(); }} className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${danger ? "bg-red-600 hover:bg-red-700" : "bg-sky-600 hover:bg-sky-700"}`}>{confirmLabel}</button>
+        <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
+        <button type="button" disabled={busy} onClick={handleConfirm} className={`px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 disabled:cursor-not-allowed ${danger ? "bg-red-600 hover:bg-red-700" : "bg-sky-600 hover:bg-sky-700"}`}>{busy ? "Working…" : confirmLabel}</button>
       </div>
     </Modal>
   );
@@ -560,17 +572,22 @@ function Select({ value, onChange, options, placeholder }) {
     </select>
   );
 }
-function PrimaryButton({ children, onClick, icon: Icon = Plus, type = "button", full }) {
+// `loading` shows a spinner and disables the button (double-click / repeated-Enter
+// guard for mutation actions -- pair it with useMutationGuard's `busy`). `loadingText`
+// optionally swaps the label while in flight ("Add Student" -> "Adding Student…").
+function PrimaryButton({ children, onClick, icon: Icon = Plus, type = "button", full, loading = false, disabled = false, loadingText }) {
+  const isDisabled = disabled || loading;
   return (
-    <button type={type} onClick={onClick} className={`inline-flex items-center justify-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${full ? "w-full" : ""}`}>
-      <Icon size={15} />{children}
+    <button type={type} onClick={onClick} disabled={isDisabled} className={`inline-flex items-center justify-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${full ? "w-full" : ""}`}>
+      {loading ? <Loader2 size={15} className="animate-spin" /> : <Icon size={15} />}{loading && loadingText ? loadingText : children}
     </button>
   );
 }
-function GhostButton({ children, onClick, icon: Icon, danger }) {
+function GhostButton({ children, onClick, icon: Icon, danger, loading = false, disabled = false }) {
+  const isDisabled = disabled || loading;
   return (
-    <button type="button" onClick={onClick} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors ${danger ? "border-red-200 text-red-600 hover:bg-red-50" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
-      {Icon && <Icon size={13} />}{children}
+    <button type="button" onClick={onClick} disabled={isDisabled} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${danger ? "border-red-200 text-red-600 hover:bg-red-50" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+      {loading ? <Loader2 size={13} className="animate-spin" /> : (Icon && <Icon size={13} />)}{children}
     </button>
   );
 }

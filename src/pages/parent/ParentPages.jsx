@@ -5,7 +5,7 @@ import {
   Settings, Search, Plus, X, Check, ChevronRight, ChevronDown, LogOut, Copy,
   Camera, Trash2, Edit2, ArrowLeft, Menu, Send, Eye, EyeOff, Filter,
   TrendingUp, Loader2, RefreshCw, ShieldAlert,
-  Megaphone, ClipboardEdit, ChevronLeft, CheckCircle2, CircleAlert, Info, UserPlus,
+  Megaphone, ClipboardEdit, ChevronLeft, CheckCircle2, CircleAlert, Info,
   Wallet, Bus, ImagePlus, BellRing, FileText
 } from "lucide-react";
 import {
@@ -32,6 +32,7 @@ import { homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../compo
 import { LeaveRequestHistoryList } from "../../components/leave";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
 import { DocumentViewerModal } from "../../components/DocumentViewer";
+import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 // Mirrors AdminPages.jsx's DOCUMENT_CATEGORIES — the fixed set of categories documents are
 // uploaded under, so this read-only parent view groups them the same way the school sees them.
@@ -41,7 +42,8 @@ const PARENT_DOCUMENT_CATEGORIES = ["Report Cards", "ID Documents", "Other Docum
 function useMyChildren() {
   const data = useData();
   const auth = useAuth();
-  return data.db.students.filter((s) => (auth.currentUser.childIds || []).includes(s.id));
+  const myChildIds = data.getUser(auth.currentUser.id)?.childIds || [];
+  return data.db.students.filter((s) => myChildIds.includes(s.id));
 }
 
 function ChildSwitcher({ children, activeChildId, setActiveChildId }) {
@@ -83,7 +85,7 @@ function announcementMatchesStudent(a, student) {
   return false;
 }
 
-function ParentDashboard({ activeChildId, setActiveChildId, setPage }) {
+function ParentDashboard({ activeChildId, setActiveChildId }) {
   const data = useData();
   const auth = useAuth();
   const { db } = data;
@@ -93,7 +95,7 @@ function ParentDashboard({ activeChildId, setActiveChildId, setPage }) {
     return (
       <div>
         <h1 className="text-xl font-semibold text-slate-800 mb-1">Welcome, {auth.currentUser.name.split(" ")[0]}</h1>
-        <EmptyState icon={GraduationCap} title="No children connected yet" description="Go to Settings to connect a child using the Student ID provided by the school." action={<PrimaryButton icon={UserPlus} onClick={() => setPage("settings")}>Connect a Child</PrimaryButton>} />
+        <EmptyState icon={GraduationCap} title="No children connected yet" description="Please contact the school administration with your child's Student ID to connect them to your account." />
       </div>
     );
   }
@@ -102,7 +104,7 @@ function ParentDashboard({ activeChildId, setActiveChildId, setPage }) {
     return (
       <div>
         <h1 className="text-xl font-semibold text-slate-800 mb-1">Welcome, {auth.currentUser.name.split(" ")[0]}</h1>
-        <EmptyState icon={GraduationCap} title="No Active Children" description="Your account currently has no active students enrolled at Tilmaan Modern Academy. Historical records for your children remain available to the school." />
+        <EmptyState icon={GraduationCap} title="No Active Children" description="Your account currently has no active students enrolled at Hiil Model School. Historical records for your children remain available to the school." />
       </div>
     );
   }
@@ -262,10 +264,12 @@ function ParentHomeworkPage({ activeChildId, setActiveChildId, focus, clearFocus
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
   const [open, setOpen] = useState(null); // homework | null
-  if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to view homework." />;
+  if (!child) return <EmptyState title="No children connected" description="Contact the school administration to connect a child before you can view homework." />;
   const hw = [...data.db.homework.filter((h) => h.classId === child.classId)].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || b.createdAt - a.createdAt);
   const summary = homeworkSummary(hw);
-  const openTeacher = open ? data.getUser(open.teacherId) : null;
+  // Live profile name while teacher_id resolves; teacher_name snapshot once the account is deleted
+  // (homework is retained as academic history -- see migration 20260901020000).
+  const hwTeacherName = (h) => data.getUser(h.teacherId)?.name || h.teacherName || null;
 
   // Deep-link from a "New homework" notification — jump straight to that item's detail modal.
   useEffect(() => {
@@ -292,13 +296,13 @@ function ParentHomeworkPage({ activeChildId, setActiveChildId, focus, clearFocus
 
       <HomeworkList
         list={hw}
-        getTeacherName={(h) => data.getUser(h.teacherId)?.name}
+        getTeacherName={hwTeacherName}
         onOpen={setOpen}
         emptyTitle="No homework yet"
         emptyDescription="Homework assigned to your child's class will appear here."
       />
 
-      <HomeworkDetailsModal homework={open} teacherName={openTeacher?.name} classLabel={open ? `${open.grade}${open.section}` : ""} onClose={() => setOpen(null)} />
+      <HomeworkDetailsModal homework={open} teacherName={open ? hwTeacherName(open) : null} classLabel={open ? `${open.grade}${open.section}` : ""} onClose={() => setOpen(null)} />
     </div>
   );
 }
@@ -316,7 +320,7 @@ function ParentAttendancePage({ activeChildId, setActiveChildId, focus, clearFoc
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to view attendance." />;
+  if (!child) return <EmptyState title="No children connected" description="Contact the school administration to connect a child before you can view attendance." />;
   const att = [...data.db.attendance.filter((a) => a.studentId === child.id)].sort((a, b) => b.date.localeCompare(a.date));
   // Same current-academic-year, Present+Late formula as the Overview tab / Students list
   // (data.studentAttendanceRate) — this used to be a separate Present-only, all-time calculation
@@ -425,17 +429,20 @@ function StudentLeaveRequestPage({ activeChildId, setActiveChildId }) {
   const toast = useToast();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
   const [form, setForm] = useState({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+  const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
-  if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to request leave." />;
+  if (!child) return <EmptyState title="No children connected" description="Contact the school administration to connect a child before you can request leave." />;
 
   const myRequests = data.leaveRequestsFor("STUDENT", child.id);
 
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
-    data.createLeaveRequest({ kind: "STUDENT", subjectId: child.id, requestedBy: auth.currentUser.id, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
-    toast("Leave request submitted.", "success");
-    setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+    run(async () => {
+      await data.createLeaveRequest({ kind: "STUDENT", subjectId: child.id, requestedBy: auth.currentUser.id, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      toast("Leave request submitted.", "success");
+      setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
+    }, { key: `student-leave-request:${child.id}:${form.fromDate}:${form.toDate}` });
   }
 
   return (
@@ -456,7 +463,7 @@ function StudentLeaveRequestPage({ activeChildId, setActiveChildId }) {
           <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
         </div>
         <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details for the school" /></Field>
-        <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit}>Submit Request</PrimaryButton></div>
+        <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Submitting…">Submit Request</PrimaryButton></div>
       </Card>
 
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Past requests</p>
@@ -469,7 +476,7 @@ function ParentTimetablePage({ activeChildId, setActiveChildId }) {
   const data = useData();
   const { db } = data;
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
-  if (!child) return <EmptyState icon={CalendarDays} title="No children connected" description="Connect a child from Settings to view their timetable." />;
+  if (!child) return <EmptyState icon={CalendarDays} title="No children connected" description="Contact the school administration to connect a child before you can view their timetable." />;
 
   const cls = data.getClass(child.classId);
   const entries = db.timetableEntries.filter((e) => e.classId === child.classId);
@@ -567,7 +574,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to view results." />;
+  if (!child) return <EmptyState title="No children connected" description="Contact the school administration to connect a child before you can view results." />;
 
   const reportCard = data.getReportCard(child.id, child.classId);
   const reportCardAvailable = reportCard && (reportCard.status === "PUBLISHED" || reportCard.status === "LOCKED");
@@ -652,7 +659,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
 function ParentBehaviorPage({ activeChildId, setActiveChildId }) {
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
-  if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to view behavior records." />;
+  if (!child) return <EmptyState title="No children connected" description="Contact the school administration to connect a child before you can view behavior records." />;
   const records = [...data.db.behaviorRecords.filter((b) => b.studentId === child.id)].sort((a, b) => b.createdAt - a.createdAt);
   return (
     <div>
@@ -681,7 +688,7 @@ function ParentDocumentsPage({ activeChildId, setActiveChildId }) {
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
   const [viewDoc, setViewDoc] = useState(null);
-  if (!child) return <EmptyState icon={FileText} title="No children connected" description="Connect a child from Settings to view documents." />;
+  if (!child) return <EmptyState icon={FileText} title="No children connected" description="Contact the school administration to connect a child before you can view documents." />;
   const documents = data.db.studentDocuments.filter((doc) => doc.studentId === child.id);
 
   return (

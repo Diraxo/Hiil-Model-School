@@ -5,6 +5,7 @@
 import React, { useState } from "react";
 import { Card, Badge, EmptyState, Field, Modal, inputCls } from "./ui";
 import { fmtDate, leaveDurationLabel } from "../utils/helpers";
+import { useMutationGuard } from "../hooks/useMutationGuard";
 
 function LeaveRequestHistoryList({ requests }) {
   if (requests.length === 0) return <EmptyState title="No leave requests yet" />;
@@ -28,8 +29,9 @@ function LeaveRequestHistoryList({ requests }) {
 // typed, and data.decideLeaveRequest itself refuses a REJECTED decision with no reason too.
 function RejectLeaveModal({ request, onClose, onConfirm }) {
   const [reason, setReason] = useState("");
+  const { busy, run } = useMutationGuard();
   if (!request) return null;
-  const canSubmit = reason.trim().length > 0;
+  const canSubmit = reason.trim().length > 0 && !busy;
   return (
     <Modal open={!!request} onClose={onClose} title="Reject Leave Request">
       <p className="text-sm text-slate-500 mb-3">A reason is required so the requester knows why this was declined.</p>
@@ -44,10 +46,10 @@ function RejectLeaveModal({ request, onClose, onConfirm }) {
         <button
           type="button"
           disabled={!canSubmit}
-          onClick={() => { onConfirm(reason.trim()); setReason(""); }}
+          onClick={() => run(async () => { await onConfirm(reason.trim()); setReason(""); })}
           className={`px-4 py-2 rounded-lg text-sm font-medium text-white ${canSubmit ? "bg-red-600 hover:bg-red-700" : "bg-red-300 cursor-not-allowed"}`}
         >
-          Reject Request
+          {busy ? "Rejecting…" : "Reject Request"}
         </button>
       </div>
     </Modal>

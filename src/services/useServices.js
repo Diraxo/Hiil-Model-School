@@ -3,7 +3,7 @@ import { useData } from "../context/DataContext";
 import {
   createStudentService, createTeacherService, createParentService, createClassService,
   createSubjectService, createHomeworkService, createAttendanceService, createResultsService,
-  createResultAuditService,
+  createResultAuditService, createResultService, createResultEvidenceService, createExamService,
   createBehaviorService, createAnnouncementService, createMessageService, createNotificationService,
   createPaymentService, createTimetableService, createReportService,
   createStaffService, createPayrollService, createExpenseService, createReportCardService, createAuditLogService,
@@ -19,15 +19,18 @@ export function useServices() {
   return useMemo(() => {
     if (!data) return null;
     return {
-      students: createStudentService(data),
-      teachers: createTeacherService(data),
-      parents: createParentService(data),
-      classes: createClassService(data),
+      students: createStudentService(),
+      teachers: createTeacherService(),
+      parents: createParentService(),
+      classes: createClassService(),
       subjects: createSubjectService(),
-      homework: createHomeworkService(data),
+      homework: createHomeworkService(),
       attendance: createAttendanceService(data),
       results: createResultsService(data),
       resultAudit: createResultAuditService(data),
+      resultsSupabase: createResultService(),
+      resultEvidence: createResultEvidenceService(),
+      exams: createExamService(),
       behavior: createBehaviorService(data),
       announcements: createAnnouncementService(data),
       messages: createMessageService(data),
@@ -35,10 +38,10 @@ export function useServices() {
       payments: createPaymentService(data),
       timetable: createTimetableService(data),
       reports: createReportService(data),
-      staff: createStaffService(data),
-      payroll: createPayrollService(data),
+      staff: createStaffService(),
+      payroll: createPayrollService(),
       expenses: createExpenseService(data),
-      reportCards: createReportCardService(data),
+      reportCards: createReportCardService(),
       auditLog: createAuditLogService(data),
     };
   }, [data]);

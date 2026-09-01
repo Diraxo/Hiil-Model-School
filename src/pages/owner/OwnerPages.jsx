@@ -25,6 +25,7 @@ import {
 } from "../../utils/staffPermissions";
 import { canRecordAdvance, canViewPayroll, canSetSalary, canEditDirectorFinancials } from "../../utils/payrollPermissions";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
+import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 const STAFF_GROUPS = ["Directors", "Teachers", "Other Staff"];
 // Every screen that lists staff (Staff, Payroll, Staff Attendance) groups the same way — this is
@@ -74,7 +75,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2"><Crown size={20} className="text-amber-500" /> Owner Overview</h1>
-        <p className="text-sm text-slate-400 mt-0.5">Tilmaan Modern Academy — school-wide financial and operational position.</p>
+        <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — school-wide financial and operational position.</p>
       </div>
 
       <NoSchoolTodayBanner classification={todayInfo} />
@@ -145,6 +146,7 @@ function AccountsPage() {
   const [q, setQ] = useState("");
   const [addRole, setAddRole] = useState(null); // "DIRECTOR" | "FINANCE" | null
   const [confirmStatus, setConfirmStatus] = useState(null); // { user, next }
+  const { isBusy, run } = useMutationGuard();
 
   const owner = db.users.find((u) => u.role === ROLES.OWNER);
   const directors = groupUsers(db.users.filter((u) => u.role === ROLES.ADMIN || u.role === ROLES.FINANCE))[0]?.items || [];
@@ -152,9 +154,10 @@ function AccountsPage() {
   const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && u.name.toLowerCase().includes(q.toLowerCase()));
   const staffAccountGroups = groupUsers(staffAccounts);
 
-  function applyStatusChange() {
+  async function applyStatusChange() {
     if (!confirmStatus) return;
-    data.setAccountStatus(confirmStatus.user.id, confirmStatus.next);
+    const res = await data.setAccountStatus(confirmStatus.user.id, confirmStatus.next);
+    if (!res.ok) { toast(res.message, "error"); setConfirmStatus(null); return; }
     toast(`${confirmStatus.user.name}'s access is now ${confirmStatus.next}.`, "info");
     setConfirmStatus(null);
   }
@@ -209,7 +212,7 @@ function AccountsPage() {
                   </div>
                   <p className="text-xs text-slate-400 mb-3">{u.email}</p>
                   <div className="flex gap-2">
-                    <GhostButton onClick={() => { const pw = generatePassword(); data.resetUserPassword(u.id, pw); copyText(pw); toast(`New password copied: ${pw}`, "success"); }}>Reset Password</GhostButton>
+                    <GhostButton loading={isBusy(`reset-user-pw:${u.id}`)} onClick={() => run(async () => { const pw = generatePassword(); const res = await data.resetUserPassword(u.id, pw); if (!res.ok) { toast(res.message, "error"); return; } copyText(pw); toast(`New password copied: ${pw}`, "success"); }, { key: `reset-user-pw:${u.id}` })}>Reset Password</GhostButton>
                     <GhostButton danger={u.status === "ACTIVE"} onClick={() => setConfirmStatus({ user: u, next: u.status === "ACTIVE" ? "DISABLED" : "ACTIVE" })}>
                       {u.status === "ACTIVE" ? "Disable" : "Enable"}
                     </GhostButton>
@@ -264,16 +267,20 @@ function LeadershipFormModal({ open, role, onClose }) {
   const [form, setForm] = useState(empty);
   const [showPw, setShowPw] = useState(false);
   const [createdCreds, setCreatedCreds] = useState(null);
+  const { busy, run } = useMutationGuard();
 
   React.useEffect(() => {
     if (open) { setForm({ ...empty, password: generatePassword() }); setCreatedCreds(null); setShowPw(false); }
   }, [open, role]);
 
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  function submit() {
+  async function submit() {
     if (!form.name.trim() || !form.email.trim() || !form.password.trim()) { toast("Please provide a name, email, and password.", "error"); return; }
-    if (role === "DIRECTOR") data.createDirectorAccount(form); else data.createFinanceAccount(form);
-    setCreatedCreds({ email: form.email, password: form.password });
+    await run(async () => {
+      const res = role === "DIRECTOR" ? await data.createDirectorAccount(form) : await data.createFinanceAccount(form);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      setCreatedCreds({ email: form.email, password: form.password });
+    }, { key: `create-leadership:${role}:${form.email.trim().toLowerCase()}` });
   }
   function close() { setForm(empty); setCreatedCreds(null); onClose(); }
   const roleLabel = role === "DIRECTOR" ? "Educational Director" : "Finance & Operations Director";
@@ -312,7 +319,7 @@ function LeadershipFormModal({ open, role, onClose }) {
       </Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>Add {roleLabel}</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Adding…">Add {roleLabel}</PrimaryButton>
       </div>
     </Modal>
   );
@@ -329,6 +336,7 @@ function StaffPage({ onOpen }) {
   const [addOpen, setAddOpen] = useState(false);
   const [editStaff, setEditStaff] = useState(null);
   const [endEmploymentTarget, setEndEmploymentTarget] = useState(null);
+  const { isBusy, run } = useMutationGuard();
 
   const filtered = db.staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
   const groups = groupStaff(filtered);
@@ -368,9 +376,9 @@ function StaffPage({ onOpen }) {
                     </div>
                     {canManage && (
                       <div className="flex gap-2">
-                        <button onClick={() => { data.setStaffStatus(s.id, s.status === "ACTIVE" ? "DISABLED" : "ACTIVE"); toast(`${s.name} ${s.status === "ACTIVE" ? "disabled" : "enabled"}.`, "info"); }} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">{s.status === "ACTIVE" ? "Disable" : "Enable"}</button>
+                        <button disabled={isBusy(`staff-status:${s.id}`)} onClick={() => run(async () => { const next = s.status === "ACTIVE" ? "DISABLED" : "ACTIVE"; const res = await data.setStaffStatus(s.id, next, auth.realUser.id); toast(res.ok ? `${s.name} ${next === "ACTIVE" ? "enabled" : "disabled"}.` : res.message, res.ok ? "info" : "error"); }, { key: `staff-status:${s.id}` })} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50 disabled:opacity-50">{s.status === "ACTIVE" ? "Disable" : "Enable"}</button>
                         {s.employmentStatus === "ENDED" ? (
-                          <button onClick={() => { data.reactivateEmployment(s.id); toast(`${s.name}'s employment was reactivated.`, "success"); }} className="flex-1 text-xs text-emerald-600 font-medium border border-emerald-200 rounded-lg py-1.5 hover:bg-emerald-50">Reactivate</button>
+                          <button disabled={isBusy(`reactivate-emp:${s.id}`)} onClick={() => run(async () => { const res = await data.reactivateEmployment(s.id); toast(res.ok ? `${s.name}'s employment was reactivated.` : res.message, res.ok ? "success" : "error"); }, { key: `reactivate-emp:${s.id}` })} className="flex-1 text-xs text-emerald-600 font-medium border border-emerald-200 rounded-lg py-1.5 hover:bg-emerald-50 disabled:opacity-50">Reactivate</button>
                         ) : (
                           <button onClick={() => setEndEmploymentTarget(s)} className="flex-1 text-xs text-red-500 font-medium border border-red-100 rounded-lg py-1.5 hover:bg-red-50">End Employment</button>
                         )}
@@ -397,16 +405,20 @@ function EndEmploymentModal({ staff, onClose }) {
   const data = useData();
   const toast = useToast();
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => { if (staff) setEndDate(new Date().toISOString().slice(0, 10)); }, [staff]);
 
   if (!staff) return null;
 
-  function submit() {
+  async function submit() {
     if (!endDate) { toast("Please choose the last employed day.", "error"); return; }
-    data.endEmployment(staff.id, endDate);
-    toast(`${staff.name}'s employment ended effective ${fmtDate(endDate)}.`, "success");
-    onClose();
+    await run(async () => {
+      const res = await data.endEmployment(staff.id, endDate);
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast(`${staff.name}'s employment ended effective ${fmtDate(endDate)}.`, "success");
+      onClose();
+    }, { key: `end-employment:${staff.id}` });
   }
 
   return (
@@ -415,7 +427,7 @@ function EndEmploymentModal({ staff, onClose }) {
       <Field label="Last employed day" required><input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>End Employment</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Working…">End Employment</PrimaryButton>
       </div>
     </Modal>
   );
@@ -429,6 +441,7 @@ function StaffFormModal({ open, onClose, staff }) {
   const positions = manageablePositions(auth.realUser, STAFF_POSITIONS);
   const empty = { firstName: "", middleName: "", lastName: "", name: "", position: positions[positions.length - 1] || STAFF_POSITIONS[STAFF_POSITIONS.length - 1], phone: "", salary: 4500, employmentDate: new Date().toISOString().slice(0, 10), hasShifts: false, photo: null, bankAccount: "" };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
 
   React.useEffect(() => {
     if (!open) return;
@@ -455,14 +468,23 @@ function StaffFormModal({ open, onClose, staff }) {
     reader.readAsDataURL(file);
   }
 
-  function submit() {
+  async function submit() {
     const name = isOtherStaff ? fullName(form.firstName, form.middleName, form.lastName) : form.name;
     if (!name.trim()) { toast("Please provide the employee's name.", "error"); return; }
     const { firstName, middleName, lastName, ...rest } = form;
     const payload = { ...rest, name, bankAccount: form.bankAccount.trim() || null };
-    if (isEdit) { data.updateStaff(staff.id, payload); toast("Staff record updated.", "success"); }
-    else { data.createStaff(payload); toast("Staff member added.", "success"); }
-    onClose();
+    await run(async () => {
+      if (isEdit) {
+        const res = await data.updateStaff(staff.id, payload);
+        if (!res.ok) { toast(res.message, "error"); return; }
+        toast("Staff record updated.", "success");
+      } else {
+        const newId = await data.createStaff(payload);
+        if (!newId) { toast("Couldn't add this staff member.", "error"); return; }
+        toast("Staff member added.", "success");
+      }
+      onClose();
+    }, { key: isEdit ? `update-staff:${staff.id}` : `create-staff:${name.trim().toLowerCase()}:${form.position}` });
   }
 
   return (
@@ -506,7 +528,7 @@ function StaffFormModal({ open, onClose, staff }) {
       </Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>{isEdit ? "Save Changes" : "Add Staff"}</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Saving…">{isEdit ? "Save Changes" : "Add Staff"}</PrimaryButton>
       </div>
     </Modal>
   );
@@ -520,6 +542,7 @@ function DirectorFinancialsModal({ open, staff, onClose }) {
   const toast = useToast();
   const [salary, setSalary] = useState(0);
   const [bankAccount, setBankAccount] = useState("");
+  const { busy, run } = useMutationGuard();
 
   useEffect(() => {
     if (open && staff) { setSalary(staff.salary ?? 0); setBankAccount(staff.bankAccount || ""); }
@@ -527,10 +550,13 @@ function DirectorFinancialsModal({ open, staff, onClose }) {
 
   if (!staff) return null;
 
-  function submit() {
-    data.updateStaff(staff.id, { salary, bankAccount: bankAccount.trim() || null });
-    toast("Financial information updated.", "success");
-    onClose();
+  async function submit() {
+    await run(async () => {
+      const res = await data.updateStaff(staff.id, { salary, bankAccount: bankAccount.trim() || null });
+      if (!res.ok) { toast(res.message, "error"); return; }
+      toast("Financial information updated.", "success");
+      onClose();
+    }, { key: `update-staff-financials:${staff.id}` });
   }
 
   return (
@@ -544,7 +570,7 @@ function DirectorFinancialsModal({ open, staff, onClose }) {
       <Field label="Bank account number"><input className={inputCls} value={bankAccount} onChange={(e) => setBankAccount(e.target.value)} /></Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>Save Changes</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save Changes</PrimaryButton>
       </div>
     </Modal>
   );
@@ -646,6 +672,7 @@ function StaffProfilePage({ staffId, onBack }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [financeEditOpen, setFinanceEditOpen] = useState(false);
   const [endEmploymentOpen, setEndEmploymentOpen] = useState(false);
+  const { isBusy, run } = useMutationGuard();
 
   if (!staff) return <EmptyState icon={UserCog} title="Staff member not found" action={<GhostButton icon={ArrowLeft} onClick={onBack}>Back</GhostButton>} />;
 
@@ -689,7 +716,7 @@ function StaffProfilePage({ staffId, onBack }) {
                 <GhostButton icon={ShieldCheck} onClick={() => setLeaveOpen(true)}>Request Leave</GhostButton>
                 <GhostButton icon={Edit2} onClick={() => setEditOpen(true)}>Edit</GhostButton>
                 {staff.employmentStatus === "ENDED" ? (
-                  <GhostButton icon={UserCheck} onClick={() => { data.reactivateEmployment(staff.id); toast(`${staff.name}'s employment was reactivated.`, "success"); }}>Reactivate Employment</GhostButton>
+                  <GhostButton icon={UserCheck} loading={isBusy(`reactivate-emp:${staff.id}`)} onClick={() => run(async () => { const res = await data.reactivateEmployment(staff.id); toast(res.ok ? `${staff.name}'s employment was reactivated.` : res.message, res.ok ? "success" : "error"); }, { key: `reactivate-emp:${staff.id}` })}>Reactivate Employment</GhostButton>
                 ) : (
                   <GhostButton icon={UserX} danger onClick={() => setEndEmploymentOpen(true)}>End Employment</GhostButton>
                 )}
@@ -707,8 +734,8 @@ function StaffProfilePage({ staffId, onBack }) {
         open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} danger confirmLabel="Delete Permanently"
         title="Delete Staff Member Permanently?"
         description={`This will permanently delete ${staff.name}'s staff record and payroll/attendance history. This action cannot be undone.`}
-        onConfirm={() => {
-          const res = data.deleteStaff(staff.id);
+        onConfirm={async () => {
+          const res = await data.deleteStaff(staff.id);
           setDeleteConfirmOpen(false);
           if (res.ok) { toast(`${staff.name} was deleted.`, "success"); onBack(); }
           else toast(res.message, "error");
@@ -858,6 +885,7 @@ function RecordPayrollModal({ staff, month, onClose }) {
   };
   const [form, setForm] = useState(() => emptyForm(month));
   const [error, setError] = useState("");
+  const { busy, run } = useMutationGuard();
   React.useEffect(() => {
     // Keyed on staff?.id, not the `staff` object itself — commit() clones `db` on every call,
     // including a rejected payment, so `staff` gets a new (identical) reference on every attempt.
@@ -883,14 +911,20 @@ function RecordPayrollModal({ staff, month, onClose }) {
       return { ...next, amount: cap };
     });
   }
-  function submit() {
-    const result = data.recordPayrollPayment(staff.id, {
-      amount: Number(form.amount), method: form.method, month, date: form.date, note: form.note,
-      allowances: Number(form.allowances) || 0, deductions: Number(form.deductions) || 0, advanceApplied: Number(form.advanceApplied) || 0,
-    }, auth.realUser.id);
-    if (!result.success) { setError(result.error); return; }
-    toast(`${staff.name}'s salary for ${monthLabel(month)} recorded.`, "success");
-    onClose();
+  async function submit() {
+    // Financial mutation — guard hard against double-submit. Key encodes this exact intended
+    // payment so a rapid second click / repeated Enter is dropped, while a legitimate later
+    // top-up payment for the same month still goes through.
+    const opKey = `record-payroll:${staff.id}:${month}:${Number(form.amount)}:${form.date}:${Number(form.advanceApplied) || 0}`;
+    await run(async () => {
+      const result = await data.recordPayrollPayment(staff.id, {
+        amount: Number(form.amount), method: form.method, month, date: form.date, note: form.note,
+        allowances: Number(form.allowances) || 0, deductions: Number(form.deductions) || 0, advanceApplied: Number(form.advanceApplied) || 0,
+      }, auth.realUser.id);
+      if (!result.success) { setError(result.error); return; }
+      toast(`${staff.name}'s salary for ${monthLabel(month)} recorded.`, "success");
+      onClose();
+    }, { key: opKey });
   }
   return (
     <Modal open={!!month} onClose={onClose} title={`Pay ${staff?.name} — ${monthLabel(month)}`}>
@@ -918,7 +952,7 @@ function RecordPayrollModal({ staff, month, onClose }) {
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>Record Payment</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Recording…">Record Payment</PrimaryButton>
       </div>
     </Modal>
   );
@@ -933,6 +967,7 @@ function RecordAdvanceModal({ staff, onClose }) {
   const toast = useToast();
   const [form, setForm] = useState({ amount: 0, date: new Date().toISOString().slice(0, 10), note: "" });
   const [error, setError] = useState("");
+  const { busy, run } = useMutationGuard();
   React.useEffect(() => {
     if (staff) { setForm({ amount: 0, date: new Date().toISOString().slice(0, 10), note: "" }); setError(""); }
   }, [staff]);
@@ -941,12 +976,14 @@ function RecordAdvanceModal({ staff, onClose }) {
   const maxAdvance = summary?.maxAdvance || 0;
   const amountNum = Math.max(0, Number(form.amount) || 0);
   const remainingAfter = Math.max(0, maxAdvance - amountNum);
-  function submit() {
+  async function submit() {
     if (!Number(form.amount) || Number(form.amount) <= 0) { setError("Please enter an advance amount."); return; }
-    const result = data.recordSalaryAdvance(staff.id, { amount: Number(form.amount), date: form.date, note: form.note }, auth.realUser.id);
-    if (!result.success) { setError(result.error); return; }
-    toast(`Salary advance recorded for ${staff.name}.`, "success");
-    onClose();
+    await run(async () => {
+      const result = await data.recordSalaryAdvance(staff.id, { amount: Number(form.amount), date: form.date, note: form.note }, auth.realUser.id);
+      if (!result.success) { setError(result.error); return; }
+      toast(`Salary advance recorded for ${staff.name}.`, "success");
+      onClose();
+    }, { key: `record-advance:${staff.id}:${Number(form.amount)}:${form.date}` });
   }
   return (
     <Modal open={!!staff} onClose={onClose} title={`Give Advance — ${staff.name}`}>
@@ -962,7 +999,7 @@ function RecordAdvanceModal({ staff, onClose }) {
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>Record Advance</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Recording…">Record Advance</PrimaryButton>
       </div>
     </Modal>
   );
@@ -1108,16 +1145,21 @@ function PaymentMethodsPage() {
   const [newName, setNewName] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState("");
+  const { busy, run, isBusy } = useMutationGuard();
 
   function addMethod() {
     if (!newName.trim()) { toast("Please name the payment method.", "error"); return; }
-    data.createPaymentMethod(newName);
-    setNewName("");
-    toast("Payment method added.", "success");
+    run(async () => {
+      await data.createPaymentMethod(newName);
+      setNewName("");
+      toast("Payment method added.", "success");
+    }, { key: `create-payment-method:${newName.trim().toLowerCase()}` });
   }
   function saveRename(id) {
-    data.updatePaymentMethod(id, editingName);
-    setEditingId(null);
+    run(async () => {
+      await data.updatePaymentMethod(id, editingName);
+      setEditingId(null);
+    }, { key: `rename-payment-method:${id}` });
   }
 
   return (
@@ -1127,7 +1169,7 @@ function PaymentMethodsPage() {
       <Card className="p-5 mb-4">
         <div className="flex gap-2">
           <input className={inputCls} placeholder="e.g. New Bank" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addMethod()} />
-          <PrimaryButton onClick={addMethod}>Add</PrimaryButton>
+          <PrimaryButton onClick={addMethod} loading={busy} loadingText="Adding…">Add</PrimaryButton>
         </div>
       </Card>
       <Card className="overflow-hidden">
@@ -1285,6 +1327,7 @@ function ExpenseFormModal({ open, onClose, expense }) {
     receiptImage: null, receiptName: null, receiptType: null,
   };
   const [form, setForm] = useState(empty);
+  const { busy, run } = useMutationGuard();
   React.useEffect(() => {
     if (!open) return;
     if (expense) {
@@ -1322,10 +1365,13 @@ function ExpenseFormModal({ open, onClose, expense }) {
     const err = validate();
     if (err) { toast(err, "error"); return; }
     const payload = { ...form, items: form.items.map((it) => ({ itemName: it.itemName.trim(), quantity: it.quantity, unitPrice: it.unitPrice })) };
-    const result = isEdit ? data.updateExpense(expense.id, payload) : data.createExpense(payload, auth.realUser.id);
-    if (!result.success) { toast(result.error, "error"); return; }
-    toast(isEdit ? "Expense updated." : "Expense recorded.", "success");
-    onClose();
+    const opKey = isEdit ? `update-expense:${expense.id}` : `create-expense:${form.date}:${grandTotal}:${form.items.length}:${form.method}`;
+    run(async () => {
+      const result = isEdit ? await data.updateExpense(expense.id, payload) : await data.createExpense(payload, auth.realUser.id);
+      if (!result.success) { toast(result.error, "error"); return; }
+      toast(isEdit ? "Expense updated." : "Expense recorded.", "success");
+      onClose();
+    }, { key: opKey });
   }
   return (
     <Modal open={open} onClose={onClose} title={isEdit ? `Edit Expense ${expense?.expenseNo || ""}` : "Add Expense"} wide>
@@ -1366,7 +1412,7 @@ function ExpenseFormModal({ open, onClose, expense }) {
       </Field>
       <div className="flex justify-end gap-2 pt-3">
         <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton onClick={submit} icon={Check}>{isEdit ? "Save Changes" : "Save Expense"}</PrimaryButton>
+        <PrimaryButton onClick={submit} icon={Check} loading={busy} loadingText="Saving…">{isEdit ? "Save Changes" : "Save Expense"}</PrimaryButton>
       </div>
     </Modal>
   );

@@ -20,6 +20,20 @@ import {
 import { buildSeed, migrateDB, loadDB, saveDB } from "../data/seed";
 import { createAcademicYearService } from "../services/academicYearService";
 import { createSubjectService } from "../services/subjectService";
+import { createClassService } from "../services/classService";
+import { createStudentService } from "../services/studentService";
+import { createParentService } from "../services/parentService";
+import { createAccountService } from "../services/accountService";
+import { createTeacherService } from "../services/teacherService";
+import { createStaffService } from "../services/staffService";
+import { createPayrollService } from "../services/payrollService";
+import { createTimetableService } from "../services/timetableService";
+import { createClosureService } from "../services/closureService";
+import { createHomeworkService } from "../services/homeworkService";
+import { createResultService } from "../services/resultService";
+import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
+import { createExamService } from "../services/examService";
+import { createReportCardService } from "../services/reportCardService";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
 import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel } from "../utils/academicCalendar";
@@ -47,6 +61,43 @@ function useData() { return useContext(DataCtx); }
 // locking (see utils/permissions.js `effectiveResultLock`).
 function resolveResultCal(d, academicYearId) {
   return (academicYearId && d.academicYears.find((y) => y.id === academicYearId)) || currentAcademicYear(d.academicYears);
+}
+
+// classes/class_subjects are real Supabase data (see classService) but teacherAssignments is
+// still mock -- teacher accounts aren't real Supabase Auth users yet, and teacher_assignments.
+// teacher_id is a real FK to profiles(id), so there's nothing valid to write there for now (see
+// classService.js's header). `subjectTeacherIds` ("which teachers teach this class") was a
+// denormalized array stored directly on the old mock class object; here it's recomputed fresh
+// from teacherAssignments every time so it can never drift, and every existing UI consumer
+// (`c.subjectTeacherIds.includes(...)`) keeps working unchanged.
+function withClassTeacherIds(classes, teacherAssignments) {
+  return classes.map((c) => ({
+    ...c,
+    subjectTeacherIds: [...new Set((teacherAssignments || []).filter((ta) => ta.classId === c.id).map((ta) => ta.teacherId))],
+  }));
+}
+
+// Parents: real Supabase data (see parentService). Every mock-era PARENT entry in `users` is
+// dropped and replaced with the real `profiles` rows -- there is no longer any code path that can
+// mutate a parent's identity or children outside of Supabase. `childIds` here is the same kind of
+// read-only, always-fresh derived sugar as `subjectTeacherIds` above: it's recomputed from the
+// real `parent_students` rows on every render, never stored or mutated directly, so it can't drift
+// from the source of truth the way the old mock `user.childIds` array could. The actual mutation
+// path is parentService.link/unlink (see DataContext's connectChild/disconnectChild).
+// Splices every role that now has real Supabase Auth accounts into the still-mock `users` array,
+// so every existing `d.users.find(...)`/`u.role === ROLES.X` consumer across this file (and
+// AuthContext's "View as" target list) keeps reading the same shape it always has without
+// individual edits. Parents/Teachers/Educational-Director/Finance-Director are dropped from the
+// mock side entirely and replaced with the real rows; Owner stays mock (its one seeded row already
+// matches the real seeded Auth account, see supabase/seed_owner.sql) since there's no
+// login-account CRUD for Owner to convert.
+const REAL_ACCOUNT_ROLES = [ROLES.PARENT, ROLES.TEACHER, ROLES.ADMIN, ROLES.FINANCE];
+function mergeRealAccountsIntoUsers(users, parents, childIdsByParent, teacherAccounts, directorAccounts) {
+  const mockRest = (users || []).filter((u) => !REAL_ACCOUNT_ROLES.includes(u.role));
+  const realParents = (parents || []).map((p) => ({ ...p, role: ROLES.PARENT, childIds: childIdsByParent.get(p.id) || [] }));
+  const realTeachers = (teacherAccounts || []).map((t) => ({ ...t, role: ROLES.TEACHER }));
+  const realDirectors = directorAccounts || []; // profiles rows already carry their own role (ADMIN/FINANCE)
+  return [...mockRest, ...realParents, ...realTeachers, ...realDirectors];
 }
 
 // Blocker 5: the one authoritative payroll calculation. Called with `db` (the committed state)
@@ -228,6 +279,52 @@ function findOrCreateResultRecord(d, { studentId, classId, subject, semester }) 
   return record;
 }
 
+// Turns a Postgres RLS / constraint rejection from a results write into a message that matches the
+// real rules: LOCKED blocks everyone; a teacher can only touch their own assigned subject/class
+// and only on a day they're not marked absent and inside the academic year; publish/lock is
+// Owner/Educational Director only.
+function resultRlsMessage(e) {
+  const msg = e && e.message ? e.message : "";
+  if (/row-level security|violates row-level|permission denied/i.test(msg)) {
+    return "You can't change this result right now — it may be locked, outside your assigned subject/class, or it isn't a day you can record results (check the academic year and your attendance).";
+  }
+  if (/result_components_score_in_range|check constraint/i.test(msg)) {
+    return "That score is outside the allowed range for this component.";
+  }
+  return msg || "Couldn't save the result.";
+}
+
+// Report-card (report_cards) equivalent of resultRlsMessage.
+function reportCardRlsMessage(e) {
+  const msg = e && e.message ? e.message : "";
+  if (/row-level security|violates row-level|permission denied/i.test(msg)) {
+    return "You can't change this report card — only the Owner and Educational Director can generate, publish, lock or reopen report cards.";
+  }
+  if (/foreign key|violates foreign key/i.test(msg)) {
+    return "Couldn't save the report card — the student, class or academic year no longer exists.";
+  }
+  return msg || "Couldn't update the report card.";
+}
+
+// Result-evidence (Storage + result_evidence) equivalent of resultRlsMessage: turn the raw
+// Postgres / Storage error into something a teacher or director can act on.
+function evidenceErrorMessage(e) {
+  const msg = e && e.message ? e.message : "";
+  if (/row-level security|violates row-level|permission denied|not authorized|Unauthorized/i.test(msg)) {
+    return "You can't change evidence for this result right now — it may be locked, or outside your assigned subject/class.";
+  }
+  if (/duplicate key|already exists|result_evidence_storage_path_key/i.test(msg)) {
+    return "That page looks like it was already uploaded — refresh to see it.";
+  }
+  if (/exceeded the maximum allowed size|payload too large|entity too large|max(imum)?\s+size/i.test(msg)) {
+    return "That file is too large — the maximum size is 20 MB.";
+  }
+  if (/mime type|not supported|invalid_mime|content type/i.test(msg)) {
+    return "Unsupported file type — attach a JPEG, PNG, WebP, or PDF.";
+  }
+  return msg || "Couldn't attach the evidence.";
+}
+
 function DataProvider({ children }) {
   const [mockDb, setDb] = useState(null);
   const [ready, setReady] = useState(false);
@@ -257,6 +354,378 @@ function DataProvider({ children }) {
     return rows;
   }, [subjectService]);
   useEffect(() => { refetchSubjects().catch((e) => console.error("Failed to load subjects", e)); }, [refetchSubjects]);
+
+  // Classes + curriculum: third domain converted to real Supabase data. `classesRaw`/
+  // `classSubjectsRaw` are the real rows (classId/subjectId); `classSubjects` below resolves each
+  // subjectId to the mock app's subject-NAME convention so every still-mock consumer
+  // (teacherAssignments, homework, results, requiredSubjectsForClass, ...) keeps reading the same
+  // shape it always has. See classService.js and withClassTeacherIds above for the rest of the
+  // bridging story.
+  const classService = useMemo(() => createClassService(), []);
+  const [classesRaw, setClassesRaw] = useState([]);
+  const [classSubjectsRaw, setClassSubjectsRaw] = useState([]);
+  const refetchClasses = useCallback(async () => {
+    const [rows, curriculum] = await Promise.all([classService.list(), classService.listCurriculum()]);
+    setClassesRaw(rows);
+    setClassSubjectsRaw(curriculum);
+    return rows;
+  }, [classService]);
+  useEffect(() => { refetchClasses().catch((e) => console.error("Failed to load classes", e)); }, [refetchClasses]);
+  const classSubjects = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return classSubjectsRaw.map((cs) => ({ id: cs.id, classId: cs.classId, subject: nameById.get(cs.subjectId) || "" }));
+  }, [classSubjectsRaw, subjects]);
+
+  // Students + enrollments + student_documents: fourth domain converted to real Supabase data.
+  // Every other still-mock table that references a student by id (attendance, homework, results,
+  // behaviorRecords, studentFeeObligations, leaveRequests, ...) keeps reading
+  // `db.students`/`db.enrollments` unchanged -- see the `db` shadow in the `api` useMemo below and
+  // studentService.js's header for the file-storage caveat. `student.parentIds` is real too (joined
+  // from `parent_students` — see studentService.js's mapStudent), and `users.childIds` below is its
+  // real mirror on the parent side.
+  const studentService = useMemo(() => createStudentService(), []);
+  const [studentsRaw, setStudentsRaw] = useState([]);
+  const [enrollmentsRaw, setEnrollmentsRaw] = useState([]);
+  const [studentDocumentsRaw, setStudentDocumentsRaw] = useState([]);
+  const refetchStudents = useCallback(async () => {
+    const rows = await studentService.list();
+    setStudentsRaw(rows);
+    return rows;
+  }, [studentService]);
+  const refetchEnrollments = useCallback(async () => {
+    const rows = await studentService.listEnrollments();
+    setEnrollmentsRaw(rows);
+    return rows;
+  }, [studentService]);
+  const refetchStudentDocuments = useCallback(async () => {
+    const rows = await studentService.listDocuments();
+    setStudentDocumentsRaw(rows);
+    return rows;
+  }, [studentService]);
+  useEffect(() => {
+    refetchStudents().catch((e) => console.error("Failed to load students", e));
+    refetchEnrollments().catch((e) => console.error("Failed to load enrollments", e));
+    refetchStudentDocuments().catch((e) => console.error("Failed to load student documents", e));
+  }, [refetchStudents, refetchEnrollments, refetchStudentDocuments]);
+  // Mirrors studentService.syncEnrollment's signature against a live student object -- shared by
+  // every mutator below that changes a student's current grade/section/classId/status/suspension
+  // (create/update/archive/suspend/promote), so the "only set enrollmentDate on first insert"
+  // behavior can't drift between call sites.
+  const syncStudentEnrollment = useCallback((student, academicYearId) => {
+    const yearId = academicYearId || (currentAcademicYear(academicYears) || {}).id;
+    if (!yearId) return Promise.resolve(null);
+    return studentService.syncEnrollment({
+      studentId: student.id, academicYearId: yearId,
+      grade: student.grade, section: student.section, classId: student.classId,
+      status: student.status, suspension: student.suspension || null,
+      enrollmentDateForNew: student.admissionDate || todayKeyStr(),
+    });
+  }, [academicYears, studentService]);
+
+  // Parents + parent_students: fifth domain converted to real Supabase data. `accountService`
+  // creates the actual Supabase Auth user + profiles row (see accountService.js / the
+  // manage-staff-account Edge Function); `parentService` only ever reads/writes `parent_students`
+  // links against an already-real parent/student pair. See `mergeParentsIntoUsers` above for how
+  // this gets bridged into the still-mock `db.users`/`childIds` shape every existing consumer reads.
+  const parentService = useMemo(() => createParentService(), []);
+  const accountService = useMemo(() => createAccountService(), []);
+  const [parentsRaw, setParentsRaw] = useState([]);
+  const [parentLinksRaw, setParentLinksRaw] = useState([]);
+  const refetchParents = useCallback(async () => {
+    const rows = await parentService.list();
+    setParentsRaw(rows);
+    return rows;
+  }, [parentService]);
+  const refetchParentLinks = useCallback(async () => {
+    const rows = await parentService.listLinks();
+    setParentLinksRaw(rows);
+    return rows;
+  }, [parentService]);
+  useEffect(() => {
+    refetchParents().catch((e) => console.error("Failed to load parents", e));
+    refetchParentLinks().catch((e) => console.error("Failed to load parent-student links", e));
+  }, [refetchParents, refetchParentLinks]);
+  const childIdsByParent = useMemo(() => {
+    const map = new Map();
+    parentLinksRaw.forEach((l) => {
+      if (!map.has(l.parentId)) map.set(l.parentId, []);
+      map.get(l.parentId).push(l.studentId);
+    });
+    return map;
+  }, [parentLinksRaw]);
+
+  // Teachers/Staff: sixth domain converted to real Supabase data. `accountService` creates the
+  // actual Supabase Auth user + profiles row for Teacher/Educational-Director/Finance-Director
+  // logins (the same manage-staff-account Edge Function Parents already use); `teacherService`/
+  // `staffService`/`payrollService` read/write the already-real tables (teacher_assignments,
+  // staff, staff_attendance, payroll_payments, salary_advances) directly.
+  //
+  // Salary can't be hidden column-by-column via ordinary RLS (see staffService.js's header), so
+  // `staff`/payroll data is fetched from THREE sources every time and merged by id, letting RLS
+  // itself decide which ones come back non-empty for the current session instead of DataContext
+  // needing to know the caller's role (which it has no access to -- AuthProvider wraps this
+  // provider, not the other way around): the masked `staff_directory` (always available, no
+  // salary), the real `staff`/payroll tables via listFull()/listPayments()/listAdvances() (Owner/
+  // Finance only, empty for anyone else), and the caller's own row via myRecord()/myPayments()/
+  // myAdvances() (see supabase/migrations/20260826010000_teacher_self_payroll_rpc.sql -- empty for
+  // Owner/Finance, who have no staff row of their own). Privileged rows win the merge so salary is
+  // present whenever the caller is actually allowed to see it.
+  const teacherService = useMemo(() => createTeacherService(), []);
+  const staffService = useMemo(() => createStaffService(), []);
+  const payrollService = useMemo(() => createPayrollService(), []);
+  const [teacherAccountsRaw, setTeacherAccountsRaw] = useState([]);
+  const [directorAccountsRaw, setDirectorAccountsRaw] = useState([]);
+  const [teacherAssignmentsRaw, setTeacherAssignmentsRaw] = useState([]);
+  const [staffDirectoryRaw, setStaffDirectoryRaw] = useState([]);
+  const [staffFullRaw, setStaffFullRaw] = useState([]);
+  const [myStaffRaw, setMyStaffRaw] = useState(null);
+  const [staffAttendanceRaw, setStaffAttendanceRaw] = useState([]);
+  const [payrollPaymentsFullRaw, setPayrollPaymentsFullRaw] = useState([]);
+  const [myPayrollPaymentsRaw, setMyPayrollPaymentsRaw] = useState([]);
+  const [salaryAdvancesFullRaw, setSalaryAdvancesFullRaw] = useState([]);
+  const [mySalaryAdvancesRaw, setMySalaryAdvancesRaw] = useState([]);
+  const refetchTeacherAccounts = useCallback(async () => {
+    const rows = await teacherService.list();
+    setTeacherAccountsRaw(rows);
+    return rows;
+  }, [teacherService]);
+  const refetchDirectorAccounts = useCallback(async () => {
+    const rows = await staffService.listDirectorAccounts();
+    setDirectorAccountsRaw(rows);
+    return rows;
+  }, [staffService]);
+  const refetchTeacherAssignments = useCallback(async () => {
+    const rows = await teacherService.listAssignments();
+    setTeacherAssignmentsRaw(rows);
+    return rows;
+  }, [teacherService]);
+  const refetchStaff = useCallback(async () => {
+    const [directory, full, mine] = await Promise.all([
+      staffService.list(),
+      staffService.listFull().catch(() => []),
+      staffService.myRecord().catch(() => null),
+    ]);
+    setStaffDirectoryRaw(directory);
+    setStaffFullRaw(full);
+    setMyStaffRaw(mine);
+    return directory;
+  }, [staffService]);
+  const refetchStaffAttendance = useCallback(async () => {
+    const rows = await staffService.listAttendance();
+    setStaffAttendanceRaw(rows);
+    return rows;
+  }, [staffService]);
+  const refetchPayrollPayments = useCallback(async () => {
+    const [full, mine] = await Promise.all([
+      payrollService.listPayments().catch(() => []),
+      payrollService.myPayments().catch(() => []),
+    ]);
+    setPayrollPaymentsFullRaw(full);
+    setMyPayrollPaymentsRaw(mine);
+    return full;
+  }, [payrollService]);
+  const refetchSalaryAdvances = useCallback(async () => {
+    const [full, mine] = await Promise.all([
+      payrollService.listAdvances().catch(() => []),
+      payrollService.myAdvances().catch(() => []),
+    ]);
+    setSalaryAdvancesFullRaw(full);
+    setMySalaryAdvancesRaw(mine);
+    return full;
+  }, [payrollService]);
+  useEffect(() => {
+    refetchTeacherAccounts().catch((e) => console.error("Failed to load teacher accounts", e));
+    refetchDirectorAccounts().catch((e) => console.error("Failed to load director accounts", e));
+    refetchTeacherAssignments().catch((e) => console.error("Failed to load teacher assignments", e));
+    refetchStaff().catch((e) => console.error("Failed to load staff", e));
+    refetchStaffAttendance().catch((e) => console.error("Failed to load staff attendance", e));
+    refetchPayrollPayments().catch((e) => console.error("Failed to load payroll payments", e));
+    refetchSalaryAdvances().catch((e) => console.error("Failed to load salary advances", e));
+  }, [refetchTeacherAccounts, refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances]);
+  // teacher_assignments.subject_id is a real FK -- resolved to the mock app's subject-NAME
+  // convention here, same bridging pattern classSubjects (above) already established.
+  const teacherAssignments = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return teacherAssignmentsRaw.map((ta) => ({ id: ta.id, teacherId: ta.teacherId, subject: nameById.get(ta.subjectId) || "", classId: ta.classId }));
+  }, [teacherAssignmentsRaw, subjects]);
+  const staffRaw = useMemo(() => {
+    const byId = new Map(staffDirectoryRaw.map((s) => [s.id, s]));
+    if (myStaffRaw) byId.set(myStaffRaw.id, { ...byId.get(myStaffRaw.id), ...myStaffRaw });
+    staffFullRaw.forEach((s) => byId.set(s.id, { ...byId.get(s.id), ...s }));
+    return [...byId.values()];
+  }, [staffDirectoryRaw, staffFullRaw, myStaffRaw]);
+  const payrollPaymentsRaw = useMemo(() => {
+    const byId = new Map();
+    myPayrollPaymentsRaw.forEach((p) => byId.set(p.id, p));
+    payrollPaymentsFullRaw.forEach((p) => byId.set(p.id, p));
+    return [...byId.values()];
+  }, [payrollPaymentsFullRaw, myPayrollPaymentsRaw]);
+  const salaryAdvancesRaw = useMemo(() => {
+    const byId = new Map();
+    mySalaryAdvancesRaw.forEach((a) => byId.set(a.id, a));
+    salaryAdvancesFullRaw.forEach((a) => byId.set(a.id, a));
+    return [...byId.values()];
+  }, [salaryAdvancesFullRaw, mySalaryAdvancesRaw]);
+
+  // Timetable + school closures: Phase 2 checkpoint 1. Real Supabase data (timetable_entries,
+  // timetable_config singleton, substitutions, school_closures) -- same independent-state pattern
+  // every earlier converted domain uses. `timetableEntries` below resolves the real subject_id to
+  // the mock app's subject-NAME convention (like classSubjects/teacherAssignments) so every
+  // existing `entry.subject` consumer keeps working unchanged. period_logs stays mock until
+  // checkpoint 2 (student/period attendance).
+  const timetableService = useMemo(() => createTimetableService(), []);
+  const closureService = useMemo(() => createClosureService(), []);
+  const [timetableEntriesRaw, setTimetableEntriesRaw] = useState([]);
+  const [timetableConfigRaw, setTimetableConfigRaw] = useState(null);
+  const [substitutionsRaw, setSubstitutionsRaw] = useState([]);
+  const [schoolClosuresRaw, setSchoolClosuresRaw] = useState([]);
+  const refetchTimetable = useCallback(async () => {
+    const [entries, config, subs] = await Promise.all([
+      timetableService.listEntries(),
+      timetableService.getConfig(),
+      timetableService.listSubstitutions(),
+    ]);
+    setTimetableEntriesRaw(entries);
+    if (config) setTimetableConfigRaw(config);
+    setSubstitutionsRaw(subs);
+    return entries;
+  }, [timetableService]);
+  const refetchClosures = useCallback(async () => {
+    const rows = await closureService.list();
+    setSchoolClosuresRaw(rows);
+    return rows;
+  }, [closureService]);
+  useEffect(() => {
+    refetchTimetable().catch((e) => console.error("Failed to load timetable", e));
+    refetchClosures().catch((e) => console.error("Failed to load school closures", e));
+  }, [refetchTimetable, refetchClosures]);
+  const timetableEntries = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return timetableEntriesRaw.map((e) => ({
+      id: e.id, classId: e.classId, day: e.day, period: e.period,
+      subject: nameById.get(e.subjectId) || "", teacherId: e.teacherId,
+    }));
+  }, [timetableEntriesRaw, subjects]);
+  const timetableConfig = useMemo(
+    () => timetableConfigRaw || { ...DEFAULT_TIMETABLE_CONFIG, updatedAt: null, updatedBy: null },
+    [timetableConfigRaw],
+  );
+
+  // Homework: Phase 3 checkpoint 1. Real Supabase data (`homework` table) -- same independent-state
+  // pattern every earlier converted domain uses. `homework` below resolves the real subject_id to
+  // the mock app's subject-NAME convention (like classSubjects/teacherAssignments/timetableEntries)
+  // so every existing `h.subject` consumer keeps working unchanged. Results (CP2) + result evidence
+  // (CP3) are real Supabase now; report cards stay mock until checkpoint 4.
+  const homeworkService = useMemo(() => createHomeworkService(), []);
+  const [homeworkRaw, setHomeworkRaw] = useState([]);
+  const refetchHomework = useCallback(async () => {
+    const rows = await homeworkService.list();
+    setHomeworkRaw(rows);
+    return rows;
+  }, [homeworkService]);
+  useEffect(() => { refetchHomework().catch((e) => console.error("Failed to load homework", e)); }, [refetchHomework]);
+  const homework = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return homeworkRaw.map((h) => ({ ...h, subject: nameById.get(h.subjectId) || "" }));
+  }, [homeworkRaw, subjects]);
+
+  // Results / Exams: Phase 3 checkpoint 2. Real Supabase data (`results` + `result_components` +
+  // `result_audit_log`, and `exam_announcements`) -- same independent-state pattern every earlier
+  // converted domain uses. `results` below rebuilds the mock record shape on top of the flat rows
+  // this returns: the real `subject_id` resolves to the mock app's subject-NAME convention (like
+  // homework/classSubjects), and `componentRows` folds back into the `{ midterm1: {score,max,...},
+  // ... }` object every resultTotals/resultsEngine consumer expects. result_evidence is real
+  // Supabase as of CP3 (see below); report_cards are real Supabase as of CP4 (see reportCards
+  // below). Notifications stay on the mock bridge (locked Phase 2 decision).
+  const resultService = useMemo(() => createResultService(), []);
+  const resultEvidenceService = useMemo(() => createResultEvidenceService(), []);
+  const examService = useMemo(() => createExamService(), []);
+  const reportCardService = useMemo(() => createReportCardService(), []);
+  const [resultsRaw, setResultsRaw] = useState([]);
+  const [resultAuditRaw, setResultAuditRaw] = useState([]);
+  const [examAnnouncementsRaw, setExamAnnouncementsRaw] = useState([]);
+  const [reportCardsRaw, setReportCardsRaw] = useState([]);
+  const refetchResults = useCallback(async () => {
+    const [recs, audit] = await Promise.all([resultService.list(), resultService.listAudit()]);
+    setResultsRaw(recs);
+    setResultAuditRaw(audit);
+    return recs;
+  }, [resultService]);
+
+  // Phase 3 checkpoint 4: report cards are real Supabase now (`report_cards` table). The row only
+  // tracks the per-student+class+year lifecycle (status + promotion decision + who/when); every
+  // score/subject/total on the printed card is still DERIVED from the real `results` data (CP2)
+  // via the resultsEngine helpers below -- so `db.reportCards` keeps exactly the mock shape and no
+  // consumer (AdminPages ReportCardsPage, ParentPages, ReportCard.jsx) changes.
+  const refetchReportCards = useCallback(async () => {
+    const rows = await reportCardService.list();
+    setReportCardsRaw(rows);
+    return rows;
+  }, [reportCardService]);
+
+  // Phase 3 checkpoint 3: result evidence is real Supabase now -- `result_evidence` metadata rows
+  // plus the private `result-evidence` Storage bucket. We keep the flat metadata list in
+  // `resultEvidenceRaw` and a `path -> short-lived signed URL` map in `resultEvidenceUrls` (both
+  // RLS-filtered for the current session), so `resultEvidenceFor(...)` can still return the same
+  // synchronous `{ id, order, fileType, fileName, fileDataUrl }` shape every existing consumer
+  // (gradebook thumbnails, parent viewer, student-profile exams tab) expects with zero UI churn.
+  const [resultEvidenceRaw, setResultEvidenceRaw] = useState([]);
+  const [resultEvidenceUrls, setResultEvidenceUrls] = useState(() => new Map());
+  const refetchResultEvidence = useCallback(async () => {
+    const rows = await resultEvidenceService.list();
+    setResultEvidenceRaw(rows);
+    try {
+      const urls = await resultEvidenceService.signedUrls(rows.map((r) => r.storagePath));
+      setResultEvidenceUrls(urls);
+    } catch (e) {
+      console.error("Failed to sign result evidence URLs", e);
+      setResultEvidenceUrls(new Map());
+    }
+    return rows;
+  }, [resultEvidenceService]);
+  const refetchExamAnnouncements = useCallback(async () => {
+    const rows = await examService.list();
+    setExamAnnouncementsRaw(rows);
+    return rows;
+  }, [examService]);
+  useEffect(() => {
+    refetchResults().catch((e) => console.error("Failed to load results", e));
+    refetchResultEvidence().catch((e) => console.error("Failed to load result evidence", e));
+    refetchExamAnnouncements().catch((e) => console.error("Failed to load exam announcements", e));
+    refetchReportCards().catch((e) => console.error("Failed to load report cards", e));
+  }, [refetchResults, refetchResultEvidence, refetchExamAnnouncements, refetchReportCards]);
+  const results = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return resultsRaw.map((r) => {
+      const components = {};
+      for (const c of ASSESSMENT_COMPONENTS) {
+        const row = r.componentRows.find((x) => x.component === c);
+        components[c] = row
+          ? { score: row.score, max: row.max, sharedWithParents: row.sharedWithParents, updatedAt: row.updatedAt, updatedBy: row.updatedBy }
+          : { score: null, max: ASSESSMENT_COMPONENT_WEIGHT[c], sharedWithParents: false, updatedAt: null, updatedBy: null };
+      }
+      return { ...r, subject: nameById.get(r.subjectId) || "", components };
+    });
+  }, [resultsRaw, subjects]);
+  const resultAuditLog = useMemo(() => {
+    const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    return resultAuditRaw.map((e) => ({
+      ...e,
+      entityType: "result",
+      subject: e.subjectId ? (nameById.get(e.subjectId) || null) : null,
+    }));
+  }, [resultAuditRaw, subjects]);
+  const examAnnouncements = useMemo(() => examAnnouncementsRaw.map((a) => ({ ...a })), [examAnnouncementsRaw]);
+  // Report cards are already mapped to the mock `db.reportCards` shape by reportCardService.list().
+  const reportCards = useMemo(() => reportCardsRaw.map((rc) => ({ ...rc })), [reportCardsRaw]);
+  // Fold the signed-URL map onto the metadata rows so `resultEvidenceFor` stays synchronous.
+  // `fileDataUrl` is a short-lived signed URL (re-minted on every refetch), or null if the current
+  // session isn't entitled to that object (Storage RLS said no) -- callers already tolerate a
+  // missing page.
+  const resultEvidence = useMemo(
+    () => resultEvidenceRaw.map((e) => ({ ...e, fileDataUrl: resultEvidenceUrls.get(e.storagePath) || null })),
+    [resultEvidenceRaw, resultEvidenceUrls],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -302,15 +771,51 @@ function DataProvider({ children }) {
     return () => clearInterval(iv);
   }, [ready]);
 
+  // Every mutator below receives a draft that's been freshened with the real Supabase-backed
+  // domains (academicYears, subjects, classes, classSubjects) before it runs -- without this, a
+  // mutator reading `d.academicYears`/`d.classes` would see whatever buildSeed/migrateDB produced
+  // once, frozen forever, since nothing writes those back into the mock db anymore. The refreshed
+  // values get persisted back into mockDb/localStorage via saveDB(next) below too, so the mock
+  // layer stays a faithful (if momentary) mirror instead of silently diverging.
   const commit = useCallback((mutator) => {
     setDb((cur) => {
-      const next = mutator(structuredCloneLite(cur));
+      const draft = structuredCloneLite(cur);
+      draft.academicYears = academicYears;
+      draft.subjects = subjects;
+      draft.teacherAssignments = teacherAssignments;
+      draft.classes = withClassTeacherIds(classesRaw, draft.teacherAssignments);
+      draft.classSubjects = classSubjects;
+      draft.students = studentsRaw;
+      draft.enrollments = enrollmentsRaw;
+      draft.studentDocuments = studentDocumentsRaw;
+      draft.staff = staffRaw;
+      draft.staffAttendance = staffAttendanceRaw;
+      draft.payrollPayments = payrollPaymentsRaw;
+      draft.salaryAdvances = salaryAdvancesRaw;
+      draft.timetableEntries = timetableEntries;
+      draft.timetableConfig = timetableConfig;
+      draft.substitutions = substitutionsRaw;
+      draft.schoolClosures = schoolClosuresRaw;
+      draft.homework = homework;
+      draft.results = results;
+      draft.resultAuditLog = resultAuditLog;
+      draft.resultEvidence = resultEvidence;
+      draft.examAnnouncements = examAnnouncements;
+      draft.reportCards = reportCards;
+      draft.users = mergeRealAccountsIntoUsers(draft.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw);
+      const next = mutator(draft);
       next.updatedAt = Date.now();
       lastWriteRef.current = next.updatedAt;
       saveDB(next);
       return next;
     });
-  }, []);
+  }, [
+    academicYears, subjects, classesRaw, classSubjects, studentsRaw, enrollmentsRaw, studentDocumentsRaw,
+    parentsRaw, childIdsByParent, teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw,
+    salaryAdvancesRaw, teacherAccountsRaw, directorAccountsRaw,
+    timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw, homework,
+    results, resultAuditLog, resultEvidence, examAnnouncements, reportCards,
+  ]);
 
   function structuredCloneLite(obj) {
     return JSON.parse(JSON.stringify(obj));
@@ -387,12 +892,37 @@ function DataProvider({ children }) {
   /* ---------- derived lookups ---------- */
   const api = useMemo(() => {
     if (!mockDb) return null;
-    // Shadows the mock `db` state for the rest of this function: academicYears now comes from
-    // Supabase (see refetchAcademicYears above) instead of the seeded/localStorage array. Every
-    // read below (`db.academicYears...`) picks this up automatically since it's one closure.
-    // academicCalendar is re-derived from the real data too (rather than trusting mockDb's stale
-    // seeded copy), since classifyAttendanceDate/etc. read it directly instead of academicYears.
-    const db = { ...mockDb, academicYears, subjects, academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar };
+    // Shadows the mock `db` state for the rest of this function: academicYears/subjects/classes/
+    // classSubjects now come from Supabase (see refetch* above) instead of the seeded/localStorage
+    // arrays. Every read below (`db.academicYears...`, `db.classes...`) picks this up automatically
+    // since it's one closure. academicCalendar is re-derived from the real data too (rather than
+    // trusting mockDb's stale seeded copy), since classifyAttendanceDate/etc. read it directly
+    // instead of academicYears.
+    const db = {
+      ...mockDb, academicYears, subjects,
+      teacherAssignments,
+      classes: withClassTeacherIds(classesRaw, teacherAssignments),
+      classSubjects,
+      students: studentsRaw,
+      enrollments: enrollmentsRaw,
+      studentDocuments: studentDocumentsRaw,
+      staff: staffRaw,
+      staffAttendance: staffAttendanceRaw,
+      payrollPayments: payrollPaymentsRaw,
+      salaryAdvances: salaryAdvancesRaw,
+      timetableEntries,
+      timetableConfig,
+      substitutions: substitutionsRaw,
+      schoolClosures: schoolClosuresRaw,
+      homework,
+      results,
+      resultAuditLog,
+      resultEvidence,
+      examAnnouncements,
+      reportCards,
+      users: mergeRealAccountsIntoUsers(mockDb.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw),
+      academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
+    };
 
     const getUser = (id) => db.users.find((u) => u.id === id);
     const getClass = (id) => db.classes.find((c) => c.id === id);
@@ -725,88 +1255,77 @@ function DataProvider({ children }) {
         });
       },
 
-      _syncEnrollment(d, student, yearId) {
-        const academicYearId = yearId || (currentAcademicYear(d.academicYears) || {}).id;
-        if (!academicYearId) return;
-        let enr = d.enrollments.find((e) => e.studentId === student.id && e.academicYearId === academicYearId);
-        if (!enr) {
-          enr = { id: uid("enr"), studentId: student.id, academicYearId, enrollmentDate: student.admissionDate || todayKeyStr(), createdAt: Date.now() };
-          d.enrollments.push(enr);
-        }
-        enr.grade = student.grade;
-        enr.section = student.section;
-        enr.classId = student.classId;
-        enr.status = student.status;
-        enr.suspension = student.suspension || null;
-      },
-
-      generateStudentId() {
-        const year = currentAcademicYear(db.academicYears);
-        const idYear = year ? new Date(year.yearStart).getFullYear() : new Date().getFullYear();
-        return `TMA-${idYear}-${String(db.studentSeq).padStart(5, "0")}`;
-      },
-
       generateReceiptNo() {
         return String(db.receiptSeq).padStart(4, "0");
       },
 
-      createStudent(data) {
-        let createdId = null;
-        commit((d) => {
-          const year = currentAcademicYear(d.academicYears);
-          const idYear = year ? new Date(year.yearStart).getFullYear() : new Date().getFullYear();
-          const studentId = `TMA-${idYear}-${String(d.studentSeq).padStart(5, "0")}`;
-          d.studentSeq += 1;
-          const cls = d.classes.find((c) => c.grade === data.grade && c.section === data.section);
-          const student = {
-            id: uid("stu"), studentId, ...data, classId: cls ? cls.id : null,
-            status: data.status || "ACTIVE", suspension: null, parentIds: [],
-          };
-          d.students.unshift(student);
-          this._syncEnrollment(d, student, year ? year.id : null);
-          if (year) this._materializeObligationsForStudent(d, student, year.id, student.admissionDate || todayKeyStr(), "ENROLLMENT");
-          d.activities = [{ id: uid("act"), text: `${studentFullName(student)} was added to ${data.grade}${data.section} (${studentId}).`, createdAt: Date.now() }, ...d.activities];
-          createdId = studentId;
-          return d;
-        });
-        return createdId;
+      // ---- Students + enrollments: real Supabase data (see studentService.js). Fee-obligation
+      // materialization/activities/notifications stay on the mock commit() pipeline below since
+      // those domains haven't converted yet -- each mutator awaits its Supabase write(s), refetches
+      // students/enrollments, then commits just the leftover mock side effects.
+      async createStudent(fields) {
+        try {
+          const year = currentAcademicYear(academicYears);
+          const cls = classesRaw.find((c) => c.grade === fields.grade && c.section === fields.section);
+          const student = await studentService.create({ ...fields, classId: cls ? cls.id : null, status: "ACTIVE" });
+          await syncStudentEnrollment(student, year ? year.id : null);
+          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          commit((d) => {
+            if (year) this._materializeObligationsForStudent(d, student, year.id, student.admissionDate || todayKeyStr(), "ENROLLMENT");
+            d.activities = [{ id: uid("act"), text: `${studentFullName(student)} was added to ${student.grade}${student.section} (${student.studentId}).`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, studentId: student.studentId, id: student.id };
+        } catch (e) {
+          console.error("Failed to create student", e);
+          return { ok: false, message: e.message || "Couldn't create the student." };
+        }
       },
 
-      updateStudent(id, patch) {
-        commit((d) => {
-          const s = d.students.find((x) => x.id === id);
-          if (s) {
-            // BUS_OPT_IN materialization anchors at "today" (the same anchor Decision A uses for
-            // an already-enrolled continuing student at year rollout) — a family that stops using
-            // the bus later keeps whatever they already owed/paid; future rollouts simply exclude
-            // them per feeTypesForStudentIn's usesBus filter.
-            const busOptIn = patch.usesBus === true && s.usesBus !== true;
-            Object.assign(s, patch);
-            if (patch.grade || patch.section) {
-              const cls = d.classes.find((c) => c.grade === (patch.grade || s.grade) && c.section === (patch.section || s.section));
-              if (cls) s.classId = cls.id;
-            }
-            this._syncEnrollment(d, s);
-            if (busOptIn) {
-              const year = currentAcademicYear(d.academicYears);
-              if (year) this._materializeObligationsForStudent(d, s, year.id, todayKeyStr(), "BUS_OPT_IN");
-            }
+      async updateStudent(id, patch) {
+        try {
+          const s = studentsRaw.find((x) => x.id === id);
+          if (!s) return { ok: false, message: "Student not found." };
+          // BUS_OPT_IN materialization anchors at "today" (the same anchor Decision A uses for
+          // an already-enrolled continuing student at year rollout) — a family that stops using
+          // the bus later keeps whatever they already owed/paid; future rollouts simply exclude
+          // them per feeTypesForStudentIn's usesBus filter.
+          const busOptIn = patch.usesBus === true && s.usesBus !== true;
+          const fields = { ...patch };
+          if (patch.grade || patch.section) {
+            const cls = classesRaw.find((c) => c.grade === (patch.grade || s.grade) && c.section === (patch.section || s.section));
+            if (cls) fields.classId = cls.id;
           }
-          return d;
-        });
+          const updated = await studentService.update(id, fields);
+          await syncStudentEnrollment(updated);
+          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          if (busOptIn) {
+            const year = currentAcademicYear(academicYears);
+            if (year) commit((d) => { this._materializeObligationsForStudent(d, updated, year.id, todayKeyStr(), "BUS_OPT_IN"); return d; });
+          }
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update student", e);
+          return { ok: false, message: e.message || "Couldn't update the student." };
+        }
       },
 
-      archiveStudent(id, status) {
-        commit((d) => {
-          const s = d.students.find((x) => x.id === id);
-          if (s) {
-            s.status = status;
-            if (status === "ACTIVE") s.suspension = null; // reinstating clears any lingering suspension record
-            this._syncEnrollment(d, s);
-          }
-          d.activities = [{ id: uid("act"), text: `${s ? studentFullName(s) : "A student"} status changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async archiveStudent(id, status) {
+        try {
+          const patch = { status };
+          if (status === "ACTIVE") patch.suspension = null; // reinstating clears any lingering suspension record
+          const updated = await studentService.update(id, patch);
+          await syncStudentEnrollment(updated);
+          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${studentFullName(updated)} status changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to change student status", e);
+          return { ok: false, message: e.message || "Couldn't update the student's status." };
+        }
       },
 
       // ---- Academic Years: real Supabase data (see academicYearService). Only the activity-log
@@ -845,22 +1364,26 @@ function DataProvider({ children }) {
       // Creates (or reuses) this student's enrollment row for `academicYearId` and updates their
       // current denormalized fields to match — the prior year's enrollment row, and every
       // attendance/homework/behavior/results/document tied to it, is left completely untouched.
-      promoteStudent(studentId, { academicYearId, grade, section }) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const s = d.students.find((x) => x.id === studentId);
-          const year = d.academicYears.find((y) => y.id === academicYearId);
-          if (!s || !year) { result = { ok: false, message: "Student or academic year not found." }; return d; }
+      async promoteStudent(studentId, { academicYearId, grade, section }) {
+        try {
+          const s = studentsRaw.find((x) => x.id === studentId);
+          const year = academicYears.find((y) => y.id === academicYearId);
+          if (!s || !year) return { ok: false, message: "Student or academic year not found." };
           const nextGrade = grade || s.grade;
           const nextSection = section !== undefined ? section : s.section;
-          const cls = d.classes.find((c) => c.grade === nextGrade && c.section === nextSection);
-          s.grade = nextGrade; s.section = nextSection; s.classId = cls ? cls.id : null;
-          s.status = "ACTIVE"; s.suspension = null;
-          this._syncEnrollment(d, s, academicYearId);
-          d.activities = [{ id: uid("act"), text: `${studentFullName(s)} was promoted/re-enrolled into ${formatAcademicYearLabel(year)} (${nextGrade}${nextSection}).`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          const cls = classesRaw.find((c) => c.grade === nextGrade && c.section === nextSection);
+          const updated = await studentService.update(studentId, { grade: nextGrade, section: nextSection, classId: cls ? cls.id : null, status: "ACTIVE", suspension: null });
+          await syncStudentEnrollment(updated, academicYearId);
+          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${studentFullName(updated)} was promoted/re-enrolled into ${formatAcademicYearLabel(year)} (${nextGrade}${nextSection}).`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to promote student", e);
+          return { ok: false, message: e.message || "Couldn't promote/re-enroll the student." };
+        }
       },
 
       // ---- Real-data Overview stats (no placeholders) — all scoped to one academic year, so
@@ -918,113 +1441,144 @@ function DataProvider({ children }) {
         });
       },
 
-      // ---- Student documents (Report Cards / ID Copies / Other) ----
-      createStudentDocument(studentId, { category, title, fileDataUrl, fileType, fileName }, uploadedBy) {
-        commit((d) => {
-          const year = currentAcademicYear(d.academicYears);
-          d.studentDocuments.push({ id: uid("sdoc"), studentId, category, title, fileDataUrl, fileType, fileName, academicYearId: year ? year.id : null, uploadedBy, uploadedAt: Date.now() });
-          const s = d.students.find((x) => x.id === studentId);
-          d.activities = [{ id: uid("act"), text: `A document ("${title}") was uploaded for ${s ? studentFullName(s) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-      },
-      deleteStudentDocument(id) {
-        commit((d) => { d.studentDocuments = d.studentDocuments.filter((x) => x.id !== id); return d; });
-      },
-
-      // Permanently removes a student and every record that only makes sense in relation to them
-      // (enrollment history, attendance, behavior, results/audit, documents, payments, leave
-      // requests) and unlinks them from any parent's childIds. Homework is assigned per-class, not
-      // per-student, so it's untouched. Irreversible — the UI requires a serious confirmation
-      // before calling this.
-      deleteStudent(id) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const s = d.students.find((x) => x.id === id);
-          if (!s) { result = { ok: false, message: "Student not found." }; return d; }
-          const name = studentFullName(s);
-          d.students = d.students.filter((x) => x.id !== id);
-          d.enrollments = d.enrollments.filter((e) => e.studentId !== id);
-          d.attendance = d.attendance.filter((a) => a.studentId !== id);
-          d.behaviorRecords = d.behaviorRecords.filter((b) => b.studentId !== id);
-          d.results = d.results.filter((r) => r.studentId !== id);
-          d.resultAuditLog = d.resultAuditLog.filter((a) => a.studentId !== id);
-          d.resultEvidence = (d.resultEvidence || []).filter((e) => e.studentId !== id);
-          d.studentDocuments = d.studentDocuments.filter((doc) => doc.studentId !== id);
-          // Payments are immutable financial records (Locked Principle #4) — a hard student
-          // delete never erases them, only this student's own billing state. Any payment that
-          // funded this student's obligations keeps its row and its allocations as historical
-          // fact; it simply funds a now-orphaned obligation instead of a deleted one.
-          const orphanedObligationIds = d.studentFeeObligations.filter((o) => o.studentId === id).map((o) => o.id);
-          d.feeObligationAdjustments = (d.feeObligationAdjustments || []).filter((a) => !orphanedObligationIds.includes(a.obligationId));
-          d.studentFeeObligations = d.studentFeeObligations.filter((o) => o.studentId !== id);
-          d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STUDENT" && r.subjectId === id));
-          d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).includes(id)) p.childIds = p.childIds.filter((cid) => cid !== id); });
-          d.activities = [{ id: uid("act"), text: `${name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
-      },
-
-      // Shared by deleteTeacher and deleteStaff (when the staff row is linked to a teacher login) —
-      // removes the account, class/subject/timetable assignments, substitutions, and payroll/
-      // attendance history, and clears (never leaves dangling) any class's headTeacherId/
-      // subjectTeacherIds that pointed at them. Homework/results/behavior they authored stay as
-      // historical records — deleting a teacher shouldn't erase a student's academic history.
-      _cascadeDeleteTeacher(d, userId) {
-        const u = d.users.find((x) => x.id === userId);
-        const staffRec = d.staff.find((s) => s.userId === userId);
-        d.teacherAssignments = d.teacherAssignments.filter((ta) => ta.teacherId !== userId);
-        d.timetableEntries = d.timetableEntries.filter((e) => e.teacherId !== userId);
-        d.substitutions = d.substitutions.filter((s) => s.originalTeacherId !== userId && s.substituteTeacherId !== userId);
-        d.classes.forEach((c) => {
-          if (c.headTeacherId === userId) c.headTeacherId = null;
-          if (Array.isArray(c.subjectTeacherIds)) c.subjectTeacherIds = c.subjectTeacherIds.filter((tid) => tid !== userId);
-        });
-        if (staffRec) {
-          d.payrollPayments = d.payrollPayments.filter((p) => p.staffId !== staffRec.id);
-          d.salaryAdvances = d.salaryAdvances.filter((a) => a.staffId !== staffRec.id);
-          d.staffAttendance = d.staffAttendance.filter((a) => a.staffId !== staffRec.id);
-          d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffRec.id));
-          d.staff = d.staff.filter((s) => s.id !== staffRec.id);
-        }
-        d.users = d.users.filter((x) => x.id !== userId);
-        d.notifications = d.notifications.filter((n) => n.userId !== userId);
-        d.activities = [{ id: uid("act"), text: `${u ? u.name : "A teacher"} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-      },
-      deleteTeacher(userId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const u = d.users.find((x) => x.id === userId);
-          if (!u || u.role !== ROLES.TEACHER) { result = { ok: false, message: "Teacher not found." }; return d; }
-          this._cascadeDeleteTeacher(d, userId);
-          return d;
-        });
-        return result;
-      },
-      // Non-login staff (Cleaner/Guard/Driver/Cook/Other) are deleted outright; a staff row linked
-      // to a Teacher login is routed through the same cascade as deleteTeacher. Director/Finance
-      // accounts are out of scope here — those are managed via Accounts & Access, not Staff delete.
-      deleteStaff(staffId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const staffRec = d.staff.find((s) => s.id === staffId);
-          if (!staffRec) { result = { ok: false, message: "Staff member not found." }; return d; }
-          const linkedUser = staffRec.userId ? d.users.find((u) => u.id === staffRec.userId) : null;
-          if (linkedUser && linkedUser.role === ROLES.TEACHER) { this._cascadeDeleteTeacher(d, linkedUser.id); return d; }
-          if (linkedUser && (linkedUser.role === ROLES.ADMIN || linkedUser.role === ROLES.FINANCE)) {
-            result = { ok: false, message: "Director/Finance accounts can't be deleted from Staff — disable their access from Accounts & Access instead." };
+      // ---- Student documents (Report Cards / ID Copies / Other): real Supabase data too
+      // (student_documents) -- uploadedBy is server-stamped from auth.uid() by a trigger, not
+      // passed from the client.
+      async createStudentDocument(studentId, { category, title, fileDataUrl, fileType, fileName }) {
+        try {
+          const year = currentAcademicYear(academicYears);
+          const doc = await studentService.createDocument(studentId, { category, title, fileDataUrl, fileType, fileName }, year ? year.id : null);
+          await refetchStudentDocuments();
+          const s = studentsRaw.find((x) => x.id === studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `A document ("${doc.title}") was uploaded for ${s ? studentFullName(s) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
             return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to upload student document", e);
+          return { ok: false, message: e.message || "Couldn't upload the document." };
+        }
+      },
+      async deleteStudentDocument(id) {
+        try {
+          await studentService.deleteDocument(id);
+          await refetchStudentDocuments();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete student document", e);
+          return { ok: false, message: e.message || "Couldn't delete the document." };
+        }
+      },
+
+      // Permanently removes a student (enrollments + student_documents cascade-delete in Postgres,
+      // and so does every parent_students row FK'd to them — see parent_students' `on delete
+      // cascade` — so no separate app-level unlink step is needed) and every still-mock record
+      // that only makes sense in relation to them (attendance, behavior, results/audit, fee
+      // obligations, leave requests). Homework is assigned per-class, not per-student, so it's
+      // untouched. Irreversible — the UI requires a serious confirmation before calling this.
+      async deleteStudent(id) {
+        try {
+          const s = studentsRaw.find((x) => x.id === id);
+          if (!s) return { ok: false, message: "Student not found." };
+          const name = studentFullName(s);
+          // result_evidence metadata rows cascade with the student, but the Storage objects don't
+          // -- grab their keys first so we can best-effort delete them after.
+          const orphanEvidencePaths = resultEvidenceRaw.filter((e) => e.studentId === id).map((e) => e.storagePath);
+          await studentService.remove(id);
+          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards()]);
+          await resultEvidenceService.removeObjects(orphanEvidencePaths);
+          commit((d) => {
+            d.attendance = d.attendance.filter((a) => a.studentId !== id);
+            d.behaviorRecords = d.behaviorRecords.filter((b) => b.studentId !== id);
+            // results + result_audit_log + result_evidence rows cascade-delete in Postgres
+            // (student_id is ON DELETE CASCADE on all three) -- refetchResults / refetchResultEvidence
+            // above pick that up; the Storage objects were cleaned up just above.
+            // Payments are immutable financial records (Locked Principle #4) — a hard student
+            // delete never erases them, only this student's own billing state. Any payment that
+            // funded this student's obligations keeps its row and its allocations as historical
+            // fact; it simply funds a now-orphaned obligation instead of a deleted one.
+            const orphanedObligationIds = d.studentFeeObligations.filter((o) => o.studentId === id).map((o) => o.id);
+            d.feeObligationAdjustments = (d.feeObligationAdjustments || []).filter((a) => !orphanedObligationIds.includes(a.obligationId));
+            d.studentFeeObligations = d.studentFeeObligations.filter((o) => o.studentId !== id);
+            d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STUDENT" && r.subjectId === id));
+            d.activities = [{ id: uid("act"), text: `${name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete student", e);
+          return { ok: false, message: e.message || "Couldn't delete the student." };
+        }
+      },
+
+      // Deletes the teacher's real Supabase Auth account + profile (accountService.remove --
+      // teacher_assignments cascade-deletes server-side via their own FK, and any class's
+      // head_teacher_id they held is server-side SET NULL, same for the FK). The linked staff/
+      // payroll/attendance row is deleted explicitly first (real staff.id, cascades
+      // payroll_payments/salary_advances/staff_attendance via THEIR FKs) -- same purge-everything
+      // semantics the mock always had, just performed as real deletes instead of draft mutation.
+      // Homework/results/behavior they authored stay as historical records -- deleting a teacher
+      // shouldn't erase a student's academic history. homework.teacher_id is ON DELETE SET NULL
+      // (migration 20260901020000): the profile FK clears server-side while the row and its
+      // teacher_name snapshot survive; results/behavior are untouched here and in the schema.
+      // Timetable entries are real now (deleted explicitly below, ahead of the profile, since the
+      // FK is ON DELETE RESTRICT); substitutions cascade server-side. Notifications and staff leave
+      // requests are still mock-only domains, cleaned up here exactly as before.
+      async deleteTeacher(userId) {
+        try {
+          const u = db.users.find((x) => x.id === userId);
+          if (!u || u.role !== ROLES.TEACHER) return { ok: false, message: "Teacher not found." };
+          const staffRec = db.staff.find((s) => s.userId === userId);
+          // timetable_entries.teacher_id is ON DELETE RESTRICT, so the teacher's own periods must
+          // be cleared before the profile is removed (substitutions cascade via their own FKs).
+          // Same purge-everything semantics the mock always had.
+          await timetableService.deleteEntriesByTeacher(userId);
+          if (staffRec) await staffService.remove(staffRec.id);
+          const res = await accountService.remove(userId);
+          if (!res.ok) return { ok: false, message: res.message || "Couldn't delete the teacher's account." };
+          await Promise.all([
+            refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff(),
+            refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances(), refetchClasses(),
+            refetchTimetable(), refetchHomework(),
+          ]);
+          commit((d) => {
+            d.notifications = d.notifications.filter((n) => n.userId !== userId);
+            if (staffRec) d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffRec.id));
+            d.activities = [{ id: uid("act"), text: `${u.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete teacher", e);
+          return { ok: false, message: e.message || "Couldn't delete the teacher." };
+        }
+      },
+      // Non-login staff (Cleaner/Guard/Driver/Cook/Other) are deleted outright (real staff.id
+      // delete, cascades payroll/advances/attendance via FK); a staff row linked to a Teacher login
+      // is routed through the same account-then-staff deletion as deleteTeacher. Director/Finance
+      // accounts are out of scope here — those are managed via Accounts & Access, not Staff delete.
+      async deleteStaff(staffId) {
+        try {
+          const staffRec = db.staff.find((s) => s.id === staffId);
+          if (!staffRec) return { ok: false, message: "Staff member not found." };
+          const linkedUser = staffRec.userId ? db.users.find((u) => u.id === staffRec.userId) : null;
+          if (linkedUser && linkedUser.role === ROLES.TEACHER) return this.deleteTeacher(linkedUser.id);
+          if (linkedUser && (linkedUser.role === ROLES.ADMIN || linkedUser.role === ROLES.FINANCE)) {
+            return { ok: false, message: "Director/Finance accounts can't be deleted from Staff — disable their access from Accounts & Access instead." };
           }
-          d.payrollPayments = d.payrollPayments.filter((p) => p.staffId !== staffId);
-          d.salaryAdvances = d.salaryAdvances.filter((a) => a.staffId !== staffId);
-          d.staffAttendance = d.staffAttendance.filter((a) => a.staffId !== staffId);
-          d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffId));
-          d.staff = d.staff.filter((s) => s.id !== staffId);
-          d.activities = [{ id: uid("act"), text: `${staffRec.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          await staffService.remove(staffId);
+          await Promise.all([refetchStaff(), refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances()]);
+          commit((d) => {
+            d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffId));
+            d.activities = [{ id: uid("act"), text: `${staffRec.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete staff", e);
+          return { ok: false, message: e.message || "Couldn't delete the staff member." };
+        }
       },
 
       // Builds { subject: [classId, ...] } — the set of class+subject pairs that are actually free
@@ -1081,228 +1635,283 @@ function DataProvider({ children }) {
         return { teacherId: ta.teacherId, teacherName: teacher?.name || "another teacher" };
       },
 
-      // Moves each { classId, subject } pair in `reassignments` off whichever teacher currently
-      // holds it and onto `teacherId`, so a Class+Subject slot is never held by two teachers at
-      // once. Shared by create (hiring someone to explicitly take over an already-taught slot)
-      // and edit (the Owner/Director moving a slot between two existing teachers).
-      _applyReassignments(d, reassignments, teacherId) {
-        reassignments.forEach(({ classId, subject }) => {
-          const stolen = d.teacherAssignments.find((ta) => ta.classId === classId && ta.subject === subject && ta.teacherId !== teacherId);
-          if (!stolen) return;
-          d.teacherAssignments = d.teacherAssignments.filter((ta) => ta.id !== stolen.id);
-          const stillTeachesClass = d.teacherAssignments.some((ta) => ta.teacherId === stolen.teacherId && ta.classId === classId);
-          const cls = d.classes.find((c) => c.id === classId);
-          if (cls && !stillTeachesClass && cls.headTeacherId !== stolen.teacherId) {
-            cls.subjectTeacherIds = cls.subjectTeacherIds.filter((id) => id !== stolen.teacherId);
-          }
-        });
+      // Deletes every real teacher_assignments row a { classId, subject } reassignment pair
+      // currently belongs to (whoever holds it) -- the table's own unique(class_id, subject_id)
+      // constraint means there's at most one row per pair, so "steal" is just "delete", and the
+      // caller (createTeacher/updateTeacherAssignments) inserts the fresh row afterward. Real
+      // errors partway through are surfaced to the caller instead of silently continuing.
+      async _stealAssignmentPairs(reassignments, subjectIdByName) {
+        for (const r of reassignments) {
+          const subjectId = subjectIdByName.get(r.subject);
+          if (subjectId) await teacherService.unassignPair(r.classId, subjectId);
+        }
       },
 
-      createTeacher(data) {
-        const { firstName, middleName, lastName, email, phone, subjects = [], classIds = [], password, reassignments = [], photo } = data;
-        let result = { ok: false, message: "" };
-        commit((d) => {
+      // Validates against the live db (this._resolveTeacherAssignments already only reads, never
+      // mutates, so it works unchanged against the read-only `db` shadow here), creates the real
+      // Supabase Auth account + profile via accountService, then the linked staff/payroll row, then
+      // every resolved class+subject assignment. Each stage after account creation reports a
+      // partial failure clearly (with the real teacherId) instead of pretending nothing happened —
+      // same pattern createParentAccount already established.
+      async createTeacher(data) {
+        const { firstName, middleName, lastName, email, phone, subjects: subjectNames = [], classIds = [], password, reassignments = [], photo, bankAccount, salary } = data;
+        try {
           const trimmedEmail = (email || "").trim();
-          if (d.users.some((u) => u.email.toLowerCase() === trimmedEmail.toLowerCase())) {
-            result = { ok: false, message: "An account with this email already exists." };
-            return d;
+          if (db.users.some((u) => u.email.toLowerCase() === trimmedEmail.toLowerCase())) {
+            return { ok: false, message: "An account with this email already exists." };
           }
           const reassignSet = new Set(reassignments.map((r) => `${r.classId}|${r.subject}`));
-          const resolved = this._resolveTeacherAssignments(d, { subjects, classIds, excludeTeacherId: null, reassignSet });
-          if (!resolved.ok) { result = resolved; return d; }
+          const resolved = this._resolveTeacherAssignments(db, { subjects: subjectNames, classIds, excludeTeacherId: null, reassignSet });
+          if (!resolved.ok) return resolved;
 
           const name = fullName(firstName, middleName, lastName);
-          const t = {
-            id: uid("user"), role: ROLES.TEACHER, status: "ACTIVE", photo: photo || null, mustChangePassword: true,
-            firstName: (firstName || "").trim(), middleName: (middleName || "").trim(), lastName: (lastName || "").trim(), name,
-            email: trimmedEmail, phone: (phone || "").trim(), password,
-          };
-          d.users.push(t);
-          this._applyReassignments(d, reassignments, t.id);
+          const created = await accountService.create({ email: trimmedEmail, password, fullName: name, role: ROLES.TEACHER, phone });
+          if (!created.ok) return { ok: false, message: created.message || "Couldn't create the teacher account." };
+          const teacherId = created.userId;
 
-          const classLabels = new Set();
-          Object.entries(resolved.pairsBySubject).forEach(([subj, cids]) => {
-            cids.forEach((cid) => {
-              d.teacherAssignments.push({ id: uid("ta"), teacherId: t.id, subject: subj, classId: cid });
-              const cls = d.classes.find((c) => c.id === cid);
-              if (cls) {
-                if (!cls.subjectTeacherIds.includes(t.id)) cls.subjectTeacherIds.push(t.id);
-                classLabels.add(`${cls.grade}${cls.section}`);
-              }
+          try {
+            await staffService.create({
+              userId: teacherId, name, position: "Teacher", phone: (phone || "").trim(),
+              employmentDate: new Date().toISOString().slice(0, 10), salary: salary != null ? salary : 4500,
+              bankAccount: bankAccount || null, photo: photo || null,
             });
-          });
-          // Every teacher login also gets a linked staff/payroll record (same as the seeded
-          // teachers — see seed.js's "stay in sync with users" comment), so a newly hired teacher
-          // immediately shows up in Payroll and Staff Attendance instead of only existing as a
-          // login with no HR record until someone manually adds one from the Staff page.
-          const staffSeq = d.staffSeq || 1;
-          d.staffSeq = staffSeq + 1;
-          d.staff.push({
-            id: uid("staff"), userId: t.id, name, position: "Teacher",
-            employmentDate: new Date().toISOString().slice(0, 10), phone: t.phone,
-            salary: 4500, paymentSchedule: "MONTHLY", status: "ACTIVE", employmentStatus: "ACTIVE", employmentEndDate: null, photo: t.photo,
-            bankAccount: data.bankAccount || null, employeeNumber: `TMA-EMP-${String(staffSeq).padStart(4, "0")}`,
-          });
-
-          d.activities = [{ id: uid("act"), text: `Teacher ${name} was added${classLabels.size ? ` and assigned to ${[...classLabels].join(", ")}` : ""}.`, createdAt: Date.now() }, ...d.activities];
-          result = { ok: true, message: "Teacher added successfully.", teacherId: t.id };
-          return d;
-        });
-        return result;
-      },
-      updateTeacher(id, patch) {
-        commit((d) => {
-          // bankAccount lives only on the staff/payroll record, not the login — pulled out before
-          // patching `users` so it doesn't get duplicated onto the account object.
-          const { bankAccount, ...userPatch } = patch;
-          const t = d.users.find((u) => u.id === id);
-          if (t) Object.assign(t, userPatch);
-          // Keep the linked staff/payroll record's name/phone/photo/bank account in sync, same
-          // invariant as updateOwnProfile below.
-          const staffRec = d.staff.find((s) => s.userId === id);
-          if (staffRec) {
-            if (patch.name !== undefined) staffRec.name = patch.name;
-            if (patch.phone !== undefined) staffRec.phone = patch.phone;
-            if (patch.photo !== undefined) staffRec.photo = patch.photo;
-            if (bankAccount !== undefined) staffRec.bankAccount = bankAccount;
+          } catch (staffErr) {
+            await Promise.all([refetchTeacherAccounts(), refetchStaff()]);
+            commit((d) => { d.activities = [{ id: uid("act"), text: `Teacher ${name} was added, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            return { ok: false, message: `The teacher account was created, but the staff/payroll record failed: ${staffErr.message || "unknown error"}. Add it from the Staff page.`, teacherId };
           }
-          return d;
-        });
+
+          const subjectIdByName = new Map(subjects.map((s) => [s.name, s.id]));
+          const classLabels = new Set();
+          try {
+            await this._stealAssignmentPairs(reassignments, subjectIdByName);
+            for (const [subj, cids] of Object.entries(resolved.pairsBySubject)) {
+              const subjectId = subjectIdByName.get(subj);
+              if (!subjectId) continue;
+              for (const cid of cids) {
+                await teacherService.assign(teacherId, subjectId, cid);
+                const cls = classesRaw.find((c) => c.id === cid);
+                if (cls) classLabels.add(`${cls.grade}${cls.section}`);
+              }
+            }
+          } catch (assignErr) {
+            await Promise.all([refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff()]);
+            commit((d) => { d.activities = [{ id: uid("act"), text: `Teacher ${name} was added, but assigning classes/subjects failed partway through: ${assignErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            return { ok: false, message: `The teacher account was created, but assigning classes/subjects failed: ${assignErr.message || "unknown error"}. Finish it from the Teachers page.`, teacherId };
+          }
+
+          await Promise.all([refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Teacher ${name} was added${classLabels.size ? ` and assigned to ${[...classLabels].join(", ")}` : ""}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "Teacher added successfully.", teacherId };
+        } catch (e) {
+          console.error("Failed to create teacher", e);
+          return { ok: false, message: e.message || "Couldn't create the teacher." };
+        }
+      },
+      async updateTeacher(id, patch) {
+        try {
+          // bankAccount lives only on the staff/payroll record, not the login.
+          const { bankAccount, ...userPatch } = patch;
+          const profilePatch = {};
+          if (userPatch.name !== undefined) profilePatch.name = userPatch.name;
+          if (userPatch.phone !== undefined) profilePatch.phone = userPatch.phone;
+          if (userPatch.photo !== undefined) profilePatch.photo = userPatch.photo;
+          if (Object.keys(profilePatch).length) await teacherService.updateProfile(id, profilePatch);
+          // Keep the linked staff/payroll record's name/phone/photo/bank account in sync, same
+          // invariant as updateOwnProfile.
+          const staffRec = db.staff.find((s) => s.userId === id);
+          if (staffRec) {
+            const staffPatch = {};
+            if (patch.name !== undefined) staffPatch.name = patch.name;
+            if (patch.phone !== undefined) staffPatch.phone = patch.phone;
+            if (patch.photo !== undefined) staffPatch.photo = patch.photo;
+            if (bankAccount !== undefined) staffPatch.bankAccount = bankAccount;
+            if (Object.keys(staffPatch).length) await staffService.update(staffRec.id, staffPatch);
+          }
+          await Promise.all([refetchTeacherAccounts(), refetchStaff()]);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update teacher", e);
+          return { ok: false, message: e.message || "Couldn't update the teacher." };
+        }
       },
       // Replaces a teacher's full set of Class+Subject assignments with the requested one.
       // `reassignments` is an optional array of { classId, subject } pairs the Owner/Director has
       // explicitly chosen to move from whichever teacher currently holds them onto this teacher —
       // without it, a class+subject already taught by someone else is left with that teacher.
-      updateTeacherAssignments(teacherId, subjects = [], classIds = [], reassignments = []) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const teacher = d.users.find((u) => u.id === teacherId);
-          if (!teacher) { result = { ok: false, message: "Teacher not found." }; return d; }
+      async updateTeacherAssignments(teacherId, subjectNames = [], classIds = [], reassignments = []) {
+        try {
+          const teacher = db.users.find((u) => u.id === teacherId);
+          if (!teacher) return { ok: false, message: "Teacher not found." };
           const reassignSet = new Set(reassignments.map((r) => `${r.classId}|${r.subject}`));
 
-          const resolved = this._resolveTeacherAssignments(d, { subjects, classIds, excludeTeacherId: teacherId, reassignSet });
-          if (!resolved.ok) { result = resolved; return d; }
+          const resolved = this._resolveTeacherAssignments(db, { subjects: subjectNames, classIds, excludeTeacherId: teacherId, reassignSet });
+          if (!resolved.ok) return resolved;
 
-          this._applyReassignments(d, reassignments, teacherId);
-
-          d.teacherAssignments = d.teacherAssignments.filter((ta) => ta.teacherId !== teacherId);
-          d.classes.forEach((c) => { c.subjectTeacherIds = c.subjectTeacherIds.filter((id) => id !== teacherId); });
+          const subjectIdByName = new Map(subjects.map((s) => [s.name, s.id]));
+          await this._stealAssignmentPairs(reassignments, subjectIdByName);
+          await teacherService.unassignAllForTeacher(teacherId);
           const classLabels = new Set();
-          Object.entries(resolved.pairsBySubject).forEach(([subj, cids]) => {
-            cids.forEach((cid) => {
-              d.teacherAssignments.push({ id: uid("ta"), teacherId, subject: subj, classId: cid });
-              const cls = d.classes.find((c) => c.id === cid);
-              if (cls) {
-                if (!cls.subjectTeacherIds.includes(teacherId)) cls.subjectTeacherIds.push(teacherId);
-                classLabels.add(`${cls.grade}${cls.section}`);
-              }
-            });
-          });
-          d.activities = [{ id: uid("act"), text: `${teacher.name}'s class and subject assignments were updated${classLabels.size ? ` (${[...classLabels].join(", ")})` : ""}.`, createdAt: Date.now() }, ...d.activities];
-          result = { ok: true, message: "Teacher assignments updated." };
-          return d;
-        });
-        return result;
-      },
-
-      resetTeacherPassword(teacherId, newPassword) {
-        commit((d) => {
-          const t = d.users.find((u) => u.id === teacherId);
-          if (t) { t.password = newPassword; t.mustChangePassword = true; }
-          d.activities = [{ id: uid("act"), text: `Password was reset for ${t?.name || "a teacher"}. The new temporary password was shared privately and is not stored anywhere visible.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-      },
-
-      // `data.subjects`, if given, is the class's full curriculum (subject name strings) — set in
-      // the same commit as the class itself so a brand-new class's subjects are never lost to the
-      // setDb-batching hazard of chaining two commit()-returning calls in one tick (see
-      // updateClass's matching `patch.subjects` handling for the full add/remove/cascade logic;
-      // a newly created class has no prior teacherAssignments/results to reconcile against, so
-      // this path is just a straight push).
-      createClass(data) {
-        let newId = null;
-        commit((d) => {
-          const exists = d.classes.some((c) => c.grade === data.grade && c.section === data.section);
-          if (exists) return d;
-          const cls = { id: uid("class"), grade: data.grade, section: data.section, headTeacherId: data.headTeacherId || null, subjectTeacherIds: [] };
-          newId = cls.id;
-          d.classes.push(cls);
-          (data.subjects || []).forEach((name) => { d.classSubjects.push({ id: uid("csub"), classId: cls.id, subject: name }); });
-          d.activities = [{ id: uid("act"), text: `${data.grade}${data.section} was added as a new class.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return newId;
-      },
-
-      // `patch.subjects`, if given, full-replaces the class's curriculum in this same commit
-      // (diffed against its current classSubjects). Removing a subject the class no longer
-      // teaches is blocked if students already have recorded results for it, and cleanly
-      // unassigns any teacher who was teaching that class+subject pair — same cascade
-      // `_applyReassignments` already uses for `cls.subjectTeacherIds` cleanup.
-      updateClass(id, patch) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const cls = d.classes.find((c) => c.id === id);
-          if (!cls) { result = { ok: false, message: "Class not found." }; return d; }
-          const nextGrade = patch.grade ?? cls.grade;
-          const nextSection = patch.section ?? cls.section;
-          const duplicate = d.classes.some((c) => c.id !== id && c.grade === nextGrade && c.section === nextSection);
-          if (duplicate) { result = { ok: false, message: `${nextGrade}${nextSection} already exists.` }; return d; }
-          if (patch.subjects) {
-            const current = d.classSubjects.filter((cs) => cs.classId === id).map((cs) => cs.subject);
-            const toAdd = patch.subjects.filter((n) => !current.includes(n));
-            const toRemove = current.filter((n) => !patch.subjects.includes(n));
-            for (const name of toRemove) {
-              const hasResults = d.results.some((r) => r.classId === id && r.subject === name);
-              if (hasResults) { result = { ok: false, message: `Can't remove ${name} — ${cls.grade}${cls.section} already has recorded results for it. Remove those results first.` }; return d; }
+          for (const [subj, cids] of Object.entries(resolved.pairsBySubject)) {
+            const subjectId = subjectIdByName.get(subj);
+            if (!subjectId) continue;
+            for (const cid of cids) {
+              await teacherService.assign(teacherId, subjectId, cid);
+              const cls = classesRaw.find((c) => c.id === cid);
+              if (cls) classLabels.add(`${cls.grade}${cls.section}`);
             }
-            toRemove.forEach((name) => {
-              d.classSubjects = d.classSubjects.filter((cs) => !(cs.classId === id && cs.subject === name));
-              const stale = d.teacherAssignments.filter((ta) => ta.classId === id && ta.subject === name);
-              stale.forEach((ta) => {
-                d.teacherAssignments = d.teacherAssignments.filter((x) => x.id !== ta.id);
-                const stillTeachesClass = d.teacherAssignments.some((x) => x.teacherId === ta.teacherId && x.classId === id);
-                if (!stillTeachesClass && cls.headTeacherId !== ta.teacherId) {
-                  cls.subjectTeacherIds = cls.subjectTeacherIds.filter((tid) => tid !== ta.teacherId);
-                }
-              });
-            });
-            toAdd.forEach((name) => { d.classSubjects.push({ id: uid("csub"), classId: id, subject: name }); });
           }
-          if ((patch.grade && patch.grade !== cls.grade) || (patch.section !== undefined && patch.section !== cls.section)) {
-            // keep student/homework records pointing at the same class in sync with the renamed grade/section
-            // (exam announcements aren't stored per-class — they're audience-scoped by grade/section at
-            // announce-time, so there's nothing to cascade there)
-            d.students.forEach((s) => { if (s.classId === id) { s.grade = nextGrade; s.section = nextSection; } });
-            d.homework.forEach((h) => { if (h.classId === id) { h.grade = nextGrade; h.section = nextSection; } });
-          }
-          cls.grade = nextGrade;
-          cls.section = nextSection;
-          if (patch.headTeacherId !== undefined) cls.headTeacherId = patch.headTeacherId || null;
-          d.activities = [{ id: uid("act"), text: `${nextGrade}${nextSection} was updated.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          await refetchTeacherAssignments();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${teacher.name}'s class and subject assignments were updated${classLabels.size ? ` (${[...classLabels].join(", ")})` : ""}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "Teacher assignments updated." };
+        } catch (e) {
+          console.error("Failed to update teacher assignments", e);
+          return { ok: false, message: e.message || "Couldn't update teacher assignments." };
+        }
       },
 
-      deleteClass(id) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const cls = d.classes.find((c) => c.id === id);
-          if (!cls) { result = { ok: false, message: "Class not found." }; return d; }
-          const hasStudents = d.students.some((s) => s.classId === id);
-          if (hasStudents) { result = { ok: false, message: `${cls.grade}${cls.section} still has students enrolled. Move or archive them before deleting this class.` }; return d; }
-          d.classes = d.classes.filter((c) => c.id !== id);
-          d.classSubjects = d.classSubjects.filter((cs) => cs.classId !== id);
-          d.teacherAssignments = d.teacherAssignments.filter((ta) => ta.classId !== id);
-          d.results = d.results.filter((r) => r.classId !== id);
-          d.resultAuditLog = (d.resultAuditLog || []).filter((e) => e.classId !== id);
-          d.homework = d.homework.filter((h) => h.classId !== id);
-          d.activities = [{ id: uid("act"), text: `${cls.grade}${cls.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      async resetTeacherPassword(teacherId, newPassword) {
+        try {
+          const t = db.users.find((u) => u.id === teacherId);
+          const res = await accountService.resetPassword(teacherId, newPassword);
+          if (!res.ok) return { ok: false, message: res.message || "Couldn't reset the password." };
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Password was reset for ${t?.name || "a teacher"}. The new temporary password was shared privately and is not stored anywhere visible.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to reset teacher password", e);
+          return { ok: false, message: e.message || "Couldn't reset the password." };
+        }
+      },
+
+      // ---- Classes + curriculum: real Supabase data (see classService). teacherAssignments stays
+      // mock for now (its teacher_id is a real profiles FK -- no Teacher has a real Supabase Auth
+      // account yet). `data.subjects`, if given, is the class's full curriculum (subject name
+      // strings), applied as individual class_subjects inserts after the class row itself exists.
+      //
+      // `headTeacherId` is a real FK to profiles(id) too -- since no Teacher has a real profile
+      // yet, any non-empty selection is guaranteed to fail with a Postgres FK violation. Rather
+      // than silently drop it, the error is caught below and turned into a clear message instead
+      // of a raw constraint name.
+      async createClass(data) {
+        const grade = data.grade, section = data.section || "";
+        try {
+          const exists = classesRaw.some((c) => c.grade === grade && c.section === section);
+          if (exists) return { ok: false, message: `${grade}${section} already exists.` };
+          const cls = await classService.create({ grade, section, headTeacherId: data.headTeacherId });
+          for (const name of (data.subjects || [])) {
+            const subj = subjects.find((s) => s.name === name);
+            if (subj) await classService.addCurriculumSubject(cls.id, subj.id);
+          }
+          await refetchClasses();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${grade}${section} was added as a new class.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, classId: cls.id };
+        } catch (e) {
+          console.error("Failed to create class", e);
+          const message = /head_teacher/.test(e.message || "")
+            ? "Head teacher assignment isn't available yet — teacher accounts haven't moved to Supabase. Leave it unassigned for now."
+            : (e.message || "Couldn't create the class.");
+          return { ok: false, message };
+        }
+      },
+
+      // `patch.subjects`, if given, full-replaces the class's curriculum (diffed against its
+      // current classSubjects). Removing a subject the class no longer teaches is blocked if
+      // students already have recorded results for it. Any teacherAssignment (still mock) for a
+      // removed subject is cleaned up in the same commit as the student/homework grade-section
+      // cascade below.
+      async updateClass(id, patch) {
+        const cls = classesRaw.find((c) => c.id === id);
+        if (!cls) return { ok: false, message: "Class not found." };
+        const nextGrade = patch.grade ?? cls.grade;
+        const nextSection = patch.section ?? cls.section;
+        const duplicate = classesRaw.some((c) => c.id !== id && c.grade === nextGrade && c.section === nextSection);
+        if (duplicate) return { ok: false, message: `${nextGrade}${nextSection} already exists.` };
+        let toAdd = [], toRemove = [];
+        if (patch.subjects) {
+          const current = classSubjects.filter((cs) => cs.classId === id).map((cs) => cs.subject);
+          toAdd = patch.subjects.filter((n) => !current.includes(n));
+          toRemove = current.filter((n) => !patch.subjects.includes(n));
+          for (const name of toRemove) {
+            const hasResults = db.results.some((r) => r.classId === id && r.subject === name);
+            if (hasResults) return { ok: false, message: `Can't remove ${name} — ${cls.grade}${cls.section} already has recorded results for it. Remove those results first.` };
+          }
+        }
+        try {
+          for (const name of toRemove) {
+            const subj = subjects.find((s) => s.name === name);
+            if (subj) {
+              await classService.removeCurriculumSubject(id, subj.id);
+              // A subject no longer taught in this class can't keep a teacher assigned to it here
+              // either -- real teacher_assignments row, same cascade the mock draft used to do.
+              await teacherService.unassignPair(id, subj.id);
+            }
+          }
+          for (const name of toAdd) {
+            const subj = subjects.find((s) => s.name === name);
+            if (subj) await classService.addCurriculumSubject(id, subj.id);
+          }
+          const gradeSectionChanged = (patch.grade && patch.grade !== cls.grade) || (patch.section !== undefined && patch.section !== cls.section);
+          if (patch.grade !== undefined || patch.section !== undefined || patch.headTeacherId !== undefined) {
+            await classService.update(id, { grade: patch.grade, section: patch.section, headTeacherId: patch.headTeacherId });
+          }
+          // homework.grade/section are denormalized onto the row (like students) — keep the real
+          // homework rows in sync with the renamed class before refetching.
+          if (gradeSectionChanged) await homeworkService.retagClass(id, nextGrade, nextSection);
+          await Promise.all([refetchClasses(), refetchTeacherAssignments(), refetchHomework()]);
+          commit((d) => {
+            if (gradeSectionChanged) {
+              // mirror the renamed grade/section onto the student rows in the mock overlay too
+              // (exam announcements aren't stored per-class — they're audience-scoped by grade/
+              // section at announce-time, so there's nothing to cascade there)
+              d.students.forEach((s) => { if (s.classId === id) { s.grade = nextGrade; s.section = nextSection; } });
+            }
+            d.activities = [{ id: uid("act"), text: `${nextGrade}${nextSection} was updated.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update class", e);
+          const message = /head_teacher/.test(e.message || "")
+            ? "Head teacher assignment isn't available yet — teacher accounts haven't moved to Supabase. Leave it unassigned for now."
+            : (e.message || "Couldn't update the class.");
+          return { ok: false, message };
+        }
+      },
+
+      async deleteClass(id) {
+        const cls = classesRaw.find((c) => c.id === id);
+        if (!cls) return { ok: false, message: "Class not found." };
+        const hasStudents = db.students.some((s) => s.classId === id);
+        if (hasStudents) return { ok: false, message: `${cls.grade}${cls.section} still has students enrolled. Move or archive them before deleting this class.` };
+        try {
+          const orphanEvidencePaths = resultEvidenceRaw.filter((e) => e.classId === id).map((e) => e.storagePath);
+          await classService.remove(id); // class_subjects, teacher_assignments, timetable_entries, homework AND results cascade-delete in Postgres
+          await Promise.all([refetchClasses(), refetchTeacherAssignments(), refetchTimetable(), refetchHomework(), refetchResults(), refetchResultEvidence(), refetchReportCards()]);
+          await resultEvidenceService.removeObjects(orphanEvidencePaths);
+          commit((d) => {
+            // results cascade-delete via results.class_id ON DELETE CASCADE; result_audit_log +
+            // result_evidence rows follow via their result_id ON DELETE CASCADE -- refetchResults /
+            // refetchResultEvidence pick it up; Storage objects were cleaned up just above.
+            d.activities = [{ id: uid("act"), text: `${cls.grade}${cls.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete class", e);
+          return { ok: false, message: e.message || "Couldn't delete the class." };
+        }
       },
 
       // ---- Subjects: real Supabase data (see subjectService). Still-mock tables that reference a
@@ -1335,14 +1944,14 @@ function DataProvider({ children }) {
           await subjectService.rename(id, trimmed);
           await refetchSubjects();
           commit((d) => {
-            d.homework.forEach((h) => { if (h.subject === oldName) h.subject = trimmed; });
+            // homework is real Supabase data keyed by subject_id — its name resolves fresh from the
+            // renamed subjects row, nothing to cascade here (same as classSubjects/teacherAssignments,
+            // though those still need their mock-overlay copies retagged for this same-tick commit).
             d.teacherAssignments.forEach((ta) => { if (ta.subject === oldName) ta.subject = trimmed; });
             d.classSubjects.forEach((cs) => { if (cs.subject === oldName) cs.subject = trimmed; });
             d.users.forEach((u) => { if (u.role === ROLES.TEACHER && u.subject === oldName) u.subject = trimmed; });
-            // Existing recorded results are keyed by subject name — without this, a rename orphans
-            // every student's already-recorded scores under the old name (invisible in Results/
-            // report cards, which all query by the class's *current* curriculum).
-            d.results.forEach((r) => { if (r.subject === oldName) r.subject = trimmed; });
+            // results are real Supabase data keyed by subject_id -- the name resolves fresh from the
+            // renamed subjects row (DataContext's `results` useMemo), nothing to cascade here.
             d.activities = [{ id: uid("act"), text: `Subject "${oldName}" was renamed to "${trimmed}".`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
@@ -1377,58 +1986,121 @@ function DataProvider({ children }) {
         return list.length ? list.sort((a, b) => GRADES.indexOf(a) - GRADES.indexOf(b)) : GRADES.slice(0, 3);
       },
 
-      createParentAccount({ name, email, password, phone, children }) {
-        let result = { ok: false, message: "" };
-        commit((d) => {
-          if (d.users.some((u) => u.email.toLowerCase() === email.toLowerCase())) {
-            result = { ok: false, message: "An account with this email already exists." };
-            return d;
-          }
+      // Creates a real Supabase Auth account + profiles row (role PARENT) via the
+      // manage-staff-account Edge Function, then links each resolved child through a real
+      // `parent_students` insert -- there is no local/mock fallback: if the Edge Function isn't
+      // deployed or the caller isn't Owner/Educational Director, this fails with a clear message
+      // instead of silently creating fake state. Mirrors createParentAccount's original rule that
+      // a student already linked to ANY parent can't be claimed again by a brand-new account
+      // (manually connecting an additional parent to an already-linked student is `connectChild`,
+      // a deliberate admin action, not this one).
+      async createParentAccount({ name, email, password, phone, children }) {
+        try {
           const resolvedChildren = [];
-          for (const c of children) {
-            const student = d.students.find((s) => s.studentId.toLowerCase() === c.studentId.trim().toLowerCase());
-            if (!student) {
-              result = { ok: false, message: `We couldn't find a student with ID ${c.studentId}. Please check the ID provided by the school.` };
-              return d;
-            }
+          for (const c of (children || [])) {
+            const code = (c.studentId || "").trim().toLowerCase();
+            if (!code) continue;
+            const student = studentsRaw.find((s) => s.studentId.toLowerCase() === code);
+            if (!student) return { ok: false, message: `We couldn't find a student with ID ${c.studentId}. Please check the ID provided by the school.` };
             if (student.parentIds && student.parentIds.length > 0) {
-              result = { ok: false, message: `${studentFullName(student)} (${student.studentId}) is already registered to a parent account. If this is a mistake, please contact the school.` };
-              return d;
+              return { ok: false, message: `${studentFullName(student)} (${student.studentId}) is already registered to a parent account. If this is a mistake, please contact the school.` };
             }
             resolvedChildren.push(student);
           }
-          const parent = { id: uid("user"), role: ROLES.PARENT, name, email, password, phone, photo: null, childIds: resolvedChildren.map((s) => s.id) };
-          d.users.push(parent);
-          resolvedChildren.forEach((s) => {
-            if (!s.parentIds.includes(parent.id)) s.parentIds.push(parent.id);
+          const created = await accountService.create({ email, password, fullName: name, role: ROLES.PARENT, phone });
+          if (!created.ok) return { ok: false, message: created.message || "Couldn't create the parent account." };
+          const parentId = created.userId;
+          // The Auth account + profile already exist for real at this point (created.ok) -- if
+          // linking a child fails partway through, refetch and report the partial state instead of
+          // a plain error, so the account isn't invisible until the admin happens to reload. The
+          // remaining child(ren) can then be connected from the Parents screen's Manage panel.
+          const linkedStudentIds = [];
+          for (const student of resolvedChildren) {
+            try {
+              await parentService.link(parentId, student.id);
+              linkedStudentIds.push(student.studentId);
+            } catch (linkErr) {
+              await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
+              commit((d) => {
+                d.activities = [{ id: uid("act"), text: `New parent account (${name}) created${linkedStudentIds.length ? ` and connected to ${linkedStudentIds.join(", ")}` : ""}.`, createdAt: Date.now() }, ...d.activities];
+                return d;
+              });
+              return { ok: false, message: `The parent account was created, but connecting ${studentFullName(student)} failed: ${linkErr.message || "unknown error"}. Connect them from the Parents screen's Manage panel.`, parentId };
+            }
+          }
+          await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `New parent account (${name}) connected to ${resolvedChildren.map((s) => s.studentId).join(", ") || "no children yet"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
           });
-          d.activities = [{ id: uid("act"), text: `New parent account (${name}) connected to ${resolvedChildren.map((s) => s.studentId).join(", ")}.`, createdAt: Date.now() }, ...d.activities];
-          result = { ok: true, message: "Account created.", parentId: parent.id };
-          return d;
-        });
-        return result;
+          return { ok: true, message: "Account created.", parentId };
+        } catch (e) {
+          console.error("Failed to create parent account", e);
+          return { ok: false, message: e.message || "Couldn't create the parent account." };
+        }
       },
 
-      connectChild(parentId, studentIdRaw) {
-        let result = { ok: false, message: "" };
-        commit((d) => {
-          const student = d.students.find((s) => s.studentId.toLowerCase() === studentIdRaw.trim().toLowerCase());
-          if (!student) {
-            result = { ok: false, message: "We couldn't find a student with this ID. Please check the ID provided by the school." };
+      // Admin-only (see parentService.js's RLS note): links an existing parent account to another
+      // student by their Student ID. There is deliberately no self-service equivalent — a parent
+      // can never insert their own parent_students row (Postgres rejects it), and knowing a
+      // student's printed ID isn't proof of guardianship, so this is only ever called from the
+      // school's own Parents management screen.
+      async connectChild(parentId, studentIdRaw) {
+        try {
+          const code = (studentIdRaw || "").trim().toLowerCase();
+          const student = studentsRaw.find((s) => s.studentId.toLowerCase() === code);
+          if (!student) return { ok: false, message: "We couldn't find a student with this ID. Please check the ID provided by the school." };
+          await parentService.link(parentId, student.id);
+          await Promise.all([refetchParentLinks(), refetchStudents()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Parent account connected to student ${student.studentId}.`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          const parent = d.users.find((u) => u.id === parentId);
-          if (student.parentIds.includes(parentId)) {
-            result = { ok: false, message: "This child is already connected to your account." };
+          });
+          return { ok: true, message: `${studentFullName(student)} has been added to this account.` };
+        } catch (e) {
+          console.error("Failed to connect child", e);
+          return { ok: false, message: e.message || "Couldn't connect this child." };
+        }
+      },
+
+      // Admin-only, symmetric with connectChild — removes the real parent_students row. Never just
+      // edits local state: the relationship the rest of the app trusts (RLS, notifications,
+      // payments, results...) lives only in that table.
+      async disconnectChild(parentId, studentId) {
+        try {
+          await parentService.unlink(parentId, studentId);
+          await Promise.all([refetchParentLinks(), refetchStudents()]);
+          commit((d) => {
+            const student = d.students.find((s) => s.id === studentId);
+            d.activities = [{ id: uid("act"), text: `A parent account was disconnected from ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          student.parentIds.push(parentId);
-          parent.childIds.push(student.id);
-          d.activities = [{ id: uid("act"), text: `Parent account connected to student ${student.studentId}.`, createdAt: Date.now() }, ...d.activities];
-          result = { ok: true, message: `${studentFullName(student)} has been added to your account.` };
-          return d;
-        });
-        return result;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to disconnect child", e);
+          return { ok: false, message: e.message || "Couldn't disconnect this child." };
+        }
+      },
+
+      // Permanently deletes the parent's Supabase Auth account via the Edge Function; `profiles`
+      // (and every parent_students row FK'd to it) cascade-deletes server-side. Notifications/
+      // messages/activities this parent appears in are left as historical records, same as
+      // deleteTeacher leaves a departed teacher's homework/results/behavior entries in place.
+      async deleteParentAccount(parentId) {
+        try {
+          const parent = parentsRaw.find((p) => p.id === parentId);
+          const res = await accountService.remove(parentId);
+          if (!res.ok) return { ok: false, message: res.message || "Couldn't delete the parent account." };
+          await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${parent ? parent.name : "A parent"}'s account was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete parent account", e);
+          return { ok: false, message: e.message || "Couldn't delete the parent account." };
+        }
       },
 
       // Blocks the same two ways every other teacher-only academic action is blocked (see
@@ -1436,7 +2108,12 @@ function DataProvider({ children }) {
       // school day (weekend/break/closure/outside the academic year), or the teacher's own
       // staffAttendance record for today is Absent/Sick/Permission. Previously unchecked here — a
       // teacher could publish homework on any date, including after the academic year had ended.
-      createHomework(data) {
+      // Real Supabase (`homework` table). The two client-side gates below are kept purely for a
+      // friendly message — RLS's homework_insert enforces the same rules server-side
+      // (teacher_id = auth.uid(), teaches_class_subject, teacher_academic_action_ok). Activities +
+      // parent notifications stay on the mock bridge (locked Phase 2 decision — notify_homework
+      // exists but isn't wired until the Notifications phase).
+      async createHomework(data) {
         const today = todayKeyStr();
         const calendar = classifySchoolDay(today);
         if (!calendar.available) {
@@ -1448,53 +2125,106 @@ function DataProvider({ children }) {
         if (!canTeacherAct(teacherUser, myRecordToday)) {
           return { ok: false, message: `You're marked ${myRecordToday.status.toLowerCase()} today — homework can't be published until this is corrected or a substitute is assigned.` };
         }
-        commit((d) => {
-          const cls = d.classes.find((c) => c.grade === data.grade && c.section === data.section);
-          const year = currentAcademicYear(d.academicYears);
-          const hw = { id: uid("hw"), ...data, classId: cls?.id, createdAt: Date.now(), attachment: data.attachment || null, academicYearId: year ? year.id : null };
-          d.homework.push(hw);
-          const teacher = d.users.find((u) => u.id === data.teacherId);
-          d.activities = [{ id: uid("act"), text: `${teacher?.name || "A teacher"} published ${data.subject} homework for ${data.grade}${data.section}.`, createdAt: Date.now(), navigation: { page: "homework", homeworkId: hw.id, classId: cls?.id } }, ...d.activities];
-          const studentIds = d.students.filter((s) => s.classId === cls?.id).map((s) => s.id);
-          const parentIds = new Set();
-          d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
-          parentIds.forEach((pid) => {
-            const parentUser = d.users.find((u) => u.id === pid);
-            const childId = (parentUser?.childIds || []).find((cid) => studentIds.includes(cid)) || null;
-            d.notifications = [{ id: uid("notif"), userId: pid, title: `New ${data.subject} homework`, message: `${data.title} — due ${fmtDate(data.dueDate)}.`, read: false, createdAt: Date.now(), type: "HOMEWORK", navigation: { page: "homework", studentId: childId, homeworkId: hw.id } }, ...d.notifications];
+        const cls = db.classes.find((c) => c.grade === data.grade && c.section === data.section);
+        if (!cls) return { ok: false, message: "Class not found." };
+        const subjectId = db.subjects.find((s) => s.name === data.subject)?.id;
+        if (!subjectId) return { ok: false, message: `Subject "${data.subject}" not found.` };
+        const year = currentAcademicYear(db.academicYears);
+        try {
+          const created = await homeworkService.create({
+            subjectId, grade: data.grade, section: data.section, classId: cls.id,
+            title: data.title, description: data.description, dueDate: data.dueDate,
+            teacherId: data.teacherId, teacherName: teacherUser?.name || null,
+            academicYearId: year ? year.id : null,
           });
-          return d;
-        });
-        return { ok: true, message: "" };
+          await refetchHomework();
+          commit((d) => {
+            const teacher = d.users.find((u) => u.id === data.teacherId);
+            d.activities = [{ id: uid("act"), text: `${teacher?.name || "A teacher"} published ${data.subject} homework for ${data.grade}${data.section}.`, createdAt: Date.now(), navigation: { page: "homework", homeworkId: created.id, classId: cls.id } }, ...d.activities];
+            const studentIds = d.students.filter((s) => s.classId === cls.id).map((s) => s.id);
+            const parentIds = new Set();
+            d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
+            parentIds.forEach((pid) => {
+              const parentUser = d.users.find((u) => u.id === pid);
+              const childId = (parentUser?.childIds || []).find((cid) => studentIds.includes(cid)) || null;
+              d.notifications = [{ id: uid("notif"), userId: pid, title: `New ${data.subject} homework`, message: `${data.title} — due ${fmtDate(data.dueDate)}.`, read: false, createdAt: Date.now(), type: "HOMEWORK", navigation: { page: "homework", studentId: childId, homeworkId: created.id } }, ...d.notifications];
+            });
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to create homework", e);
+          const msg = /row-level security|violates/i.test(e.message || "")
+            ? "You can't publish homework right now — it must be a school day, you must not be marked absent, and you must be assigned to teach this subject in this class."
+            : (e.message || "Couldn't publish the homework.");
+          return { ok: false, message: msg };
+        }
       },
-      updateHomework(id, patch) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const hw = d.homework.find((h) => h.id === id);
-          if (!hw) { result = { ok: false, message: "Homework not found." }; return d; }
-          if (patch.grade !== undefined || patch.section !== undefined) {
-            const grade = patch.grade ?? hw.grade, section = patch.section ?? hw.section;
-            const cls = d.classes.find((c) => c.grade === grade && c.section === section);
-            hw.classId = cls?.id;
-          }
-          Object.assign(hw, patch);
-          d.activities = [{ id: uid("act"), text: `${hw.subject} homework for ${hw.grade}${hw.section} was updated.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      // A teacher editing their own homework is subject to the same calendar / own-attendance gate
+      // as creating it (RLS homework_update's teacher branch also requires teacher_academic_action_ok);
+      // Owner/Educational Director edits are ungated.
+      async updateHomework(id, patch) {
+        const hw = db.homework.find((h) => h.id === id);
+        if (!hw) return { ok: false, message: "Homework not found." };
+        const editor = db.users.find((u) => u.id === hw.teacherId);
+        if (editor && editor.role === ROLES.TEACHER) {
+          const today = todayKeyStr();
+          const calendar = classifySchoolDay(today);
+          if (!calendar.available) return { ok: false, message: calendar.message || `${calendar.label} — homework can't be edited today.` };
+          const staffRec = db.staff.find((s) => s.userId === hw.teacherId);
+          const myRecordToday = staffRec && db.staffAttendance.find((a) => a.staffId === staffRec.id && a.date === today);
+          if (!canTeacherAct(editor, myRecordToday)) return { ok: false, message: `You're marked ${myRecordToday.status.toLowerCase()} today — homework can't be edited until this is corrected or a substitute is assigned.` };
+        }
+        const servicePatch = {};
+        if (patch.title !== undefined) servicePatch.title = patch.title;
+        if (patch.description !== undefined) servicePatch.description = patch.description;
+        if (patch.dueDate !== undefined) servicePatch.dueDate = patch.dueDate;
+        if (patch.subject !== undefined && patch.subject !== hw.subject) {
+          const sid = db.subjects.find((s) => s.name === patch.subject)?.id;
+          if (!sid) return { ok: false, message: `Subject "${patch.subject}" not found.` };
+          servicePatch.subjectId = sid;
+        }
+        if (patch.grade !== undefined || patch.section !== undefined) {
+          const grade = patch.grade ?? hw.grade, section = patch.section ?? hw.section;
+          const cls = db.classes.find((c) => c.grade === grade && c.section === section);
+          if (!cls) return { ok: false, message: "Class not found." };
+          servicePatch.grade = grade; servicePatch.section = section; servicePatch.classId = cls.id;
+        }
+        try {
+          await homeworkService.update(id, servicePatch);
+          await refetchHomework();
+          commit((d) => {
+            const g = servicePatch.grade ?? hw.grade, sec = servicePatch.section ?? hw.section;
+            const subj = patch.subject ?? hw.subject;
+            d.activities = [{ id: uid("act"), text: `${subj} homework for ${g}${sec} was updated.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to update homework", e);
+          const msg = /row-level security|violates/i.test(e.message || "")
+            ? "You can't edit this homework right now — it must be a school day and you must not be marked absent."
+            : (e.message || "Couldn't update the homework.");
+          return { ok: false, message: msg };
+        }
       },
       // Homework is only ever removed by the teacher who created it (or Owner/Educational
-      // Director) — enforced by the caller, same pattern as deleteClass/deleteStaff below.
-      deleteHomework(id) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const hw = d.homework.find((h) => h.id === id);
-          if (!hw) { result = { ok: false, message: "Homework not found." }; return d; }
-          d.homework = d.homework.filter((h) => h.id !== id);
-          d.activities = [{ id: uid("act"), text: `${hw.subject} homework "${hw.title}" for ${hw.grade}${hw.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      // Director) — RLS homework_delete enforces this (no calendar gate on delete).
+      async deleteHomework(id) {
+        const hw = db.homework.find((h) => h.id === id);
+        if (!hw) return { ok: false, message: "Homework not found." };
+        try {
+          await homeworkService.remove(id);
+          await refetchHomework();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${hw.subject} homework "${hw.title}" for ${hw.grade}${hw.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to delete homework", e);
+          return { ok: false, message: e.message || "Couldn't delete the homework." };
+        }
       },
 
       // Shared by direct save (saveAttendance/saveStaffAttendance) and leave auto-apply
@@ -1532,34 +2262,52 @@ function DataProvider({ children }) {
       // `period` distinguishes multiple attendance sessions on the same day for shift-based staff
       // (a driver's morning school run vs. afternoon run — see staff.hasShifts). Every non-shift
       // staff member's records are all "FULL_DAY", so this is a no-op for the common case.
-      _upsertStaffAttendanceRecord(d, { staffId, date, status, arrivalTime, note, markedBy, leaveRequestId, period }) {
+      //
+      // Real-data replacement for the old draft-mutating upsert: writes one real staff_attendance
+      // row (staffService, real table) and reports whether a notification is owed -- same
+      // "did this actually change" guard as before (see Section 8 audit's dedup-notify fix), just
+      // computed against `db` (the last-fetched real data) instead of a commit() draft, since a
+      // commit() mutator can't await. Callers (saveStaffAttendance / decideLeaveRequest) are
+      // responsible for refetching staffAttendance and committing notifications/activity afterward.
+      async _writeStaffAttendance({ staffId, date, period, status, arrivalTime, note, markedBy, leaveRequestId }) {
         const finalPeriod = period || "FULL_DAY";
         const finalArrivalTime = status === "Late" ? (arrivalTime || "") : null;
-        const existing = d.staffAttendance.find((a) => a.staffId === staffId && a.date === date && (a.period || "FULL_DAY") === finalPeriod);
-        // Same guard as _upsertAttendanceRecord — don't re-notify the staff member on a repeat save
-        // that doesn't actually change their status (or, for Late, their recorded arrival time).
+        const existing = db.staffAttendance.find((a) => a.staffId === staffId && a.date === date && (a.period || "FULL_DAY") === finalPeriod);
         const statusChanged = !existing || existing.status !== status || (status === "Late" && existing.arrivalTime !== finalArrivalTime);
-        if (existing) { existing.status = status; existing.arrivalTime = finalArrivalTime; existing.note = note || ""; existing.markedBy = markedBy; existing.markedAt = Date.now(); existing.leaveRequestId = leaveRequestId ?? existing.leaveRequestId ?? null; }
-        else d.staffAttendance.push({ id: uid("tatt"), staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime, note: note || "", markedBy, markedAt: Date.now(), leaveRequestId: leaveRequestId ?? null });
-        if (status !== "Present" && statusChanged) {
+        await staffService.saveAttendanceRecord({ staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime, note, markedBy, leaveRequestId });
+        return (status !== "Present" && statusChanged) ? { staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime } : null;
+      },
+
+      async saveStaffAttendance(date, records, markedBy) {
+        try {
+          const notifyList = [];
+          for (const r of records) {
+            const n = await this._writeStaffAttendance({ staffId: r.staffId, date, period: r.period, status: r.status, arrivalTime: r.arrivalTime, note: r.note, markedBy });
+            if (n) notifyList.push(n);
+          }
+          await refetchStaffAttendance();
+          commit((d) => {
+            this._applyStaffAttendanceNotifications(d, notifyList);
+            d.activities = [{ id: uid("act"), text: `Staff attendance was recorded for ${fmtDate(date)}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to save staff attendance", e);
+          return { ok: false, message: e.message || "Couldn't save staff attendance." };
+        }
+      },
+      // Shared by saveStaffAttendance and decideLeaveRequest's STAFF branch.
+      _applyStaffAttendanceNotifications(d, notifyList) {
+        notifyList.forEach(({ staffId, date, period, status, arrivalTime }) => {
           const staffRec = d.staff.find((s) => s.id === staffId);
-          const periodPrefix = finalPeriod === "AM" ? "Morning — " : finalPeriod === "PM" ? "Afternoon — " : "";
+          const periodPrefix = period === "AM" ? "Morning — " : period === "PM" ? "Afternoon — " : "";
           const message = status === "Late"
-            ? `${periodPrefix}You were marked late on ${fmtDate(date)}${finalArrivalTime ? ` — arrived at ${to12Hour(finalArrivalTime)}` : ""}.`
+            ? `${periodPrefix}You were marked late on ${fmtDate(date)}${arrivalTime ? ` — arrived at ${to12Hour(arrivalTime)}` : ""}.`
             : `${periodPrefix}You were marked ${status.toLowerCase()} on ${fmtDate(date)}.`;
           if (staffRec?.userId) {
             d.notifications = [{ id: uid("notif"), userId: staffRec.userId, title: "Attendance recorded", message, read: false, createdAt: Date.now(), type: "ATTENDANCE" }, ...d.notifications];
           }
-        }
-      },
-
-      saveStaffAttendance(date, records, markedBy) {
-        commit((d) => {
-          records.forEach((r) => {
-            this._upsertStaffAttendanceRecord(d, { staffId: r.staffId, date, status: r.status, arrivalTime: r.arrivalTime, note: r.note, markedBy, period: r.period });
-          });
-          d.activities = [{ id: uid("act"), text: `Staff attendance was recorded for ${fmtDate(date)}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
         });
       },
 
@@ -1595,55 +2343,80 @@ function DataProvider({ children }) {
       // Approving auto-applies the request's status to every school day in range that's actually
       // an available attendance date, reusing the same upsert path as a manually saved day — so a
       // 7-day leave becomes one action instead of marking each day by hand.
-      decideLeaveRequest(id, approvalStatus, decidedBy, reason) {
-        commit((d) => {
-          const req = d.leaveRequests.find((r) => r.id === id);
-          if (!req || req.approvalStatus !== "PENDING") return d;
-          // A rejection always needs a reason — enforced in the UI too (RejectLeaveModal), this
-          // is the last-line guard so the data layer can never end up with an unexplained rejection.
-          if (approvalStatus === "REJECTED" && !(reason || "").trim()) return d;
-          req.approvalStatus = approvalStatus;
-          req.decidedBy = decidedBy;
-          req.decidedAt = Date.now();
-          if (approvalStatus === "REJECTED") req.rejectionReason = reason.trim();
-          if (approvalStatus === "APPROVED") {
-            const closures = closuresByDateMap(d);
-            let cur = req.fromDate;
-            let guard = 0;
-            while (cur <= req.toDate && guard++ < 400) {
-              // A leave request is normally approved in advance of the dates it covers — that's
-              // the whole point (the UI promises "once approved, it's applied to your attendance
-              // automatically"). classifyAttendanceDate's own "hasn't happened yet" future-gate
-              // exists to stop a human manually pre-marking an ordinary day's attendance, which
-              // doesn't apply here: passing `cur` as its own todayKey sidesteps just that one
-              // gate while still enforcing every other rule (weekends, closures, before/after the
-              // academic year, breaks/gaps) for the date being applied.
-              const dateOk = classifyAttendanceDate(cur, d.academicCalendar, cur, closures).available;
-              const dow = new Date(cur + "T00:00:00").getDay(); // 0 = Sunday, 6 = Saturday
-              if (dateOk && dow >= 1 && dow <= 5) {
-                if (req.kind === "STUDENT") {
-                  const student = d.students.find((s) => s.id === req.subjectId);
-                  if (student) this._upsertAttendanceRecord(d, { studentId: student.id, classId: student.classId, date: cur, status: req.status, note: req.note, markedBy: decidedBy, leaveRequestId: req.id });
-                } else {
-                  // A leave request has no shift granularity — it covers the whole day, so a
-                  // shift-based staff member (see staff.hasShifts) gets both sessions marked.
-                  const staffRec = d.staff.find((s) => s.id === req.subjectId);
-                  const periods = staffRec?.hasShifts ? ["AM", "PM"] : ["FULL_DAY"];
-                  periods.forEach((period) => {
-                    this._upsertStaffAttendanceRecord(d, { staffId: req.subjectId, date: cur, status: req.status, note: req.note, markedBy: decidedBy, leaveRequestId: req.id, period });
-                  });
+      // STAFF leave writes real staff_attendance rows (via _writeStaffAttendance), so that part has
+      // to happen BEFORE commit() -- a commit() draft mutator is synchronous and can't await. It's
+      // gated on the same PENDING check the final commit() re-checks against the fresh draft, so a
+      // double-approval race still can't apply staff attendance twice. STUDENT leave stays exactly
+      // as before (student attendance hasn't converted yet, so it's still a draft mutation inside
+      // commit()).
+      async decideLeaveRequest(id, approvalStatus, decidedBy, reason) {
+        const req = db.leaveRequests.find((r) => r.id === id);
+        if (!req || req.approvalStatus !== "PENDING") return { ok: true };
+        // A rejection always needs a reason — enforced in the UI too (RejectLeaveModal), this
+        // is the last-line guard so the data layer can never end up with an unexplained rejection.
+        if (approvalStatus === "REJECTED" && !(reason || "").trim()) return { ok: true };
+
+        let notifyList = [];
+        try {
+          if (approvalStatus === "APPROVED" && req.kind === "STAFF") {
+            const staffRec = db.staff.find((s) => s.id === req.subjectId);
+            if (staffRec) {
+              const closures = closuresByDateMap(db);
+              const periods = staffRec.hasShifts ? ["AM", "PM"] : ["FULL_DAY"];
+              let cur = req.fromDate;
+              let guard = 0;
+              while (cur <= req.toDate && guard++ < 400) {
+                // See the original comment this replaces: passing `cur` as its own todayKey
+                // sidesteps classifyAttendanceDate's "hasn't happened yet" gate (leave is approved in
+                // advance, by design) while still enforcing every other rule.
+                const dateOk = classifyAttendanceDate(cur, db.academicCalendar, cur, closures).available;
+                const dow = new Date(cur + "T00:00:00").getDay(); // 0 = Sunday, 6 = Saturday
+                if (dateOk && dow >= 1 && dow <= 5) {
+                  for (const period of periods) {
+                    const n = await this._writeStaffAttendance({ staffId: req.subjectId, date: cur, period, status: req.status, note: req.note, markedBy: decidedBy, leaveRequestId: req.id });
+                    if (n) notifyList.push(n);
+                  }
                 }
+                cur = addDays(cur, 1);
+              }
+              await refetchStaffAttendance();
+            }
+          }
+        } catch (e) {
+          console.error("Failed to auto-apply approved leave to staff attendance", e);
+          return { ok: false, message: e.message || "Approving succeeded partway, but applying it to staff attendance failed. Check the Staff Attendance page and re-apply the affected dates if needed." };
+        }
+
+        commit((d) => {
+          const liveReq = d.leaveRequests.find((r) => r.id === id);
+          if (!liveReq || liveReq.approvalStatus !== "PENDING") return d;
+          liveReq.approvalStatus = approvalStatus;
+          liveReq.decidedBy = decidedBy;
+          liveReq.decidedAt = Date.now();
+          if (approvalStatus === "REJECTED") liveReq.rejectionReason = reason.trim();
+          if (approvalStatus === "APPROVED" && liveReq.kind === "STUDENT") {
+            const closures = closuresByDateMap(d);
+            let cur = liveReq.fromDate;
+            let guard = 0;
+            while (cur <= liveReq.toDate && guard++ < 400) {
+              const dateOk = classifyAttendanceDate(cur, d.academicCalendar, cur, closures).available;
+              const dow = new Date(cur + "T00:00:00").getDay();
+              if (dateOk && dow >= 1 && dow <= 5) {
+                const student = d.students.find((s) => s.id === liveReq.subjectId);
+                if (student) this._upsertAttendanceRecord(d, { studentId: student.id, classId: student.classId, date: cur, status: liveReq.status, note: liveReq.note, markedBy: decidedBy, leaveRequestId: liveReq.id });
               }
               cur = addDays(cur, 1);
             }
           }
+          this._applyStaffAttendanceNotifications(d, notifyList);
           d.activities = [{ id: uid("act"), text: `A leave request was ${approvalStatus.toLowerCase()}.`, createdAt: Date.now() }, ...d.activities];
 
           const decider = d.users.find((u) => u.id === decidedBy);
-          const { title, message } = leaveDecidedNotification(d, req, decider);
-          d.notifications = [{ id: uid("notif"), userId: req.requestedBy, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: req.kind === "STUDENT" ? req.subjectId : null } }, ...d.notifications];
+          const { title, message } = leaveDecidedNotification(d, liveReq, decider);
+          d.notifications = [{ id: uid("notif"), userId: liveReq.requestedBy, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: liveReq.kind === "STUDENT" ? liveReq.subjectId : null } }, ...d.notifications];
           return d;
         });
+        return { ok: true };
       },
 
       // STUDENT requests: Owner or Educational Director. STAFF requests mirror
@@ -1801,70 +2574,120 @@ function DataProvider({ children }) {
         return canTeacherAct(user, this.myAcademicActionStatusFor(user, dateKey));
       },
 
-      /* ---------- School closures ---------- */
+      /* ---------- School closures (real Supabase: school_closures) ---------- */
       // A closure overrides the timetable/attendance for that one date — see classifyAttendanceDay
-      // and classifyStaffAttendanceDay, which both consult this list before anything else.
-      createSchoolClosure({ date, reason }, createdBy) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          if (d.schoolClosures.some((c) => c.date === date)) {
-            result = { ok: false, message: "This date already has a closure recorded. Remove it first to change the reason." };
+      // and classifyStaffAttendanceDay, which both consult this list before anything else. RLS:
+      // school_closures write = is_owner_or_admin(); the table has UNIQUE(date).
+      async createSchoolClosure({ date, reason }, createdBy) {
+        if (db.schoolClosures.some((c) => c.date === date)) {
+          return { ok: false, message: "This date already has a closure recorded. Remove it first to change the reason." };
+        }
+        try {
+          await closureService.create({ date, reason }, createdBy);
+          await refetchClosures();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${fmtDate(date)} was marked as a school closure (${reason}).`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          d.schoolClosures.push({ id: uid("closure"), date, reason: reason.trim(), createdBy, createdAt: Date.now() });
-          d.schoolClosures.sort((a, b) => a.date.localeCompare(b.date));
-          d.activities = [{ id: uid("act"), text: `${fmtDate(date)} was marked as a school closure (${reason}).`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create school closure", e);
+          const msg = /duplicate key|unique/i.test(e.message || "")
+            ? "This date already has a closure recorded. Remove it first to change the reason."
+            : (e.message || "Couldn't save the school closure.");
+          return { ok: false, message: msg };
+        }
       },
-      deleteSchoolClosure(id) {
-        commit((d) => {
-          d.schoolClosures = d.schoolClosures.filter((c) => c.id !== id);
-          return d;
-        });
+      async deleteSchoolClosure(id) {
+        try {
+          await closureService.remove(id);
+          await refetchClosures();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete school closure", e);
+          return { ok: false, message: e.message || "Couldn't remove the school closure." };
+        }
       },
 
       // Only changes which dates are considered available for attendance — never touches any
-      // attendance record already saved, no matter how the semester/break dates move.
-      saveAcademicCalendar(fields, updatedBy) {
-        commit((d) => {
-          d.academicCalendar = { ...d.academicCalendar, ...fields, updatedAt: Date.now(), updatedBy };
-          const idx = d.academicYears.findIndex((y) => y.id === d.academicCalendar.id);
-          if (idx >= 0) d.academicYears[idx] = d.academicCalendar; else d.academicYears.push(d.academicCalendar);
-          d.activities = [{ id: uid("act"), text: `The academic calendar was updated (${d.academicCalendar.yearName}).`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      // attendance record already saved, no matter how the semester/break dates move. Writes
+      // through to the real academic_years row (see academicYearService) -- this used to write
+      // into the mock db.academicYears array, which is dead now that academicYears is real
+      // Supabase data (see the `commit()` overlay above): that write was invisible the moment it
+      // happened, since every read of db.academicYears/db.academicCalendar always came from the
+      // real (unchanged) Supabase state instead.
+      async saveAcademicCalendar(fields, updatedBy) {
+        const cal = db.academicCalendar;
+        if (!cal || !cal.id) return { ok: false, message: "No academic year found to update." };
+        try {
+          await academicYearService.update(cal.id, {
+            gcLabel: fields.yearName, yearStart: fields.yearStart, yearEnd: fields.yearEnd,
+            sem1Start: fields.sem1Start, sem1End: fields.sem1End, breakDays: fields.breakDays,
+            sem2Start: fields.sem2Start, sem2End: fields.sem2End,
+            resultFinalizationGraceDays: fields.resultFinalizationGraceDays,
+          }, updatedBy);
+          await refetchAcademicYears();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `The academic calendar was updated (${fields.yearName}).`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update academic calendar", e);
+          return { ok: false, message: e.message || "Couldn't update the academic calendar." };
+        }
       },
 
-      createTimetableEntry({ classId, day, period, subject }) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const cls = d.classes.find((c) => c.id === classId);
-          if (!cls) { result = { ok: false, message: "Class not found." }; return d; }
-          const assignment = d.teacherAssignments.find((ta) => ta.classId === classId && ta.subject === subject);
-          if (!assignment) { result = { ok: false, message: `No teacher is assigned to teach ${subject} in this class yet. Assign one from the Teachers page first.` }; return d; }
-          const clash = d.timetableEntries.some((e) => e.classId === classId && e.day === day && e.period === period);
-          if (clash) { result = { ok: false, message: `${cls.grade}${cls.section} already has a period ${period} on ${day}.` }; return d; }
-          const doubleBooked = d.timetableEntries.find((e) => e.teacherId === assignment.teacherId && e.day === day && e.period === period && e.classId !== classId);
-          if (doubleBooked) {
-            const otherCls = d.classes.find((c) => c.id === doubleBooked.classId);
-            const teacher = d.users.find((u) => u.id === assignment.teacherId);
-            result = { ok: false, message: `${teacher?.name || "This teacher"} is already teaching ${doubleBooked.subject} in ${otherCls ? otherCls.grade + otherCls.section : "another class"} at this day/period.` };
+      // Real Supabase (timetable_entries). RLS: write = is_owner_or_admin(). The unique
+      // (class_id, day, period) clash is a DB constraint too; the teacher double-booking rule has
+      // never been a DB constraint (there's no such RLS/unique) so it stays a client-side check
+      // against the freshly-overlaid db.timetableEntries, exactly as before.
+      async createTimetableEntry({ classId, day, period, subject }) {
+        const cls = db.classes.find((c) => c.id === classId);
+        if (!cls) return { ok: false, message: "Class not found." };
+        const assignment = db.teacherAssignments.find((ta) => ta.classId === classId && ta.subject === subject);
+        if (!assignment) return { ok: false, message: `No teacher is assigned to teach ${subject} in this class yet. Assign one from the Teachers page first.` };
+        if (db.timetableEntries.some((e) => e.classId === classId && e.day === day && e.period === period)) {
+          return { ok: false, message: `${cls.grade}${cls.section} already has a period ${period} on ${day}.` };
+        }
+        const doubleBooked = db.timetableEntries.find((e) => e.teacherId === assignment.teacherId && e.day === day && e.period === period && e.classId !== classId);
+        if (doubleBooked) {
+          const otherCls = db.classes.find((c) => c.id === doubleBooked.classId);
+          const teacher = db.users.find((u) => u.id === assignment.teacherId);
+          return { ok: false, message: `${teacher?.name || "This teacher"} is already teaching ${doubleBooked.subject} in ${otherCls ? otherCls.grade + otherCls.section : "another class"} at this day/period.` };
+        }
+        const subjectId = db.subjects.find((s) => s.name === subject)?.id;
+        if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
+        try {
+          await timetableService.createEntry({ classId, day, period, subjectId, teacherId: assignment.teacherId });
+          await refetchTimetable();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${subject} was added to ${cls.grade}${cls.section}'s timetable on ${day}.`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          d.timetableEntries.push({ id: uid("tt"), classId, day, period, subject, teacherId: assignment.teacherId });
-          d.activities = [{ id: uid("act"), text: `${subject} was added to ${cls.grade}${cls.section}'s timetable on ${day}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create timetable entry", e);
+          const msg = /duplicate key|unique/i.test(e.message || "")
+            ? `${cls.grade}${cls.section} already has a period ${period} on ${day}.`
+            : (e.message || "Couldn't add the period.");
+          return { ok: false, message: msg };
+        }
       },
-      deleteTimetableEntry(id) {
-        commit((d) => {
-          d.timetableEntries = d.timetableEntries.filter((e) => e.id !== id);
-          d.periodLogs = d.periodLogs.filter((l) => l.timetableEntryId !== id);
-          return d;
-        });
+      async deleteTimetableEntry(id) {
+        try {
+          await timetableService.deleteEntry(id);
+          await refetchTimetable();
+          commit((d) => {
+            // period_logs stays mock until checkpoint 2; keep purging the orphaned mock rows.
+            d.periodLogs = d.periodLogs.filter((l) => l.timetableEntryId !== id);
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to delete timetable entry", e);
+          return { ok: false, message: e.message || "Couldn't remove the period." };
+        }
       },
       markPeriodDone(timetableEntryId, date, completedBy) {
         commit((d) => {
@@ -1953,55 +2776,65 @@ function DataProvider({ children }) {
         });
       },
 
-      assignSubstitute(timetableEntryId, date, substituteTeacherId, assignedBy) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
-          if (!entry) { result = { ok: false, message: "Period not found." }; return d; }
-          const cls = d.classes.find((c) => c.id === entry.classId);
-          const originalTeacher = d.users.find((u) => u.id === entry.teacherId);
-          const substitute = d.users.find((u) => u.id === substituteTeacherId);
-          if (!substitute) { result = { ok: false, message: "Substitute teacher not found." }; return d; }
-          if (!this.substituteCandidates(entry, date).some((t) => t.id === substituteTeacherId)) {
-            result = { ok: false, message: `${substitute.name} isn't available to cover this period — they're unavailable or already teaching another class at this time.` };
-            return d;
-          }
-
-          const existing = d.substitutions.find((s) => s.timetableEntryId === timetableEntryId && s.date === date);
-          const previousSubstituteId = existing && existing.substituteTeacherId !== substituteTeacherId ? existing.substituteTeacherId : null;
-          if (existing) { existing.substituteTeacherId = substituteTeacherId; existing.assignedBy = assignedBy; existing.createdAt = Date.now(); }
-          else d.substitutions.push({ id: uid("sub"), timetableEntryId, date, originalTeacherId: entry.teacherId, substituteTeacherId, assignedBy, createdAt: Date.now() });
-
-          // Changing an already-assigned substitute to someone else — let the teacher who's no
-          // longer covering know so they don't show up expecting to teach this period.
-          if (previousSubstituteId) {
-            d.notifications = [{ id: uid("notif"), userId: previousSubstituteId, title: "Substitute coverage changed", message: `You're no longer covering ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period} today — ${substitute.name} will cover it instead.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-          }
-
-          const studentIds = d.students.filter((s) => s.classId === entry.classId).map((s) => s.id);
-          const parentIds = new Set();
-          d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title: "Class schedule changed", message: `Today's ${entry.subject} class for ${cls ? cls.grade + cls.section : ""} will be covered by ${substitute.name} — ${originalTeacher?.name || "the usual teacher"} is away today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+      // Real Supabase (substitutions). RLS: write = is_owner_or_admin(). Notifications stay bridged
+      // to the mock d.notifications pipeline (same as staff_attendance) until the notifications
+      // domain is converted. Availability of the chosen substitute is re-checked here against the
+      // freshly-overlaid db (substituteCandidates), same rule as before.
+      async assignSubstitute(timetableEntryId, date, substituteTeacherId, assignedBy) {
+        const entry = db.timetableEntries.find((e) => e.id === timetableEntryId);
+        if (!entry) return { ok: false, message: "Period not found." };
+        const substitute = db.users.find((u) => u.id === substituteTeacherId);
+        if (!substitute) return { ok: false, message: "Substitute teacher not found." };
+        if (!this.substituteCandidates(entry, date).some((t) => t.id === substituteTeacherId)) {
+          return { ok: false, message: `${substitute.name} isn't available to cover this period — they're unavailable or already teaching another class at this time.` };
+        }
+        const existing = db.substitutions.find((s) => s.timetableEntryId === timetableEntryId && s.date === date);
+        const previousSubstituteId = existing && existing.substituteTeacherId !== substituteTeacherId ? existing.substituteTeacherId : null;
+        try {
+          await timetableService.upsertSubstitution({
+            timetableEntryId, date, originalTeacherId: entry.teacherId, substituteTeacherId, assignedBy,
           });
-          const entrySlot = computePeriodSchedule(d.timetableConfig).periods.find((p) => p.period === entry.period);
-          d.notifications = [{ id: uid("notif"), userId: substituteTeacherId, title: "You're covering a class today", message: `Please cover ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period}${entrySlot ? ` (${entrySlot.startLabel}–${entrySlot.endLabel})` : ""}.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-
-          d.activities = [{ id: uid("act"), text: `${substitute.name} will substitute for ${originalTeacher?.name || "a teacher"} in ${cls ? cls.grade + cls.section : ""} ${entry.subject} today.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          await refetchTimetable();
+          commit((d) => {
+            const cls = d.classes.find((c) => c.id === entry.classId);
+            const originalTeacher = d.users.find((u) => u.id === entry.teacherId);
+            if (previousSubstituteId) {
+              d.notifications = [{ id: uid("notif"), userId: previousSubstituteId, title: "Substitute coverage changed", message: `You're no longer covering ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period} today — ${substitute.name} will cover it instead.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+            }
+            const studentIds = d.students.filter((s) => s.classId === entry.classId).map((s) => s.id);
+            const parentIds = new Set();
+            d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
+            parentIds.forEach((pid) => {
+              d.notifications = [{ id: uid("notif"), userId: pid, title: "Class schedule changed", message: `Today's ${entry.subject} class for ${cls ? cls.grade + cls.section : ""} will be covered by ${substitute.name} — ${originalTeacher?.name || "the usual teacher"} is away today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+            });
+            const entrySlot = computePeriodSchedule(d.timetableConfig).periods.find((p) => p.period === entry.period);
+            d.notifications = [{ id: uid("notif"), userId: substituteTeacherId, title: "You're covering a class today", message: `Please cover ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period}${entrySlot ? ` (${entrySlot.startLabel}–${entrySlot.endLabel})` : ""}.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+            d.activities = [{ id: uid("act"), text: `${substitute.name} will substitute for ${originalTeacher?.name || "a teacher"} in ${cls ? cls.grade + cls.section : ""} ${entry.subject} today.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to assign substitute", e);
+          return { ok: false, message: e.message || "Couldn't assign the substitute." };
+        }
       },
-      removeSubstitute(timetableEntryId, date) {
-        commit((d) => {
-          const sub = d.substitutions.find((s) => s.timetableEntryId === timetableEntryId && s.date === date);
-          if (!sub) return d;
-          d.substitutions = d.substitutions.filter((s) => s.id !== sub.id);
-          const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
-          const cls = entry ? d.classes.find((c) => c.id === entry.classId) : null;
-          d.notifications = [{ id: uid("notif"), userId: sub.substituteTeacherId, title: "Substitute coverage cancelled", message: `You're no longer needed to cover ${entry?.subject || "that period"} for ${cls ? cls.grade + cls.section : ""} today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-          return d;
-        });
+      async removeSubstitute(timetableEntryId, date) {
+        const sub = db.substitutions.find((s) => s.timetableEntryId === timetableEntryId && s.date === date);
+        if (!sub) return { ok: true };
+        try {
+          await timetableService.deleteSubstitution(timetableEntryId, date);
+          await refetchTimetable();
+          commit((d) => {
+            const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
+            const cls = entry ? d.classes.find((c) => c.id === entry.classId) : null;
+            d.notifications = [{ id: uid("notif"), userId: sub.substituteTeacherId, title: "Substitute coverage cancelled", message: `You're no longer needed to cover ${entry?.subject || "that period"} for ${cls ? cls.grade + cls.section : ""} today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to remove substitute", e);
+          return { ok: false, message: e.message || "Couldn't remove the substitute." };
+        }
       },
 
       // Affected entries a shrink would orphan — surfaced by the UI ahead of Save, and
@@ -2013,55 +2846,54 @@ function DataProvider({ children }) {
         });
       },
 
-      updateTimetableConfig(patch, actorId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const candidate = { ...d.timetableConfig, ...patch };
-          const periodsCount = Number(candidate.periodsCount);
-          const periodDurationMins = Number(candidate.periodDurationMins);
-          const breakDurationMins = Number(candidate.breakDurationMins);
-          if (!Number.isFinite(periodsCount) || periodsCount < MIN_PERIODS || periodsCount > MAX_PERIODS) {
-            result = { ok: false, message: `Number of periods must be between ${MIN_PERIODS} and ${MAX_PERIODS}.` };
+      // Real Supabase (timetable_config singleton, id = true). RLS: update = is_owner_or_admin().
+      // Every validation the mock enforced runs here first against the freshly-overlaid db.
+      async updateTimetableConfig(patch, actorId) {
+        const candidate = { ...db.timetableConfig, ...patch };
+        const periodsCount = Number(candidate.periodsCount);
+        const periodDurationMins = Number(candidate.periodDurationMins);
+        const breakDurationMins = Number(candidate.breakDurationMins);
+        if (!Number.isFinite(periodsCount) || periodsCount < MIN_PERIODS || periodsCount > MAX_PERIODS) {
+          return { ok: false, message: `Number of periods must be between ${MIN_PERIODS} and ${MAX_PERIODS}.` };
+        }
+        if (!/^\d{2}:\d{2}$/.test(candidate.startTime || "")) {
+          return { ok: false, message: "Start time is invalid." };
+        }
+        if (!Number.isFinite(periodDurationMins) || periodDurationMins < 1) {
+          return { ok: false, message: "Period duration must be at least 1 minute." };
+        }
+        if (!Number.isFinite(breakDurationMins) || breakDurationMins < 0) {
+          return { ok: false, message: "Break duration cannot be negative." };
+        }
+        const orphaned = db.timetableEntries.filter((e) => e.period > periodsCount);
+        if (orphaned.length > 0) {
+          const examples = orphaned.slice(0, 5).map((e) => {
+            const cls = db.classes.find((c) => c.id === e.classId);
+            return `${cls ? cls.grade + cls.section : "Unknown"} (${e.day}, P${e.period})`;
+          });
+          const more = orphaned.length > 5 ? `, and ${orphaned.length - 5} more` : "";
+          return { ok: false, message: `Reducing to ${periodsCount} period${periodsCount === 1 ? "" : "s"} would remove periods still scheduled: ${examples.join(", ")}${more}. Remove those periods from each class's grid first, then lower the period count.` };
+        }
+        let breakAfterPeriod = candidate.breakAfterPeriod;
+        if (breakAfterPeriod != null) {
+          breakAfterPeriod = Math.min(Number(breakAfterPeriod), periodsCount);
+          if (breakAfterPeriod < 1) breakAfterPeriod = null;
+        }
+        try {
+          await timetableService.updateConfig(
+            { periodsCount, startTime: candidate.startTime, periodDurationMins, breakDurationMins, breakAfterPeriod },
+            actorId,
+          );
+          await refetchTimetable();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Timetable settings were updated (${periodsCount} periods, starting ${to12Hour(candidate.startTime)}).`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          if (!/^\d{2}:\d{2}$/.test(candidate.startTime || "")) {
-            result = { ok: false, message: "Start time is invalid." };
-            return d;
-          }
-          if (!Number.isFinite(periodDurationMins) || periodDurationMins < 1) {
-            result = { ok: false, message: "Period duration must be at least 1 minute." };
-            return d;
-          }
-          if (!Number.isFinite(breakDurationMins) || breakDurationMins < 0) {
-            result = { ok: false, message: "Break duration cannot be negative." };
-            return d;
-          }
-
-          const orphaned = d.timetableEntries.filter((e) => e.period > periodsCount);
-          if (orphaned.length > 0) {
-            const examples = orphaned.slice(0, 5).map((e) => {
-              const cls = d.classes.find((c) => c.id === e.classId);
-              return `${cls ? cls.grade + cls.section : "Unknown"} (${e.day}, P${e.period})`;
-            });
-            const more = orphaned.length > 5 ? `, and ${orphaned.length - 5} more` : "";
-            result = { ok: false, message: `Reducing to ${periodsCount} period${periodsCount === 1 ? "" : "s"} would remove periods still scheduled: ${examples.join(", ")}${more}. Remove those periods from each class's grid first, then lower the period count.` };
-            return d;
-          }
-
-          let breakAfterPeriod = candidate.breakAfterPeriod;
-          if (breakAfterPeriod != null) {
-            breakAfterPeriod = Math.min(Number(breakAfterPeriod), periodsCount);
-            if (breakAfterPeriod < 1) breakAfterPeriod = null;
-          }
-
-          d.timetableConfig = {
-            periodsCount, startTime: candidate.startTime, periodDurationMins, breakDurationMins, breakAfterPeriod,
-            updatedAt: Date.now(), updatedBy: actorId || null,
-          };
-          d.activities = [{ id: uid("act"), text: `Timetable settings were updated (${periodsCount} periods, starting ${to12Hour(candidate.startTime)}).`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update timetable settings", e);
+          return { ok: false, message: e.message || "Couldn't update the timetable settings." };
+        }
       },
 
       // ---- Fee catalog (feeTypes) — never carries pricing or per-year state. name/category/
@@ -2313,139 +3145,134 @@ function DataProvider({ children }) {
       // masking stay accurate.
       //
       // Gated by effectiveResultLock (manual LOCKED status, OR the semester's calendar-derived
-      // auto-lock unless overridden) BEFORE the record is created, so a not-yet-existing result
-      // can't be created once its semester is auto-locked either.
-      saveResultComponent({ studentId, classId, subject, semester, component, score, sharedWithParents, reason }, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
-            result = { ok: false, message: "Invalid semester or assessment component." };
+      // auto-lock unless overridden) BEFORE the record is created -- kept client-side for a
+      // friendly message; RLS's can_edit_result_component / results_insert enforce the LOCKED +
+      // teacher-ownership + teacher_academic_action_ok rules server-side (the calendar auto-lock
+      // has no RLS equivalent, same as homework). The score/share write goes to result_components,
+      // the audit entry to result_audit_log (actor stamped server-side by trigger); only the
+      // activities line stays on the mock bridge.
+      async saveResultComponent({ studentId, classId, subject, semester, component, score, sharedWithParents, reason }, actorId /* actorRole unused: server stamps the audit actor */) {
+        if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
+          return { ok: false, message: "Invalid semester or assessment component." };
+        }
+        const student = db.students.find((s) => s.id === studentId);
+        if (!student) return { ok: false, message: "Student not found." };
+        const subjectId = db.subjects.find((s) => s.name === subject)?.id;
+        if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
+
+        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
+        const cal = resolveResultCal(db, academicYearId);
+        const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
+        if (lock.locked) return { ok: false, message: lock.message };
+
+        const max = ASSESSMENT_COMPONENT_WEIGHT[component];
+        const prev = (record && record.components[component]) || { score: null, max, sharedWithParents: false };
+        // `score === undefined` means the caller isn't touching the score — leave it as-is;
+        // `score === null` explicitly clears it.
+        const nextScore = score === undefined ? prev.score : score === null ? null : Math.max(0, Math.min(max, Number(score)));
+        const nextShared = sharedWithParents !== undefined ? sharedWithParents : prev.sharedWithParents;
+
+        const diff = [];
+        if (prev.score !== nextScore) diff.push({ field: "score", from: prev.score, to: nextScore });
+        if (sharedWithParents !== undefined && prev.sharedWithParents !== sharedWithParents) diff.push({ field: "sharedWithParents", from: prev.sharedWithParents, to: sharedWithParents });
+        if (diff.length === 0) return { ok: true, message: "" }; // nothing changed — no phantom audit entry
+
+        try {
+          const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
+          await resultService.saveComponent({ resultId, component, score: nextScore, max, sharedWithParents: nextShared, updatedBy: actorId });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component, action: "COMPONENT_UPDATED", diff, reason: reason || null });
+          await refetchResults();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${ASSESSMENT_COMPONENT_LABEL[component]} recorded for ${studentFullName(student)} in ${subject} (${semester}).`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          const student = d.students.find((s) => s.id === studentId);
-          if (!student) { result = { ok: false, message: "Student not found." }; return d; }
-
-          const academicYearId = (currentAcademicYear(d.academicYears) || {}).id || null;
-          let record = d.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId);
-          const cal = resolveResultCal(d, academicYearId);
-          const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
-          if (lock.locked) { result = { ok: false, message: lock.message }; return d; }
-
-          if (!record) record = findOrCreateResultRecord(d, { studentId, classId, subject, semester });
-
-          const max = ASSESSMENT_COMPONENT_WEIGHT[component];
-          const prev = record.components[component];
-          // `score === undefined` means the caller isn't touching the score — leave it as-is;
-          // `score === null` explicitly clears it.
-          const nextScore = score === undefined ? prev.score : score === null ? null : Math.max(0, Math.min(max, Number(score)));
-
-          const diff = [];
-          if (prev.score !== nextScore) diff.push({ field: "score", from: prev.score, to: nextScore });
-          if (sharedWithParents !== undefined && prev.sharedWithParents !== sharedWithParents) diff.push({ field: "sharedWithParents", from: prev.sharedWithParents, to: sharedWithParents });
-          if (diff.length === 0) return d; // nothing actually changed — no phantom audit entry
-
-          record.components[component] = {
-            ...prev, score: nextScore, max,
-            sharedWithParents: sharedWithParents !== undefined ? sharedWithParents : prev.sharedWithParents,
-            updatedAt: Date.now(), updatedBy: actorId,
-          };
-          record.updatedAt = Date.now();
-
-          const actor = d.users.find((u) => u.id === actorId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId, classId, subject, semester, component,
-            action: "COMPONENT_UPDATED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff, reason: reason || null, at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-
-          d.activities = [{ id: uid("act"), text: `${ASSESSMENT_COMPONENT_LABEL[component]} recorded for ${studentFullName(student)} in ${subject} (${semester}).`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
-      },
-
-      // Bulk-publishes every editable result for the given class+subject+semester+students,
-      // sending ONE batched notification per parent — not one per score, per component, or per
-      // student save. This is the actual fix for "don't spam parents per mark".
-      publishResults(classId, subject, semester, studentIds, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const actor = d.users.find((u) => u.id === actorId);
-          const academicYearId = (currentAcademicYear(d.academicYears) || {}).id || null;
-          const affected = [];
-          studentIds.forEach((studentId) => {
-            const record = d.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId);
-            // Only a DRAFT record is actually publishable — re-selecting an already-PUBLISHED (but
-            // unlocked) student and clicking Publish again used to re-run this and send parents a
-            // second "Results published" notification for no real change. Skipping non-DRAFT here
-            // makes repeat-publish a safe no-op (same pattern as the pre-existing LOCKED skip).
-            if (!record || record.publishStatus !== "DRAFT") return;
-            record.publishStatus = "PUBLISHED"; record.publishedAt = Date.now(); record.publishedBy = actorId;
-            affected.push(record);
-            const student = d.students.find((s) => s.id === studentId);
-            d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).forEach((p) => {
-              d.notifications = [{ id: uid("notif"), userId: p.id, title: `Results published — ${subject}`, message: `${student ? student.firstName : "Your child"}'s ${subject} results for ${semester} are ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId, semester } }, ...d.notifications];
-            });
           });
-          if (affected.length === 0) { result = { ok: false, message: "Nothing to publish." }; return d; }
-          d.resultAuditLog = [
-            ...affected.map((r) => ({
-              id: uid("aud"), entityType: "result", entityId: r.id, studentId: r.studentId, classId, subject, semester, component: null,
-              action: "PUBLISHED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-              diff: [{ field: "publishStatus", from: "DRAFT", to: "PUBLISHED" }], reason: null, at: Date.now(),
-            })),
-            ...(d.resultAuditLog || []),
-          ].slice(0, 500);
-          d.activities = [{ id: uid("act"), text: `${subject} ${semester} results published for ${affected.length} student${affected.length === 1 ? "" : "s"}.`, createdAt: Date.now(), navigation: { page: "exams", classId, subject, semester } }, ...d.activities];
-          return d;
-        });
-        return result;
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to save result component", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
       },
 
-      lockResult(recordId, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const record = d.results.find((r) => r.id === recordId);
-          if (!record) { result = { ok: false, message: "Result not found." }; return d; }
-          const actor = d.users.find((u) => u.id === actorId);
-          const from = record.publishStatus;
-          record.publishStatus = "LOCKED"; record.lockedAt = Date.now(); record.lockedBy = actorId;
-          record.autoLockOverride = null; // a fresh manual lock always wins — clear any stale override
-          const student = d.students.find((s) => s.id === record.studentId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId: record.studentId, classId: record.classId, subject: record.subject, semester: record.semester, component: null,
-            action: "LOCKED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [{ field: "publishStatus", from, to: "LOCKED" }], reason: null, at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      // Bulk-publishes every DRAFT result for the given class+subject+semester+students, sending
+      // ONE batched notification per parent — not one per score, per component, or per student
+      // save. Re-publishing an already-PUBLISHED student is a safe no-op (the DB update only
+      // touches rows still in DRAFT). publish_status transitions are Owner/Educational Director
+      // only (RLS results_update); notifications stay on the mock bridge.
+      async publishResults(classId, subject, semester, studentIds, actorId, actorRole) {
+        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const subjectId = db.subjects.find((s) => s.name === subject)?.id || null;
+        const draftRecs = db.results.filter((r) => studentIds.includes(r.studentId) && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId && r.publishStatus === "DRAFT");
+        if (draftRecs.length === 0) return { ok: false, message: "Nothing to publish." };
+        try {
+          const published = await resultService.publish(draftRecs.map((r) => r.id), actorId);
+          if (published.length === 0) return { ok: false, message: "Nothing to publish." };
+          for (const r of published) {
+            await resultService.addAudit({ resultId: r.id, studentId: r.student_id, classId, subjectId, semester, component: null, action: "PUBLISHED", diff: [{ field: "publishStatus", from: "DRAFT", to: "PUBLISHED" }], reason: null });
+          }
+          await refetchResults();
+          commit((d) => {
+            published.forEach((r) => {
+              const student = d.students.find((s) => s.id === r.student_id);
+              d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(r.student_id)).forEach((p) => {
+                d.notifications = [{ id: uid("notif"), userId: p.id, title: `Results published — ${subject}`, message: `${student ? student.firstName : "Your child"}'s ${subject} results for ${semester} are ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId: r.student_id, semester } }, ...d.notifications];
+              });
+            });
+            d.activities = [{ id: uid("act"), text: `${subject} ${semester} results published for ${published.length} student${published.length === 1 ? "" : "s"}.`, createdAt: Date.now(), navigation: { page: "exams", classId, subject, semester } }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to publish results", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
       },
 
-      // Only valid for a MANUALLY locked result (publishStatus === "LOCKED") — see
-      // overrideAutoLock for unlocking a result that's locked by the calendar instead. A reason is
-      // required (checked here too, not just by the UI's textarea) since every unlock is audited.
-      unlockResult(recordId, actorId, actorRole, reason) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          if (!reason || !reason.trim()) { result = { ok: false, message: "A reason is required to unlock a result." }; return d; }
-          const record = d.results.find((r) => r.id === recordId);
-          if (!record) { result = { ok: false, message: "Result not found." }; return d; }
-          const actor = d.users.find((u) => u.id === actorId);
+      async lockResult(recordId, actorId, actorRole) {
+        const record = db.results.find((r) => r.id === recordId);
+        if (!record) return { ok: false, message: "Result not found." };
+        const subjectId = db.subjects.find((s) => s.name === record.subject)?.id || null;
+        try {
           const from = record.publishStatus;
-          record.publishStatus = record.publishedAt ? "PUBLISHED" : "DRAFT";
-          record.lockedAt = null; record.lockedBy = null;
-          const student = d.students.find((s) => s.id === record.studentId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId: record.studentId, classId: record.classId, subject: record.subject, semester: record.semester, component: null,
-            action: "UNLOCKED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [{ field: "publishStatus", from, to: record.publishStatus }], reason: reason.trim(), at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result unlocked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          await resultService.lock(recordId, actorId);
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "LOCKED", diff: [{ field: "publishStatus", from, to: "LOCKED" }], reason: null });
+          await refetchResults();
+          const student = db.students.find((s) => s.id === record.studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to lock result", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
+      },
+
+      // Only valid for a MANUALLY locked result (publishStatus === "LOCKED") — see overrideAutoLock
+      // for unlocking a result that's locked by the calendar instead. A reason is required (checked
+      // here too, not just by the UI's textarea) since every unlock is audited.
+      async unlockResult(recordId, actorId, actorRole, reason) {
+        if (!reason || !reason.trim()) return { ok: false, message: "A reason is required to unlock a result." };
+        const record = db.results.find((r) => r.id === recordId);
+        if (!record) return { ok: false, message: "Result not found." };
+        const subjectId = db.subjects.find((s) => s.name === record.subject)?.id || null;
+        try {
+          const from = record.publishStatus;
+          const toStatus = record.publishedAt ? "PUBLISHED" : "DRAFT";
+          await resultService.unlock(recordId, toStatus);
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "UNLOCKED", diff: [{ field: "publishStatus", from, to: toStatus }], reason: reason.trim() });
+          await refetchResults();
+          const student = db.students.find((s) => s.id === record.studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result unlocked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to unlock result", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
       },
 
       // Punches through a semester's calendar-derived auto-lock (see academicCalendar.js
@@ -2453,153 +3280,185 @@ function DataProvider({ children }) {
       // semester has actually closed (grace_expired / next_semester_started / year_ended), never
       // for a semester that simply hasn't started. A reason is required and fully audited, exactly
       // like the manual unlockResult path. Stays in effect until reinstateAutoLock re-locks it.
-      overrideAutoLock({ studentId, classId, subject, semester }, actorId, actorRole, reason) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          if (!reason || !reason.trim()) { result = { ok: false, message: "A reason is required to unlock a result." }; return d; }
-          const academicYearId = (currentAcademicYear(d.academicYears) || {}).id || null;
-          let record = d.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId);
-          const cal = resolveResultCal(d, academicYearId);
-          const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
-          const OVERRIDABLE_PHASES = ["grace_expired", "next_semester_started", "year_ended"];
-          if (!(lock.locked && lock.source === "auto" && OVERRIDABLE_PHASES.includes(lock.phase))) {
-            result = { ok: false, message: "This result isn't currently auto-locked." };
+      async overrideAutoLock({ studentId, classId, subject, semester }, actorId, actorRole, reason) {
+        if (!reason || !reason.trim()) return { ok: false, message: "A reason is required to unlock a result." };
+        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const subjectId = db.subjects.find((s) => s.name === subject)?.id;
+        if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
+        const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
+        const cal = resolveResultCal(db, academicYearId);
+        const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
+        const OVERRIDABLE_PHASES = ["grace_expired", "next_semester_started", "year_ended"];
+        if (!(lock.locked && lock.source === "auto" && OVERRIDABLE_PHASES.includes(lock.phase))) {
+          return { ok: false, message: "This result isn't currently auto-locked." };
+        }
+        const actor = db.users.find((u) => u.id === actorId);
+        try {
+          const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
+          await resultService.setAutoLockOverride(resultId, { reason: reason.trim(), grantedBy: actorId, grantedByRole: actorRole || actor?.role, grantedAt: Date.now() });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component: null, action: "AUTO_LOCK_OVERRIDDEN", diff: [{ field: "autoLockOverride", from: null, to: true }], reason: reason.trim() });
+          await refetchResults();
+          const student = db.students.find((s) => s.id === studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${subject} ${semester} result unlocked (auto-lock override) for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          if (!record) record = findOrCreateResultRecord(d, { studentId, classId, subject, semester });
-          const actor = d.users.find((u) => u.id === actorId);
-          record.autoLockOverride = { reason: reason.trim(), grantedBy: actorId, grantedByRole: actorRole || actor?.role, grantedAt: Date.now() };
-          record.updatedAt = Date.now();
-          const student = d.students.find((s) => s.id === studentId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId, classId, subject, semester, component: null,
-            action: "AUTO_LOCK_OVERRIDDEN", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [{ field: "autoLockOverride", from: null, to: true }], reason: reason.trim(), at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          d.activities = [{ id: uid("act"), text: `${subject} ${semester} result unlocked (auto-lock override) for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to override auto-lock", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
       },
 
       // Re-establishes a semester's calendar-derived auto-lock on a result that had an active
       // overrideAutoLock — the "Re-lock" action once a correction made under the override is done.
-      reinstateAutoLock(recordId, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const record = d.results.find((r) => r.id === recordId);
-          if (!record) { result = { ok: false, message: "Result not found." }; return d; }
-          if (!record.autoLockOverride) { result = { ok: false, message: "This result doesn't have an active unlock override." }; return d; }
-          record.autoLockOverride = null;
-          record.updatedAt = Date.now();
-          const actor = d.users.find((u) => u.id === actorId);
-          const student = d.students.find((s) => s.id === record.studentId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId: record.studentId, classId: record.classId, subject: record.subject, semester: record.semester, component: null,
-            action: "AUTO_LOCK_REINSTATED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [{ field: "autoLockOverride", from: true, to: null }], reason: null, at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result re-locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
-      },
-
-      // Adds one evidence page (a photo/scan of the exam paper) to a component, appended after
-      // whatever pages already exist. Same lock gate as saveResultComponent — evidence can't be
-      // added to a result that's currently locked either. `fileType` defaults via inferFileType at
-      // the call site (UI), not here, so this stays a plain data write.
-      addResultEvidencePage({ studentId, classId, subject, semester, component, fileDataUrl, fileType, fileName }, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
-            result = { ok: false, message: "Invalid semester or assessment component." };
+      async reinstateAutoLock(recordId, actorId, actorRole) {
+        const record = db.results.find((r) => r.id === recordId);
+        if (!record) return { ok: false, message: "Result not found." };
+        if (!record.autoLockOverride) return { ok: false, message: "This result doesn't have an active unlock override." };
+        const subjectId = db.subjects.find((s) => s.name === record.subject)?.id || null;
+        try {
+          await resultService.setAutoLockOverride(recordId, null);
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "AUTO_LOCK_REINSTATED", diff: [{ field: "autoLockOverride", from: true, to: null }], reason: null });
+          await refetchResults();
+          const student = db.students.find((s) => s.id === record.studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result re-locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
             return d;
-          }
-          const academicYearId = (currentAcademicYear(d.academicYears) || {}).id || null;
-          let record = d.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId);
-          const cal = resolveResultCal(d, academicYearId);
-          const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
-          if (lock.locked) { result = { ok: false, message: lock.message }; return d; }
-          if (!record) record = findOrCreateResultRecord(d, { studentId, classId, subject, semester });
-
-          d.resultEvidence = d.resultEvidence || [];
-          const existing = d.resultEvidence.filter((e) => e.resultId === record.id && e.component === component);
-          const order = existing.length === 0 ? 0 : Math.max(...existing.map((e) => e.order)) + 1;
-          d.resultEvidence.push({
-            id: uid("reve"), resultId: record.id, studentId, classId, semester, component, academicYearId: record.academicYearId,
-            order, fileDataUrl, fileType: fileType || "image", fileName: fileName || null,
-            uploadedBy: actorId, uploadedAt: Date.now(),
           });
-          record.updatedAt = Date.now();
-
-          const actor = d.users.find((u) => u.id === actorId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: record.id, studentId, classId, subject, semester, component,
-            action: "EVIDENCE_ADDED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [{ field: "evidence", from: existing.length, to: existing.length + 1 }], reason: null, at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          return d;
-        });
-        return result;
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to reinstate auto-lock", e);
+          return { ok: false, message: resultRlsMessage(e) };
+        }
       },
 
-      // Removes one evidence page and re-sequences the remaining pages of the same component so
-      // `order` stays a dense 0..n-1 run (stable relative to their prior order).
-      removeResultEvidencePage(evidenceId, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const row = (d.resultEvidence || []).find((e) => e.id === evidenceId);
-          if (!row) { result = { ok: false, message: "Evidence page not found." }; return d; }
-          const record = d.results.find((r) => r.id === row.resultId);
-          const cal = resolveResultCal(d, record ? record.academicYearId : row.academicYearId);
-          const lock = effectiveResultLock(record, row.semester, cal, todayKeyStr());
-          if (lock.locked) { result = { ok: false, message: lock.message }; return d; }
+      // Phase 3 checkpoint 3: real Supabase. Adds one evidence page (a photo/scan of the marked
+      // paper) to a component — the file goes to the private `result-evidence` Storage bucket at
+      // `<result_id>/<component>/<safe-name>` (path built server-side from ids, never client input)
+      // and the metadata row to `result_evidence`. Same client-side lock gate as
+      // saveResultComponent (friendly message); Storage + table RLS (can_edit_result_component)
+      // are the real boundary. `file` is the raw File from the picker — no base64.
+      async addResultEvidencePage({ studentId, classId, subject, semester, component, file }, actorId /* actorRole unused: server stamps */) {
+        if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
+          return { ok: false, message: "Invalid semester or assessment component." };
+        }
+        const invalid = validateEvidenceFile(file);
+        if (invalid) return { ok: false, message: invalid };
+        const student = db.students.find((s) => s.id === studentId);
+        if (!student) return { ok: false, message: "Student not found." };
+        const subjectId = db.subjects.find((s) => s.name === subject)?.id;
+        if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
 
-          d.resultEvidence = d.resultEvidence.filter((e) => e.id !== evidenceId);
-          d.resultEvidence
-            .filter((e) => e.resultId === row.resultId && e.component === row.component)
-            .sort((a, b) => a.order - b.order)
-            .forEach((e, i) => { e.order = i; });
-          if (record) record.updatedAt = Date.now();
+        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
+        const cal = resolveResultCal(db, academicYearId);
+        const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
+        if (lock.locked) return { ok: false, message: lock.message };
 
-          const actor = d.users.find((u) => u.id === actorId);
-          d.resultAuditLog = [{
-            id: uid("aud"), entityType: "result", entityId: row.resultId, studentId: row.studentId, classId: row.classId, subject: record ? record.subject : null, semester: row.semester, component: row.component,
-            action: "EVIDENCE_REMOVED", actorId, actorRole: actorRole || actor?.role, actorName: actor?.name || "Unknown",
-            diff: [], reason: null, at: Date.now(),
-          }, ...(d.resultAuditLog || [])].slice(0, 500);
-          return d;
-        });
-        return result;
+        try {
+          const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
+          const existingCount = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component).length;
+          await resultEvidenceService.add({ resultId, studentId, classId, semester, component, academicYearId, file });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: existingCount, to: existingCount + 1 }], reason: null });
+          await Promise.all([refetchResultEvidence(), refetchResults()]);
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to add result evidence", e);
+          return { ok: false, message: evidenceErrorMessage(e) };
+        }
+      },
+
+      // Replaces the file behind one existing page (new upload first, then repoint the row, then
+      // drop the old object — never leaves the page with no file). Same lock gate + RLS as add.
+      async replaceResultEvidencePage(evidenceId, file, actorId /* actorRole unused */) {
+        const invalid = validateEvidenceFile(file);
+        if (invalid) return { ok: false, message: invalid };
+        const row = (db.resultEvidence || []).find((e) => e.id === evidenceId);
+        if (!row) return { ok: false, message: "Evidence page not found." };
+        const record = db.results.find((r) => r.id === row.resultId) || null;
+        const subjectId = record ? (db.subjects.find((s) => s.name === record.subject)?.id || null) : null;
+        const cal = resolveResultCal(db, record ? record.academicYearId : row.academicYearId);
+        const lock = effectiveResultLock(record, row.semester, cal, todayKeyStr());
+        if (lock.locked) return { ok: false, message: lock.message };
+        try {
+          const oldName = row.fileName;
+          const updated = await resultEvidenceService.replace(row, file);
+          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, component: row.component, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: oldName || "(page)", to: updated.fileName }], reason: "Replaced an evidence page" });
+          await Promise.all([refetchResultEvidence(), refetchResults()]);
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to replace result evidence", e);
+          return { ok: false, message: evidenceErrorMessage(e) };
+        }
+      },
+
+      // Removes one evidence page (metadata row + Storage object) and re-sequences the remaining
+      // pages of the same component so `page_order` stays a dense 0..n-1 run.
+      async removeResultEvidencePage(evidenceId, actorId /* actorRole unused */) {
+        const row = (db.resultEvidence || []).find((e) => e.id === evidenceId);
+        if (!row) return { ok: false, message: "Evidence page not found." };
+        const record = db.results.find((r) => r.id === row.resultId) || null;
+        const subjectId = record ? (db.subjects.find((s) => s.name === record.subject)?.id || null) : null;
+        const cal = resolveResultCal(db, record ? record.academicYearId : row.academicYearId);
+        const lock = effectiveResultLock(record, row.semester, cal, todayKeyStr());
+        if (lock.locked) return { ok: false, message: lock.message };
+        try {
+          await resultEvidenceService.remove(row);
+          const remaining = (db.resultEvidence || [])
+            .filter((e) => e.resultId === row.resultId && e.component === row.component && e.id !== evidenceId)
+            .sort((a, b) => a.order - b.order);
+          const resequence = remaining
+            .map((e, i) => ({ id: e.id, order: i }))
+            .filter((u, i) => remaining[i].order !== u.order);
+          if (resequence.length) await resultEvidenceService.setOrder(resequence);
+          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, component: row.component, action: "EVIDENCE_REMOVED", diff: [], reason: null });
+          await Promise.all([refetchResultEvidence(), refetchResults()]);
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to remove result evidence", e);
+          return { ok: false, message: evidenceErrorMessage(e) };
+        }
       },
 
       // Purely cosmetic page reordering (no audit entry — matches saveResultComponent's "no
       // phantom audit entry" rule). Ids not belonging to this resultId+component are ignored.
-      reorderResultEvidencePages(resultId, component, orderedEvidenceIds, actorId, actorRole) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const record = d.results.find((r) => r.id === resultId);
-          const rows = (d.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component);
-          const cal = resolveResultCal(d, record ? record.academicYearId : (rows[0] ? rows[0].academicYearId : null));
-          const semester = record ? record.semester : (rows[0] ? rows[0].semester : null);
-          const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
-          if (lock.locked) { result = { ok: false, message: lock.message }; return d; }
-
+      async reorderResultEvidencePages(resultId, component, orderedEvidenceIds, actorId /* actorRole unused */) {
+        const record = db.results.find((r) => r.id === resultId) || null;
+        const rows = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component);
+        const cal = resolveResultCal(db, record ? record.academicYearId : (rows[0] ? rows[0].academicYearId : null));
+        const semester = record ? record.semester : (rows[0] ? rows[0].semester : null);
+        const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
+        if (lock.locked) return { ok: false, message: lock.message };
+        try {
+          const updates = [];
           orderedEvidenceIds.forEach((id, i) => {
             const row = rows.find((e) => e.id === id);
-            if (row) row.order = i;
+            if (row && row.order !== i) updates.push({ id, order: i });
           });
-          return d;
-        });
-        return result;
+          if (updates.length) {
+            await resultEvidenceService.setOrder(updates);
+            await refetchResultEvidence();
+          }
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to reorder result evidence", e);
+          return { ok: false, message: evidenceErrorMessage(e) };
+        }
       },
 
-      announceExam({ title, audience, date, message, priority }, authorId) {
+      // Real Supabase (`exam_announcements`). Creation is Owner/Educational Director only (RLS
+      // exam_announcements_insert). The parent + head-teacher notification fan-out stays on the
+      // mock bridge (locked Phase 2 decision — notify_exam_announcement exists but isn't wired).
+      async announceExam({ title, audience, date, message, priority }, authorId) {
+        try {
+          await examService.create({ title, message, audience, priority: priority || "Important", examDate: date, authorId });
+          await refetchExamAnnouncements();
+        } catch (e) {
+          console.error("Failed to announce exam", e);
+          return { ok: false, message: /row-level security|violates/i.test(e.message || "") ? "Only the Owner or Educational Director can announce an exam." : (e.message || "Couldn't announce the exam.") };
+        }
         commit((d) => {
-          const announcement = { id: uid("examann"), title, message, audience, priority: priority || "Important", examDate: date, authorId, createdAt: Date.now() };
-          d.examAnnouncements.push(announcement);
-
           let targetClasses = [];
           if (audience.type === "ALL") targetClasses = d.classes;
           else if (audience.type === "GRADE") targetClasses = d.classes.filter((c) => c.grade === audience.grade);
@@ -2623,6 +3482,7 @@ function DataProvider({ children }) {
           d.activities = [{ id: uid("act"), text: `${title} was announced for ${audience.type === "ALL" ? "the whole school" : audience.type === "GRADE" ? audience.grade : `${audience.grade}${audience.section}`}.`, createdAt: Date.now() }, ...d.activities];
           return d;
         });
+        return { ok: true };
       },
 
       createBehaviorRecord(data) {
@@ -2641,32 +3501,37 @@ function DataProvider({ children }) {
         });
       },
 
-      suspendStudent(studentId, { reason, startDate, endDate, notes }) {
-        commit((d) => {
-          const s = d.students.find((x) => x.id === studentId);
-          if (s) {
-            s.status = "SUSPENDED"; s.suspension = { reason, startDate, endDate, notes };
-            this._syncEnrollment(d, s);
-          }
-          d.behaviorRecords.push({ id: uid("beh"), studentId, date: new Date().toISOString().slice(0, 10), type: "Other", severity: "High", description: `Suspension: ${reason}`, staff: "School Administrator", action: `Suspended ${startDate} to ${endDate}`, parentNotified: true, createdAt: Date.now() });
-          const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title: `Suspension notice — ${s ? computeStudentIdentity(d, s).display : "a student"}`, message: `${s ? studentFullName(s) : "Your child"} has been suspended: ${reason}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
-          });
-          // The student's teacher(s) need to know too — head teacher of their class, plus every
-          // subject teacher assigned to it, so no one keeps expecting the student in class.
-          if (s && s.classId) {
-            const cls = d.classes.find((c) => c.id === s.classId);
-            const teacherIds = new Set();
-            if (cls?.headTeacherId) teacherIds.add(cls.headTeacherId);
-            d.teacherAssignments.filter((ta) => ta.classId === s.classId).forEach((ta) => teacherIds.add(ta.teacherId));
-            teacherIds.forEach((tid) => {
-              d.notifications = [{ id: uid("notif"), userId: tid, title: `Student suspended — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended (${fmtDate(startDate)}–${fmtDate(endDate)}): ${reason}. They should not be marked in daily attendance during this period.`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
+      async suspendStudent(studentId, { reason, startDate, endDate, notes }) {
+        try {
+          const updated = await studentService.update(studentId, { status: "SUSPENDED", suspension: { reason, startDate, endDate, notes } });
+          await syncStudentEnrollment(updated);
+          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          commit((d) => {
+            const s = updated;
+            d.behaviorRecords.push({ id: uid("beh"), studentId, date: new Date().toISOString().slice(0, 10), type: "Other", severity: "High", description: `Suspension: ${reason}`, staff: "School Administrator", action: `Suspended ${startDate} to ${endDate}`, parentNotified: true, createdAt: Date.now() });
+            const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
+            parentIds.forEach((pid) => {
+              d.notifications = [{ id: uid("notif"), userId: pid, title: `Suspension notice — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended: ${reason}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
             });
-          }
-          d.activities = [{ id: uid("act"), text: `${s ? studentFullName(s) : "A student"} was suspended.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+            // The student's teacher(s) need to know too — head teacher of their class, plus every
+            // subject teacher assigned to it, so no one keeps expecting the student in class.
+            if (s.classId) {
+              const cls = d.classes.find((c) => c.id === s.classId);
+              const teacherIds = new Set();
+              if (cls?.headTeacherId) teacherIds.add(cls.headTeacherId);
+              d.teacherAssignments.filter((ta) => ta.classId === s.classId).forEach((ta) => teacherIds.add(ta.teacherId));
+              teacherIds.forEach((tid) => {
+                d.notifications = [{ id: uid("notif"), userId: tid, title: `Student suspended — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended (${fmtDate(startDate)}–${fmtDate(endDate)}): ${reason}. They should not be marked in daily attendance during this period.`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
+              });
+            }
+            d.activities = [{ id: uid("act"), text: `${studentFullName(s)} was suspended.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to suspend student", e);
+          return { ok: false, message: e.message || "Couldn't suspend the student." };
+        }
       },
 
       createAnnouncement(data) {
@@ -2791,40 +3656,51 @@ function DataProvider({ children }) {
         commit((d) => { d.activities = [{ id: uid("act"), text, createdAt: Date.now() }, ...d.activities]; return d; });
       },
 
-      createStaff(data) {
-        let newId = null;
-        commit((d) => {
-          const seq = d.staffSeq || 1;
-          d.staffSeq = seq + 1;
-          const s = { id: uid("staff"), userId: data.userId || null, name: data.name, position: data.position, employmentDate: data.employmentDate || new Date().toISOString().slice(0, 10), phone: data.phone || null, salary: Number(data.salary) || 0, paymentSchedule: "MONTHLY", status: "ACTIVE", employmentStatus: "ACTIVE", employmentEndDate: null, photo: data.photo || null, hasShifts: !!data.hasShifts, bankAccount: data.bankAccount || null, employeeNumber: `TMA-EMP-${String(seq).padStart(4, "0")}` };
-          newId = s.id;
-          d.staff.push(s);
-          d.activities = [{ id: uid("act"), text: `${s.name} was added to staff as ${s.position}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return newId;
+      async createStaff(data) {
+        try {
+          const created = await staffService.create({
+            name: data.name, position: data.position, employmentDate: data.employmentDate,
+            phone: data.phone, salary: data.salary, photo: data.photo, hasShifts: data.hasShifts, bankAccount: data.bankAccount,
+          });
+          await refetchStaff();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${created.name} was added to staff as ${created.position}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return created.id;
+        } catch (e) {
+          console.error("Failed to create staff", e);
+          return null;
+        }
       },
-      updateStaff(id, patch) {
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === id);
-          if (s) Object.assign(s, patch, patch.salary !== undefined ? { salary: Number(patch.salary) || 0 } : {});
-          return d;
-        });
+      async updateStaff(id, patch) {
+        try {
+          await staffService.update(id, patch);
+          await refetchStaff();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to update staff", e);
+          return { ok: false, message: e.message || "Couldn't update the staff member." };
+        }
       },
-      setStaffStatus(id, status, actorId) {
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === id);
-          if (s) s.status = status;
+      async setStaffStatus(id, status, actorId) {
+        try {
+          const s = db.staff.find((x) => x.id === id);
+          await staffService.update(id, { status });
           // A staff record and its linked login account (if any) must always agree on active/
           // disabled — otherwise someone disabled here could still sign in, or show active in
           // Payroll while Accounts & Access says disabled. See setAccountStatus for the mirror.
-          if (s?.userId) {
-            const u = d.users.find((x) => x.id === s.userId);
-            if (u) u.status = status;
-          }
-          d.activities = [{ id: uid("act"), text: `${s?.name || "A staff member"}'s status was changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+          if (s?.userId) await staffService.setProfileStatus(s.userId, status);
+          await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${s?.name || "A staff member"}'s status was changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to set staff status", e);
+          return { ok: false, message: e.message || "Couldn't change this staff member's status." };
+        }
       },
 
       // Employment (are they currently employed) is separate from the status field above (can
@@ -2835,35 +3711,39 @@ function DataProvider({ children }) {
       // routed through them. `endDate` is the last employed day (inclusive) — see
       // employmentActiveOn (staffEmploymentStatus.js), which staffSalarySummary below and every
       // "is this person currently staff" check should use instead of re-deriving the date rule.
-      endEmployment(staffId, endDate) {
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === staffId);
-          if (!s) return d;
-          s.employmentStatus = "ENDED";
-          s.employmentEndDate = endDate;
-          s.status = "DISABLED";
-          if (s.userId) {
-            const u = d.users.find((x) => x.id === s.userId);
-            if (u) u.status = "DISABLED";
-          }
-          d.activities = [{ id: uid("act"), text: `${s.name}'s employment ended effective ${endDate}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async endEmployment(staffId, endDate) {
+        try {
+          const s = db.staff.find((x) => x.id === staffId);
+          if (!s) return { ok: false, message: "Staff member not found." };
+          await staffService.update(staffId, { employmentStatus: "ENDED", employmentEndDate: endDate, status: "DISABLED" });
+          if (s.userId) await staffService.setProfileStatus(s.userId, "DISABLED");
+          await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${s.name}'s employment ended effective ${endDate}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to end employment", e);
+          return { ok: false, message: e.message || "Couldn't end this staff member's employment." };
+        }
       },
-      reactivateEmployment(staffId) {
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === staffId);
-          if (!s) return d;
-          s.employmentStatus = "ACTIVE";
-          s.employmentEndDate = null;
-          s.status = "ACTIVE";
-          if (s.userId) {
-            const u = d.users.find((x) => x.id === s.userId);
-            if (u) u.status = "ACTIVE";
-          }
-          d.activities = [{ id: uid("act"), text: `${s.name}'s employment was reactivated.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async reactivateEmployment(staffId) {
+        try {
+          const s = db.staff.find((x) => x.id === staffId);
+          if (!s) return { ok: false, message: "Staff member not found." };
+          await staffService.update(staffId, { employmentStatus: "ACTIVE", employmentEndDate: null, status: "ACTIVE" });
+          if (s.userId) await staffService.setProfileStatus(s.userId, "ACTIVE");
+          await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${s.name}'s employment was reactivated.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to reactivate employment", e);
+          return { ok: false, message: e.message || "Couldn't reactivate this staff member's employment." };
+        }
       },
 
       // Mirrors balanceFor()'s PAID/PARTIAL/UNPAID logic for Fees (line ~186) — a month's status
@@ -2880,59 +3760,39 @@ function DataProvider({ children }) {
 
       // Blocker 5 (payroll overpayment + salary advance policy, approved 2026-08-25): a payment
       // can never exceed the employee's actual remaining obligation for that month, and a zero/
-      // negative amount is rejected rather than silently no-op'd — the caller must be able to tell
-      // whether anything was actually recorded (see voidPayment above for the same result-object
-      // pattern). The cap is recomputed here from the live draft `d`, not a value the UI read
-      // earlier, so two payments landing in the same tick can't jointly exceed the remaining amount.
-      recordPayrollPayment(staffId, { amount, method, month, date, note, allowances, deductions, advanceApplied }, recordedBy) {
-        let result = { success: false, error: "" };
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === staffId);
-          if (!s) { result = { success: false, error: "Staff member not found." }; return d; }
+      // negative amount is rejected rather than silently no-op'd. The cap is now enforced
+      // server-side by the record_payroll_payment RPC (see payrollService.js) -- it re-runs this
+      // exact math inside the same transaction as the insert, so two payments landing at once can't
+      // jointly exceed the remaining amount (a client-side check on stale data never could
+      // guarantee that). The RPC's own exception message is surfaced verbatim on rejection.
+      async recordPayrollPayment(staffId, { amount, method, month, date, note, allowances, deductions, advanceApplied }, recordedBy) {
+        try {
+          const s = db.staff.find((x) => x.id === staffId);
+          if (!s) return { success: false, error: "Staff member not found." };
           const cash = Number(amount);
-          if (!Number.isFinite(cash) || cash <= 0) {
-            result = { success: false, error: "Payment amount must be greater than zero." };
+          if (!Number.isFinite(cash) || cash <= 0) return { success: false, error: "Payment amount must be greater than zero." };
+          const payment = await payrollService.recordPayment({
+            staffId, amount: cash, method, month, date, note,
+            allowances: Math.max(0, Number(allowances) || 0), deductions: Math.max(0, Number(deductions) || 0),
+            advanceApplied: Math.max(0, Number(advanceApplied) || 0), recordedBy,
+          });
+          await refetchPayrollPayments();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${monthLabel(month)}).`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
+            if (s.userId) {
+              d.notifications = [{
+                id: uid("notif"), userId: s.userId, title: "Salary Paid",
+                message: `Your ${monthLabel(month)} salary of ${formatMoney(payment.amount)} has been recorded as paid. Tap to view your payslip.`,
+                read: false, createdAt: Date.now(), type: "PAYROLL", paymentId: payment.id,
+              }, ...d.notifications];
+            }
             return d;
-          }
-          const newAllowances = Math.max(0, Number(allowances) || 0);
-          const newDeductions = Math.max(0, Number(deductions) || 0);
-          // The cap is scoped to THIS transaction's own chosen advanceApplied (not a pre-computed
-          // "credit already netted" figure) — that way, if Finance applies less of the advance
-          // balance than is available, the cash cap correctly grows to cover the rest, and there's
-          // no mismatch between what's displayed as suggested and what's actually enforced.
-          const advanceGiven = d.salaryAdvances.filter((a) => a.staffId === staffId).reduce((sum, a) => sum + a.amount, 0);
-          const advanceAppliedTotal = d.payrollPayments.filter((p) => p.staffId === staffId).reduce((sum, p) => sum + (p.advanceApplied || 0), 0);
-          const advanceBalance = Math.max(0, advanceGiven - advanceAppliedTotal);
-          const appliedAdvance = Math.min(Math.max(0, Number(advanceApplied) || 0), advanceBalance);
-          const paymentsForMonth = d.payrollPayments.filter((p) => p.staffId === staffId && p.month === month);
-          const paidThisMonthAlready = paymentsForMonth.reduce((sum, p) => sum + p.amount + (p.advanceApplied || 0), 0);
-          const cashCap = Math.max(0, s.salary + newAllowances - newDeductions - paidThisMonthAlready - appliedAdvance);
-          if (cash > cashCap + 0.001) {
-            const advanceNote = appliedAdvance > 0 ? ` after applying ${formatMoney(appliedAdvance)} of the salary advance` : "";
-            result = { success: false, error: `Payment of ${formatMoney(cash)} exceeds the ${formatMoney(cashCap)} remaining for ${monthLabel(month)}${advanceNote}.` };
-            return d;
-          }
-          const seq = d.payrollPaymentSeq || 1;
-          d.payrollPaymentSeq = seq + 1;
-          const [refYear, refMonth] = (month || "").split("-");
-          const reference = refYear && refMonth ? `SAL-${refYear}-${refMonth}-${String(seq).padStart(4, "0")}` : null;
-          const payment = {
-            id: uid("payr"), staffId, amount: cash, method, month, date, note: note || "", recordedBy, reference, createdAt: Date.now(),
-            allowances: newAllowances, deductions: newDeductions, advanceApplied: appliedAdvance,
-          };
-          d.payrollPayments.push(payment);
-          d.activities = [{ id: uid("act"), text: `${formatMoney(cash)} salary payment recorded for ${s.name} (${monthLabel(month)}).`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
-          if (s.userId) {
-            d.notifications = [{
-              id: uid("notif"), userId: s.userId, title: "Salary Paid",
-              message: `Your ${monthLabel(month)} salary of ${formatMoney(cash)} has been recorded as paid. Tap to view your payslip.`,
-              read: false, createdAt: Date.now(), type: "PAYROLL", paymentId: payment.id,
-            }, ...d.notifications];
-          }
-          result = { success: true, payment };
-          return d;
-        });
-        return result;
+          });
+          return { success: true, payment };
+        } catch (e) {
+          console.error("Failed to record payroll payment", e);
+          return { success: false, error: e.message || "Couldn't record this payment." };
+        }
       },
 
       // A salary advance is money given to a staff member ahead of a regular payroll payment —
@@ -2940,53 +3800,35 @@ function DataProvider({ children }) {
       // a payment, so it's never mistaken for a month's salary having been paid. It's settled
       // later via recordPayrollPayment's advanceApplied field.
       //
-      // Blocker 5A: an advance can never exceed what's actually available (this month's own unmet
-      // obligation, minus any advance balance already outstanding) — recomputed from the live draft
-      // `d` at commit time, same reasoning as recordPayrollPayment's cash cap, so two advances
-      // landing in the same tick can't jointly overshoot it.
-      recordSalaryAdvance(staffId, { amount, date, note }, recordedBy) {
-        let result = { success: false, error: "" };
-        commit((d) => {
-          const s = d.staff.find((x) => x.id === staffId);
-          if (!s) { result = { success: false, error: "Staff member not found." }; return d; }
+      // Blocker 5A's cap (this month's own unmet obligation, minus any advance balance already
+      // outstanding) is enforced server-side by the record_salary_advance RPC — same reasoning as
+      // recordPayrollPayment above, so two advances landing at once can't jointly overshoot it.
+      async recordSalaryAdvance(staffId, { amount, date, note }, recordedBy) {
+        try {
+          const s = db.staff.find((x) => x.id === staffId);
+          if (!s) return { success: false, error: "Staff member not found." };
           const cash = Number(amount);
-          if (!Number.isFinite(cash) || cash <= 0) {
-            result = { success: false, error: "Advance amount must be greater than zero." };
+          if (!Number.isFinite(cash) || cash <= 0) return { success: false, error: "Advance amount must be greater than zero." };
+          const summaryBefore = computeStaffPayrollSummary(db, staffId) || { advanceBalance: 0 };
+          const advance = await payrollService.recordAdvance({ staffId, amount: cash, date, note, recordedBy });
+          await refetchSalaryAdvances();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${formatMoney(advance.amount)} salary advance recorded for ${s.name}.`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
+            if (s.userId) {
+              const newBalance = summaryBefore.advanceBalance + advance.amount;
+              d.notifications = [{
+                id: uid("notif"), userId: s.userId, title: "Salary Advance Recorded",
+                message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}. Your remaining advance balance is ${formatMoney(newBalance)}.`,
+                read: false, createdAt: Date.now(), type: "PAYROLL",
+              }, ...d.notifications];
+            }
             return d;
-          }
-          const summaryBefore = computeStaffPayrollSummary(d, staffId) || { maxAdvance: 0, advanceBalance: 0 };
-          const { maxAdvance } = summaryBefore;
-          if (cash > maxAdvance + 0.001) {
-            result = {
-              success: false,
-              error: maxAdvance <= 0
-                ? `${s.name} has no available Net Pay to advance against right now.`
-                : `Advance exceeds the ${formatMoney(maxAdvance)} available Net Pay for ${s.name}.`,
-            };
-            return d;
-          }
-          const seq = d.advanceSeq || 1;
-          d.advanceSeq = seq + 1;
-          const [refYear, refMonth] = (date || "").split("-");
-          const reference = refYear && refMonth ? `ADV-${refYear}-${refMonth}-${String(seq).padStart(4, "0")}` : null;
-          const advance = {
-            id: uid("adv"), staffId, amount: cash, date, payrollMonth: refYear && refMonth ? `${refYear}-${refMonth}` : null,
-            note: note || "", recordedBy, reference, createdAt: Date.now(),
-          };
-          d.salaryAdvances.push(advance);
-          d.activities = [{ id: uid("act"), text: `${formatMoney(cash)} salary advance recorded for ${s.name}.`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
-          if (s.userId) {
-            const newBalance = summaryBefore.advanceBalance + cash;
-            d.notifications = [{
-              id: uid("notif"), userId: s.userId, title: "Salary Advance Recorded",
-              message: `An advance of ${formatMoney(cash)} was recorded for you on ${fmtDate(date)}. Your remaining advance balance is ${formatMoney(newBalance)}.`,
-              read: false, createdAt: Date.now(), type: "PAYROLL",
-            }, ...d.notifications];
-          }
-          result = { success: true, advance };
-          return d;
-        });
-        return result;
+          });
+          return { success: true, advance };
+        } catch (e) {
+          console.error("Failed to record salary advance", e);
+          return { success: false, error: e.message || "Couldn't record this advance." };
+        }
       },
 
       /* ---------- Payment Methods (Phase 1A) ---------- */
@@ -3089,53 +3931,78 @@ function DataProvider({ children }) {
       },
 
       /* ---------- Owner: account management (Phase 1A) ---------- */
-      setAccountStatus(userId, status) {
-        commit((d) => {
-          const u = d.users.find((x) => x.id === userId);
-          if (u) u.status = status;
+      // Covers Teacher/Educational-Director/Finance-Director logins (the only roles this is ever
+      // called for — see AdminPages.jsx TeachersPage and OwnerPages.jsx AccountsPage).
+      async setAccountStatus(userId, status) {
+        try {
+          const u = db.users.find((x) => x.id === userId);
+          await staffService.setProfileStatus(userId, status);
           // Mirror onto the linked staff record — see setStaffStatus for why these two can never
           // be allowed to drift apart.
-          const linkedStaff = d.staff.find((s) => s.userId === userId);
-          if (linkedStaff) linkedStaff.status = status;
-          d.activities = [{ id: uid("act"), text: `${u?.name || "An account"}'s access was set to ${status}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+          const linkedStaff = db.staff.find((s) => s.userId === userId);
+          if (linkedStaff) await staffService.update(linkedStaff.id, { status });
+          await Promise.all([refetchTeacherAccounts(), refetchDirectorAccounts(), refetchStaff()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${u?.name || "An account"}'s access was set to ${status}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to set account status", e);
+          return { ok: false, message: e.message || "Couldn't change this account's status." };
+        }
       },
-      createDirectorAccount(data) {
-        let newId = null;
-        commit((d) => {
-          const u = { id: uid("user"), role: ROLES.ADMIN, name: data.name, email: data.email, password: data.password, phone: data.phone || "", status: "ACTIVE", mustChangePassword: true, photo: null };
-          newId = u.id;
-          d.users.push(u);
-          const staffSeq = d.staffSeq || 1;
-          d.staffSeq = staffSeq + 1;
-          d.staff.push({ id: uid("staff"), userId: u.id, name: u.name, position: "Educational Director", employmentDate: new Date().toISOString().slice(0, 10), phone: u.phone, salary: Number(data.salary) || 12000, paymentSchedule: "MONTHLY", status: "ACTIVE", employmentStatus: "ACTIVE", employmentEndDate: null, photo: null, bankAccount: data.bankAccount || null, employeeNumber: `TMA-EMP-${String(staffSeq).padStart(4, "0")}` });
-          d.activities = [{ id: uid("act"), text: `${u.name} was added as Educational Director.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return newId;
+      // Shared by createDirectorAccount/createFinanceAccount below — same account-then-staff-row
+      // flow as createTeacher, minus the class/subject assignment step. A staff/payroll-row failure
+      // after the real Auth account already exists is reported clearly (with the real userId)
+      // rather than silently losing track of the partial state.
+      async _createDirectorAccount(role, position, data) {
+        try {
+          const created = await accountService.create({ email: data.email, password: data.password, fullName: data.name, role, phone: data.phone });
+          if (!created.ok) return { ok: false, message: created.message || "Couldn't create the account." };
+          const userId = created.userId;
+          try {
+            await staffService.create({
+              userId, name: data.name, position, phone: data.phone || "",
+              employmentDate: new Date().toISOString().slice(0, 10), salary: Number(data.salary) || 12000,
+              bankAccount: data.bankAccount || null,
+            });
+          } catch (staffErr) {
+            await Promise.all([refetchDirectorAccounts(), refetchStaff()]);
+            commit((d) => { d.activities = [{ id: uid("act"), text: `${data.name} was added as ${position}, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            return { ok: false, message: `The account was created, but the staff/payroll record failed: ${staffErr.message || "unknown error"}. Add it from the Staff page.`, userId };
+          }
+          await Promise.all([refetchDirectorAccounts(), refetchStaff()]);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `${data.name} was added as ${position}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, userId };
+        } catch (e) {
+          console.error(`Failed to create ${position} account`, e);
+          return { ok: false, message: e.message || "Couldn't create the account." };
+        }
       },
-      createFinanceAccount(data) {
-        let newId = null;
-        commit((d) => {
-          const u = { id: uid("user"), role: ROLES.FINANCE, name: data.name, email: data.email, password: data.password, phone: data.phone || "", status: "ACTIVE", mustChangePassword: true, photo: null };
-          newId = u.id;
-          d.users.push(u);
-          const staffSeq = d.staffSeq || 1;
-          d.staffSeq = staffSeq + 1;
-          d.staff.push({ id: uid("staff"), userId: u.id, name: u.name, position: "Finance Director", employmentDate: new Date().toISOString().slice(0, 10), phone: u.phone, salary: Number(data.salary) || 12000, paymentSchedule: "MONTHLY", status: "ACTIVE", employmentStatus: "ACTIVE", employmentEndDate: null, photo: null, bankAccount: data.bankAccount || null, employeeNumber: `TMA-EMP-${String(staffSeq).padStart(4, "0")}` });
-          d.activities = [{ id: uid("act"), text: `${u.name} was added as Finance & Operations Director.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return newId;
+      async createDirectorAccount(data) {
+        return this._createDirectorAccount(ROLES.ADMIN, "Educational Director", data);
       },
-      resetUserPassword(userId, newPassword) {
-        commit((d) => {
-          const u = d.users.find((x) => x.id === userId);
-          if (u) { u.password = newPassword; u.mustChangePassword = true; }
-          d.activities = [{ id: uid("act"), text: `Password was reset for ${u?.name || "an account"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async createFinanceAccount(data) {
+        return this._createDirectorAccount(ROLES.FINANCE, "Finance Director", data);
+      },
+      async resetUserPassword(userId, newPassword) {
+        try {
+          const u = db.users.find((x) => x.id === userId);
+          const res = await accountService.resetPassword(userId, newPassword);
+          if (!res.ok) return { ok: false, message: res.message || "Couldn't reset the password." };
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Password was reset for ${u?.name || "an account"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to reset password", e);
+          return { ok: false, message: e.message || "Couldn't reset the password." };
+        }
       },
 
       /* ---------- Report cards ----------
@@ -3199,74 +4066,106 @@ function DataProvider({ children }) {
         const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
         return db.reportCards.find((rc) => rc.studentId === studentId && rc.classId === classId && (!rc.academicYearId || rc.academicYearId === yearId)) || null;
       },
-      generateReportCard(studentId, classId, generatedBy, academicYearId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const yearId = academicYearId || (currentAcademicYear(d.academicYears) || {}).id || null;
-          const student = d.students.find((s) => s.id === studentId);
-          const readiness = this.computeReportReadiness(studentId, classId, yearId);
-          if (!readiness.complete) { result = { ok: false, message: `${student?.firstName || "This student"} is missing Semester 2 results for: ${readiness.missingSubjects.join(", ")}.` }; return d; }
-          let rc = d.reportCards.find((r) => r.studentId === studentId && r.classId === classId && r.academicYearId === yearId);
-          if (rc) { rc.status = "GENERATED"; rc.generatedAt = Date.now(); rc.generatedBy = generatedBy; }
-          else { rc = { id: uid("rc"), studentId, classId, academicYearId: yearId, status: "GENERATED", generatedAt: Date.now(), generatedBy, publishedAt: null, publishedBy: null, lockedAt: null, lockedBy: null, promoted: null, promotionNote: "" }; d.reportCards.push(rc); }
-          d.activities = [{ id: uid("act"), text: `Report card generated for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+      // CP4: real Supabase (`report_cards` table). RLS restricts insert/update to Owner +
+      // Educational Director; the S2-readiness check below is a client-side gate for a friendlier
+      // message (the card is DERIVED from real results, so an incomplete card would just print
+      // blanks -- readiness stops that early). Notifications stay on the mock bridge.
+      async generateReportCard(studentId, classId, generatedBy, academicYearId) {
+        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const student = db.students.find((s) => s.id === studentId);
+        const readiness = this.computeReportReadiness(studentId, classId, yearId);
+        if (!readiness.complete) return { ok: false, message: `${student?.firstName || "This student"} is missing Semester 2 results for: ${readiness.missingSubjects.join(", ")}.` };
+        if (!yearId) return { ok: false, message: "No academic year is configured." };
+        try {
+          await reportCardService.ensure({ studentId, classId, academicYearId: yearId, generatedBy });
+          await refetchReportCards();
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Report card generated for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to generate report card", e);
+          return { ok: false, message: reportCardRlsMessage(e) };
+        }
       },
       // Promotion is a manual staff decision (not an automatic pass-mark), recorded before the
       // card can be published so it's never silently skipped — see `publishReportCard`.
-      setReportCardPromotion(id, promoted, note, actorId) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const rc = d.reportCards.find((r) => r.id === id);
-          if (!rc) { result = { ok: false, message: "Report card not found." }; return d; }
-          if (rc.status === "PUBLISHED" || rc.status === "LOCKED") { result = { ok: false, message: "This report card is already published — reopen it first to change the promotion decision." }; return d; }
-          rc.promoted = promoted; rc.promotionNote = note || "";
-          return d;
-        });
-        return result;
+      async setReportCardPromotion(id, promoted, note, actorId) {
+        const rc = db.reportCards.find((r) => r.id === id);
+        if (!rc) return { ok: false, message: "Report card not found." };
+        if (rc.status === "PUBLISHED" || rc.status === "LOCKED") return { ok: false, message: "This report card is already published — reopen it first to change the promotion decision." };
+        try {
+          await reportCardService.setPromotion(id, promoted, note);
+          await refetchReportCards();
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to set report card promotion", e);
+          return { ok: false, message: reportCardRlsMessage(e) };
+        }
       },
-      publishReportCard(id, publishedBy) {
-        let result = { ok: true, message: "" };
-        commit((d) => {
-          const rc = d.reportCards.find((r) => r.id === id);
-          if (!rc) { result = { ok: false, message: "Report card not found." }; return d; }
-          // Idempotency guard matching publishResults — a rapid double-click (or any repeat call)
-          // on an already-PUBLISHED/LOCKED card is a safe no-op instead of re-sending the parent
-          // notification.
-          if (rc.status === "PUBLISHED" || rc.status === "LOCKED") { result = { ok: true, message: "" }; return d; }
-          if (rc.promoted === null || rc.promoted === undefined) { result = { ok: false, message: "Set the promotion decision (Promoted or Retained) before publishing." }; return d; }
-          rc.status = "PUBLISHED"; rc.publishedAt = Date.now(); rc.publishedBy = publishedBy;
-          const student = d.students.find((s) => s.id === rc.studentId);
-          const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(rc.studentId)).map((u) => u.id);
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title: `Report card published — ${student?.firstName}`, message: `${student?.firstName}'s report card is ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId: rc.studentId, openReportCard: true } }, ...d.notifications];
+      async publishReportCard(id, publishedBy) {
+        const rc = db.reportCards.find((r) => r.id === id);
+        if (!rc) return { ok: false, message: "Report card not found." };
+        // Idempotency guard matching publishResults — a rapid double-click (or any repeat call) on
+        // an already-PUBLISHED/LOCKED card is a safe no-op instead of re-sending the parent
+        // notification (reportCardService.publish only flips a still-un-published row).
+        if (rc.status === "PUBLISHED" || rc.status === "LOCKED") return { ok: true, message: "" };
+        if (rc.promoted === null || rc.promoted === undefined) return { ok: false, message: "Set the promotion decision (Promoted or Retained) before publishing." };
+        try {
+          const flipped = await reportCardService.publish(id, publishedBy);
+          await refetchReportCards();
+          if (flipped) {
+            const student = db.students.find((s) => s.id === rc.studentId);
+            commit((d) => {
+              const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(rc.studentId)).map((u) => u.id);
+              parentIds.forEach((pid) => {
+                d.notifications = [{ id: uid("notif"), userId: pid, title: `Report card published — ${student?.firstName}`, message: `${student?.firstName}'s report card is ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId: rc.studentId, openReportCard: true } }, ...d.notifications];
+              });
+              d.activities = [{ id: uid("act"), text: `Report card published for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+              return d;
+            });
+          }
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to publish report card", e);
+          return { ok: false, message: reportCardRlsMessage(e) };
+        }
+      },
+      async lockReportCard(id, lockedBy) {
+        const rc = db.reportCards.find((r) => r.id === id);
+        if (!rc) return { ok: false, message: "Report card not found." };
+        if (rc.status === "LOCKED") return { ok: true, message: "" };
+        try {
+          await reportCardService.lock(id, lockedBy);
+          await refetchReportCards();
+          const student = db.students.find((s) => s.id === rc.studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Report card locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
           });
-          d.activities = [{ id: uid("act"), text: `Report card published for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-        return result;
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to lock report card", e);
+          return { ok: false, message: reportCardRlsMessage(e) };
+        }
       },
-      lockReportCard(id, lockedBy) {
-        commit((d) => {
-          const rc = d.reportCards.find((r) => r.id === id);
-          if (!rc) return d;
-          rc.status = "LOCKED"; rc.lockedAt = Date.now(); rc.lockedBy = lockedBy;
-          const student = d.students.find((s) => s.id === rc.studentId);
-          d.activities = [{ id: uid("act"), text: `Report card locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
-      },
-      reopenReportCard(id, actorId) {
-        commit((d) => {
-          const rc = d.reportCards.find((r) => r.id === id);
-          if (!rc) return d;
-          rc.status = "GENERATED"; rc.lockedAt = null; rc.lockedBy = null;
-          const student = d.students.find((s) => s.id === rc.studentId);
-          d.activities = [{ id: uid("act"), text: `Report card reopened for editing for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+      async reopenReportCard(id, actorId) {
+        const rc = db.reportCards.find((r) => r.id === id);
+        if (!rc) return { ok: false, message: "Report card not found." };
+        try {
+          await reportCardService.reopen(id);
+          await refetchReportCards();
+          const student = db.students.find((s) => s.id === rc.studentId);
+          commit((d) => {
+            d.activities = [{ id: uid("act"), text: `Report card reopened for editing for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true, message: "" };
+        } catch (e) {
+          console.error("Failed to reopen report card", e);
+          return { ok: false, message: reportCardRlsMessage(e) };
+        }
       },
 
       resetDemoData() {
@@ -3277,7 +4176,22 @@ function DataProvider({ children }) {
         setDb(fresh);
       },
     };
-  }, [mockDb, commit, academicYears, subjects]);
+  }, [
+    mockDb, commit, academicYears, subjects, classesRaw, classSubjects,
+    studentsRaw, enrollmentsRaw, studentDocumentsRaw, studentService,
+    refetchStudents, refetchEnrollments, refetchStudentDocuments, syncStudentEnrollment,
+    parentsRaw, parentLinksRaw, childIdsByParent, parentService, accountService, refetchParents, refetchParentLinks,
+    teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw, salaryAdvancesRaw,
+    teacherAccountsRaw, directorAccountsRaw, teacherService, staffService, payrollService,
+    refetchTeacherAccounts, refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff,
+    refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances,
+    timetableService, closureService, timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw,
+    refetchTimetable, refetchClosures,
+    homeworkService, homework, refetchHomework,
+    resultService, examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
+    resultEvidenceService, resultEvidence, resultEvidenceRaw, refetchResultEvidence,
+    reportCardService, reportCards, refetchReportCards,
+  ]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not
   // events — nothing "happens" to trigger them, so they're checked on an ambient interval
@@ -3295,7 +4209,7 @@ function DataProvider({ children }) {
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
         <div className="max-w-sm text-center">
           <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-3"><CircleAlert className="text-red-600" size={22} /></div>
-          <p className="font-medium text-slate-700 mb-1">Unable to load Tilmaan Modern Academy.</p>
+          <p className="font-medium text-slate-700 mb-1">Unable to load Hiil Model School.</p>
           <p className="text-xs text-slate-400 mb-4">{loadError}</p>
           <button onClick={() => window.location.reload()} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Reload</button>
         </div>
@@ -3308,7 +4222,7 @@ function DataProvider({ children }) {
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="animate-spin text-sky-600" size={32} />
-          <p className="text-slate-500 text-sm">Loading Tilmaan Modern Academy…</p>
+          <p className="text-slate-500 text-sm">Loading Hiil Model School…</p>
         </div>
       </div>
     );

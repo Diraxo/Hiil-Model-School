@@ -80,7 +80,7 @@ function CashReceiptVoucher({
         <Logo size={64} />
         <div className="flex-1 text-center">
           <p className="text-base font-medium">ትልማን ሞደርን አካዳሚ</p>
-          <p className="text-3xl font-bold -mt-1">Tilmaan Modern Academy</p>
+          <p className="text-3xl font-bold -mt-1">Hiil Model School</p>
           <p className="text-sm mt-1">+251947555500/0947555566 &nbsp; Jigjiga, Ethiopia</p>
           <div className="flex items-center justify-center gap-2 text-sm mt-0.5">
             <span>Tin: 0065997758</span>

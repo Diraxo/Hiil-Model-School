@@ -2,8 +2,10 @@ import React, { useRef, useState } from "react";
 import { Printer, Download } from "lucide-react";
 import { Modal, resultTotals } from "./ui";
 import { useData } from "../context/DataContext";
+import { useAuth } from "../context/AuthContext";
 import { LOGO_DATA_URI, GRADES, round2 } from "../utils/constants";
 import { downloadElementAsA4Pdf } from "../utils/pdf";
+import { currentAcademicYear } from "../utils/academicCalendar";
 
 // Fixed school address block on the printed card — not per-student data, so it isn't sourced
 // from the student record (the app has no region/city fields; this is the school's own location).
@@ -16,12 +18,22 @@ const SCHOOL_CITY = "Jigjiga, Ethiopia";
 // after printing. Shared by the Director/Owner's Report Cards page and the Parent's Results page.
 function ReportCardModal({ student, classId, onClose }) {
   const data = useData();
+  const auth = useAuth();
   const printRef = useRef(null);
   const [downloading, setDownloading] = useState(false);
   if (!student) return null;
+  // A parent's Supabase session only returns their own child's rows (RLS), so a class-relative
+  // rank can't be computed on the parent side without leaking classmates' data — show "—" there
+  // rather than a misleading always-"1st". Staff (Owner/Educational Director) see the real rank.
+  const canShowRank = auth?.currentUser?.role !== "PARENT";
   const cls = data.getClass(classId);
   const required = data.requiredSubjectsForClass(classId);
   const rc = data.getReportCard(student.id, classId);
+  // The card's academic year is the one on its own report-card record (so a historical card keeps
+  // showing the year it was actually generated for), falling back to the current year only for a
+  // not-yet-generated preview. Never derived from new Date()/the calendar year.
+  const reportYear = data.db.academicYears.find((y) => y.id === rc?.academicYearId) || currentAcademicYear(data.db.academicYears);
+  const academicYearLabel = reportYear ? (reportYear.gcLabel || reportYear.yearName || "") : "";
 
   const rows = required.map((subject) => {
     const s1 = data.getResult(student.id, classId, subject, "S1");
@@ -76,8 +88,8 @@ function ReportCardModal({ student, classId, onClose }) {
           {/* Header */}
           <div className="relative text-center pb-3 mb-4 border-b-[3px] border-sky-800">
             <div className="absolute inset-x-0 top-2 h-[5px] bg-red-600" />
-            <img src={LOGO_DATA_URI} alt="Tilmaan Modern Academy" className="relative z-10 w-20 h-20 mx-auto rounded-full border-2 border-white shadow object-cover" />
-            <h1 className="mt-1 text-2xl font-bold tracking-wide text-sky-900 uppercase">Tilmaan Modern Academy</h1>
+            <img src={LOGO_DATA_URI} alt="Hiil Model School" className="relative z-10 w-20 h-20 mx-auto rounded-2xl border-2 border-white shadow object-cover" />
+            <h1 className="mt-1 text-2xl font-bold tracking-wide text-sky-900 uppercase">Hiil Model School</h1>
             <p className="text-xs italic font-medium text-sky-800 tracking-wide">Quality Education and Personal Excellence</p>
           </div>
 
@@ -90,6 +102,11 @@ function ReportCardModal({ student, classId, onClose }) {
             </p>
             <p>
               <span className="font-semibold">Completed: </span>{cls ? cls.grade.toUpperCase() : "—"}
+              <span className="font-semibold ml-6">Section: </span>{cls ? cls.section.toUpperCase() : "—"}
+              <span className="font-semibold ml-6">Academic Year: </span>{academicYearLabel || "—"}
+            </p>
+            <p>
+              <span className="font-semibold">Student ID: </span>{(student.studentId || "—").toUpperCase()}
               <span className="font-semibold ml-6">Region: </span>{SCHOOL_REGION.toUpperCase()}
               <span className="font-semibold ml-6">City: </span>{SCHOOL_CITY.toUpperCase()}
             </p>
@@ -132,9 +149,9 @@ function ReportCardModal({ student, classId, onClose }) {
               <tr className="font-bold">
                 <td className="border border-slate-900 px-2 py-1">Rank</td>
                 <td className="border border-slate-900 px-2 py-1"></td>
-                <td className="border border-slate-900 px-2 py-1 text-center">{s1Rank ?? "—"}</td>
-                <td className="border border-slate-900 px-2 py-1 text-center">{s2Rank ?? "—"}</td>
-                <td className="border border-slate-900 px-2 py-1 text-center">{yearlyRank ?? "—"}</td>
+                <td className="border border-slate-900 px-2 py-1 text-center">{canShowRank ? (s1Rank ?? "—") : "—"}</td>
+                <td className="border border-slate-900 px-2 py-1 text-center">{canShowRank ? (s2Rank ?? "—") : "—"}</td>
+                <td className="border border-slate-900 px-2 py-1 text-center">{canShowRank ? (yearlyRank ?? "—") : "—"}</td>
               </tr>
             </tbody>
           </table>

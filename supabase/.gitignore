@@ -6,3 +6,7 @@
 .env.keys
 .env.local
 .env.*.local
+
+# Personal one-time owner-bootstrap seeds (contain real emails / default passwords).
+# The shared demo template seed_owner.sql stays tracked.
+seed_owner_*.sql

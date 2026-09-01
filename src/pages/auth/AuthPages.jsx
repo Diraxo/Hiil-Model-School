@@ -47,7 +47,7 @@ function LoginScreen() {
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-7">
           <Logo size={68} />
-          <h1 className="mt-4 text-xl font-semibold text-slate-800 tracking-tight">Tilmaan Modern Academy</h1>
+          <h1 className="mt-4 text-xl font-semibold text-slate-800 tracking-tight">Hiil Model School</h1>
           <p className="text-sm text-slate-400 mt-1">School Management Portal</p>
         </div>
 
@@ -84,10 +84,14 @@ function LoginScreen() {
   );
 }
 
-// Parent self-registration is temporarily disabled: it needs both a real Supabase Auth signUp
-// AND a link to a real `students` row, and student data hasn't been converted from the mock
-// database to Supabase yet (that's a later phase of the migration). The screen stays in place,
-// disabled, rather than being deleted, since it comes back online once that phase lands.
+// Parent self-registration stays disabled even now that Students/Parents are real Supabase data
+// (see project notes): `parent_students` RLS only allows Owner/Educational Director to insert a
+// parent<->student link (supabase/migrations/20260825190000_rls_policies.sql), by design -- a
+// parent typing in a printed Student ID is not proof of guardianship, and there's no secure
+// verification step (e.g. matching a birth date or a one-time code from the school) to allow a
+// parent to link themselves to a student. Until such a mechanism exists, linking a parent to a
+// student is only ever done by the school (see AdminPages.jsx's ParentsPage). The screen stays in
+// place, disabled, as a placeholder rather than being deleted.
 function RegisterScreen({ onBack }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
