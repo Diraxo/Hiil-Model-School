@@ -33,7 +33,7 @@ import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
 import { useAuth } from "../../context/AuthContext";
 import { canEditResultComponent, canPublishResult, canLockResult, canUnlockResult, canViewResultAudit, isAssignedSubjectTeacher } from "../../utils/permissions";
-import { usePresenceMap, isOnline, useOtherTyping, useTypingBroadcaster } from "../../utils/presence";
+import { usePresenceMap, isOnline, useConversationTyping } from "../../utils/presence";
 import { useActiveChild, ChildSwitcher } from "../parent/ParentPages";
 import { PeriodAttendanceModal } from "../teacher/TeacherPages";
 import { teacherLabel, homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../components/homework";
@@ -5804,8 +5804,7 @@ function MessagesPage({ target, clearTarget }) {
   const { run: runSend } = useMutationGuard();
   const bottomRef = useRef(null);
   const presenceMap = usePresenceMap();
-  const otherTypingId = useOtherTyping(activeConv, myId);
-  const { notifyTyping, notifyStopTyping } = useTypingBroadcaster(activeConv, myId);
+  const { typingUserId: otherTypingId, notifyTyping, notifyStopTyping } = useConversationTyping(activeConv, myId);
 
   useEffect(() => {
     if (target) {
