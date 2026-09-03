@@ -64,10 +64,10 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
   const thisMonthKey = new Date().toISOString().slice(0, 7);
   const expensesThisMonth = db.expenses.filter((e) => e.date?.slice(0, 7) === thisMonthKey).reduce((sum, e) => sum + e.totalAmount, 0);
   // Salary advances are real cash out the door the moment they're given (see recordSalaryAdvance
-  // in DataContext) even though they're not a `payrollPayments` row — omitting them here understated
-  // every payout by the outstanding advance balance. `advanceApplied` on a payment never adds new
-  // cash (it only marks an existing advance as settled), so summing it alongside `amount` here would
-  // double-count — payment.amount and salaryAdvances are the complete, non-overlapping cash outflow.
+  // in DataContext) even though they're not a `payrollPayments` row — omitting them here would
+  // understate every payout. `payrollPayments.amount` is direct salary cash and `salaryAdvances`
+  // is advance cash — non-overlapping (an advance is never also a payroll_payments row), so this
+  // sum is the complete salary cash outflow with no double-counting.
   const netPosition = totalCollected - db.payrollPayments.reduce((s, p) => s + p.amount, 0) - db.salaryAdvances.reduce((s, a) => s + a.amount, 0) - db.expenses.reduce((s, e) => s + e.totalAmount, 0);
   const todayInfo = data.classifySchoolDay(todayKeyStr());
 
@@ -747,11 +747,11 @@ function StaffProfilePage({ staffId, onBack }) {
       {canPayroll && (
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-1.5"><Banknote size={15} /> Payroll History</h3>
-          <div className={`grid ${salary.advanceBalance > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-3 mb-4`}>
+          <div className={`grid ${salary.advanceGiven > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-3 mb-4`}>
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Monthly Salary</p><p className="text-sm font-semibold text-slate-800">{formatMoney(staff.salary)}/mo</p></div>
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Total paid</p><p className="text-sm font-semibold text-emerald-700">{formatMoney(salary.totalPaid)}</p></div>
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Net Pay</p><p className="text-sm font-semibold text-amber-600">{formatMoney(salary.outstanding)}</p></div>
-            {salary.advanceBalance > 0 && <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Advance balance</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(salary.advanceBalance)}</p></div>}
+            {salary.advanceGiven > 0 && <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Advances</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(salary.advanceGiven)}</p></div>}
           </div>
           {/* Payroll recording stays open to Owner/Finance for every staff group — only Staff CRUD (above) is group-restricted. */}
           <PayrollHistoryTable staff={staff} onPay={setPayOpen} />
@@ -813,7 +813,7 @@ function StaffPayrollModal({ staff, onClose }) {
   const [advanceOpen, setAdvanceOpen] = useState(false);
   if (!staff) return null;
   const identity = data.staffIdentity(staff);
-  const advanceBalance = data.staffSalarySummary(staff.id)?.advanceBalance || 0;
+  const advanceGiven = data.staffSalarySummary(staff.id)?.advanceGiven || 0;
   const classes = staff.position === "Teacher" && staff.userId
     ? data.db.classes.filter((c) => c.subjectTeacherIds.includes(staff.userId) || c.headTeacherId === staff.userId)
     : [];
@@ -841,10 +841,10 @@ function StaffPayrollModal({ staff, onClose }) {
             <div className="flex flex-wrap gap-1">{classes.map((c) => <Badge key={c.id} tone="sky">{c.grade}{c.section}</Badge>)}</div>
           </div>
         )}
-        <div className={`grid ${advanceBalance > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3`}>
+        <div className={`grid ${advanceGiven > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3`}>
           <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Start date</p><p className="text-sm font-semibold text-slate-800">{fmtDate(staff.employmentDate)}</p></div>
           <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Monthly salary</p><p className="text-sm font-semibold text-slate-800">{formatMoney(staff.salary)}</p></div>
-          {advanceBalance > 0 && <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Advance balance</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(advanceBalance)}</p></div>}
+          {advanceGiven > 0 && <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Advances</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(advanceGiven)}</p></div>}
         </div>
         <p className="text-xs mt-3">
           <span className="text-slate-400">Bank account: </span>
@@ -867,19 +867,14 @@ function RecordPayrollModal({ staff, month, onClose }) {
   const activeMethods = data.db.paymentMethods.filter((m) => m.active);
   const summary = data.staffSalarySummary(staff?.id);
   const rowFor = (m) => summary?.rows.find((r) => r.month === m);
-  const advanceBalance = summary?.advanceBalance || 0;
-  // A month with an outstanding advance balance defaults to applying it in full — Blocker 5's
-  // locked rule is that an advance is money already received, so it should reduce what's still
-  // payable without Finance having to remember to type it in. They can still lower it manually.
+  // The month row's `remaining` already nets out cash paid so far AND any advances recorded
+  // against this salary period — Finance just pays what's left as cash.
   const emptyForm = (m) => {
     const row = rowFor(m);
-    const alreadyPaidForMonth = row?.paidThisMonth || 0;
-    const owedBeforeCredit = Math.max(0, (staff?.salary || 0) - alreadyPaidForMonth);
-    const suggestedAdvance = Math.min(advanceBalance, owedBeforeCredit);
     return {
-      amount: Math.max(0, owedBeforeCredit - suggestedAdvance),
+      amount: row?.remaining || 0,
       method: activeMethods[0]?.name || "Cash", date: new Date().toISOString().slice(0, 10), note: "",
-      allowances: 0, deductions: 0, advanceApplied: suggestedAdvance,
+      allowances: 0, deductions: 0,
     };
   };
   const [form, setForm] = useState(() => emptyForm(month));
@@ -896,18 +891,18 @@ function RecordPayrollModal({ staff, month, onClose }) {
   }, [month, staff?.id]);
   if (!month) return null;
   const row = rowFor(month);
-  const alreadyPaid = row?.paidThisMonth || 0;
-  // Cap mirrors DataContext's recordPayrollPayment exactly (salary + allowances - deductions -
-  // already paid - advance being applied this transaction) so the input's max and the mutator's
-  // hard cap never disagree.
-  const cashCap = Math.max(0, (staff?.salary || 0) + (Number(form.allowances) || 0) - (Number(form.deductions) || 0) - alreadyPaid - Math.min(Math.max(0, Number(form.advanceApplied) || 0), advanceBalance));
-  const netPayable = Math.max(0, (staff?.salary || 0) - Math.min(Math.max(0, Number(form.advanceApplied) || 0), advanceBalance));
-  // Allowances/deductions/advance applied re-suggest the Amount to pay — Finance can still
-  // retype Amount afterward if the actual cash handed over differs.
+  const cashThisMonth = row?.cashThisMonth || 0;
+  const advanceThisMonth = row?.advanceThisMonth || 0;
+  // Cap mirrors DataContext's recordPayrollPayment / the record_payroll_payment RPC exactly
+  // (salary + allowances - deductions - cash already paid this month - advances recorded for this
+  // month) so the input's max and the server's hard cap never disagree.
+  const cashCap = Math.max(0, (staff?.salary || 0) + (Number(form.allowances) || 0) - (Number(form.deductions) || 0) - cashThisMonth - advanceThisMonth);
+  // Allowances/deductions re-suggest the Amount to pay — Finance can still retype Amount
+  // afterward if the actual cash handed over differs.
   function setBreakdown(patch) {
     setForm((f) => {
-      const next = { ...f, advanceApplied: Math.min(Math.max(0, Number(f.advanceApplied) || 0), advanceBalance), ...patch };
-      const cap = Math.max(0, (staff?.salary || 0) + (Number(next.allowances) || 0) - (Number(next.deductions) || 0) - alreadyPaid - (Number(next.advanceApplied) || 0));
+      const next = { ...f, ...patch };
+      const cap = Math.max(0, (staff?.salary || 0) + (Number(next.allowances) || 0) - (Number(next.deductions) || 0) - cashThisMonth - advanceThisMonth);
       return { ...next, amount: cap };
     });
   }
@@ -915,11 +910,11 @@ function RecordPayrollModal({ staff, month, onClose }) {
     // Financial mutation — guard hard against double-submit. Key encodes this exact intended
     // payment so a rapid second click / repeated Enter is dropped, while a legitimate later
     // top-up payment for the same month still goes through.
-    const opKey = `record-payroll:${staff.id}:${month}:${Number(form.amount)}:${form.date}:${Number(form.advanceApplied) || 0}`;
+    const opKey = `record-payroll:${staff.id}:${month}:${Number(form.amount)}:${form.date}`;
     await run(async () => {
       const result = await data.recordPayrollPayment(staff.id, {
         amount: Number(form.amount), method: form.method, month, date: form.date, note: form.note,
-        allowances: Number(form.allowances) || 0, deductions: Number(form.deductions) || 0, advanceApplied: Number(form.advanceApplied) || 0,
+        allowances: Number(form.allowances) || 0, deductions: Number(form.deductions) || 0,
       }, auth.realUser.id);
       if (!result.success) { setError(result.error); return; }
       toast(`${staff.name}'s salary for ${monthLabel(month)} recorded.`, "success");
@@ -932,17 +927,12 @@ function RecordPayrollModal({ staff, month, onClose }) {
         <Field label="Allowances (optional)"><input type="number" className={inputCls} value={form.allowances} onChange={(e) => setBreakdown({ allowances: e.target.value })} /></Field>
         <Field label="Deductions (optional)"><input type="number" className={inputCls} value={form.deductions} onChange={(e) => setBreakdown({ deductions: e.target.value })} /></Field>
       </div>
-      {advanceBalance > 0 && (
-        <Field label="Advance Applied">
-          <input type="number" max={advanceBalance} className={inputCls} value={form.advanceApplied} onChange={(e) => setBreakdown({ advanceApplied: Math.min(Math.max(0, Number(e.target.value) || 0), advanceBalance) })} />
-        </Field>
-      )}
       <div className="bg-slate-50 rounded-lg p-3 mb-3 space-y-1 text-sm">
         <div className="flex justify-between"><span className="text-slate-400">Monthly Salary</span><span className="text-slate-700 font-medium">{formatMoney(staff?.salary || 0)}</span></div>
-        {advanceBalance > 0 && <div className="flex justify-between"><span className="text-slate-400">Advance Balance</span><span className="text-slate-700 font-medium">{formatMoney(advanceBalance)}</span></div>}
-        {form.advanceApplied > 0 && <div className="flex justify-between"><span className="text-slate-400">Advance Applied</span><span className="text-indigo-600 font-medium">-{formatMoney(form.advanceApplied)}</span></div>}
-        <div className="flex justify-between"><span className="text-slate-400">Net Pay</span><span className="text-slate-700 font-medium">{formatMoney(netPayable)}</span></div>
-        {alreadyPaid > 0 && <div className="flex justify-between"><span className="text-slate-400">Already Paid</span><span className="text-slate-700 font-medium">{formatMoney(alreadyPaid)}</span></div>}
+        {Number(form.allowances) > 0 && <div className="flex justify-between"><span className="text-slate-400">Allowances</span><span className="text-slate-700 font-medium">+{formatMoney(Number(form.allowances))}</span></div>}
+        {Number(form.deductions) > 0 && <div className="flex justify-between"><span className="text-slate-400">Deductions</span><span className="text-slate-700 font-medium">-{formatMoney(Number(form.deductions))}</span></div>}
+        {advanceThisMonth > 0 && <div className="flex justify-between"><span className="text-slate-400">Advances this month</span><span className="text-indigo-600 font-medium">-{formatMoney(advanceThisMonth)}</span></div>}
+        {cashThisMonth > 0 && <div className="flex justify-between"><span className="text-slate-400">Cash already paid</span><span className="text-slate-700 font-medium">-{formatMoney(cashThisMonth)}</span></div>}
         <div className="flex justify-between pt-1 border-t border-slate-200"><span className="text-slate-500 font-medium">Remaining</span><span className="text-amber-600 font-semibold">{formatMoney(cashCap)}</span></div>
       </div>
       <Field label="Amount to Pay (Birr)" required><input type="number" max={cashCap} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
@@ -958,43 +948,51 @@ function RecordPayrollModal({ staff, month, onClose }) {
   );
 }
 
-// Money given to a staff member ahead of a regular payroll payment — kept as its own ledger
-// (staffSalarySummary's advances/advanceBalance) rather than a payment, so it's never mistaken
-// for salary already paid. Settled later via RecordPayrollModal's "Advance Applied" field.
+// Real money paid to a staff member against a specific salary period. It reduces that month's
+// remaining pay directly (see computeStaffPayrollSummary) — there is no separate "recovery" step.
 function RecordAdvanceModal({ staff, onClose }) {
   const data = useData();
   const auth = useAuth();
   const toast = useToast();
-  const [form, setForm] = useState({ amount: 0, date: new Date().toISOString().slice(0, 10), note: "" });
+  const summary = data.staffSalarySummary(staff?.id);
+  const monthOptions = [...(summary?.months || [])].reverse();
+  const defaultMonth = summary?.currentMonthKey || monthOptions[0] || new Date().toISOString().slice(0, 7);
+  const emptyForm = () => ({ amount: 0, date: new Date().toISOString().slice(0, 10), note: "", payrollMonth: defaultMonth });
+  const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const { busy, run } = useMutationGuard();
   React.useEffect(() => {
-    if (staff) { setForm({ amount: 0, date: new Date().toISOString().slice(0, 10), note: "" }); setError(""); }
-  }, [staff]);
+    if (staff) { setForm(emptyForm()); setError(""); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staff?.id]);
   if (!staff) return null;
-  const summary = data.staffSalarySummary(staff.id);
-  const maxAdvance = summary?.maxAdvance || 0;
+  const maxAdvance = summary?.maxAdvanceForMonth ? summary.maxAdvanceForMonth(form.payrollMonth) : (staff.salary || 0);
   const amountNum = Math.max(0, Number(form.amount) || 0);
   const remainingAfter = Math.max(0, maxAdvance - amountNum);
   async function submit() {
     if (!Number(form.amount) || Number(form.amount) <= 0) { setError("Please enter an advance amount."); return; }
     await run(async () => {
-      const result = await data.recordSalaryAdvance(staff.id, { amount: Number(form.amount), date: form.date, note: form.note }, auth.realUser.id);
+      const result = await data.recordSalaryAdvance(staff.id, { amount: Number(form.amount), date: form.date, note: form.note, payrollMonth: form.payrollMonth }, auth.realUser.id);
       if (!result.success) { setError(result.error); return; }
       toast(`Salary advance recorded for ${staff.name}.`, "success");
       onClose();
-    }, { key: `record-advance:${staff.id}:${Number(form.amount)}:${form.date}` });
+    }, { key: `record-advance:${staff.id}:${form.payrollMonth}:${Number(form.amount)}:${form.date}` });
   }
   return (
     <Modal open={!!staff} onClose={onClose} title={`Give Advance — ${staff.name}`}>
+      <Field label="Salary period this advance is for" required>
+        <select className={inputCls} value={form.payrollMonth} onChange={(e) => { setForm((f) => ({ ...f, payrollMonth: e.target.value })); setError(""); }}>
+          {monthOptions.map((mk) => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
+          {!monthOptions.includes(form.payrollMonth) && <option value={form.payrollMonth}>{monthLabel(form.payrollMonth)}</option>}
+        </select>
+      </Field>
       <div className="bg-slate-50 rounded-lg p-3 mb-3 space-y-1 text-sm">
         <div className="flex justify-between"><span className="text-slate-400">Monthly Salary</span><span className="text-slate-700 font-medium">{formatMoney(staff.salary)}</span></div>
-        {summary?.advanceBalance > 0 && <div className="flex justify-between"><span className="text-slate-400">Current Advance Balance</span><span className="text-slate-700 font-medium">{formatMoney(summary.advanceBalance)}</span></div>}
-        <div className="flex justify-between"><span className="text-slate-400">Maximum Available Advance</span><span className="text-indigo-600 font-semibold">{formatMoney(maxAdvance)}</span></div>
+        <div className="flex justify-between"><span className="text-slate-400">Still unpaid for {monthLabel(form.payrollMonth)}</span><span className="text-indigo-600 font-semibold">{formatMoney(maxAdvance)}</span></div>
       </div>
       <Field label="Amount (Birr)" required><input type="number" max={maxAdvance} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
-      {amountNum > 0 && <p className="text-xs text-slate-400 -mt-2 mb-3">Remaining after this advance: <span className="font-medium text-slate-600">{formatMoney(remainingAfter)}</span></p>}
-      <Field label="Date"><input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></Field>
+      {amountNum > 0 && <p className="text-xs text-slate-400 -mt-2 mb-3">Remaining for {monthLabel(form.payrollMonth)} after this advance: <span className="font-medium text-slate-600">{formatMoney(remainingAfter)}</span></p>}
+      <Field label="Date paid"><input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></Field>
       <Field label="Note"><input className={inputCls} value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></Field>
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
       <div className="flex justify-end gap-2 pt-3">
@@ -1005,10 +1003,8 @@ function RecordAdvanceModal({ staff, onClose }) {
   );
 }
 
-// Per-advance history — every advance stays visible forever, even once fully recovered, so
-// Finance can always answer "when did this employee receive this advance and is it settled yet."
-const ADVANCE_STATUS_LABEL = { OUTSTANDING: "Outstanding", PARTIALLY_SETTLED: "Partially Settled", SETTLED: "Settled" };
-const ADVANCE_STATUS_TONE = { OUTSTANDING: "amber", PARTIALLY_SETTLED: "sky", SETTLED: "green" };
+// Per-advance history — every advance stays visible forever as a permanent record of money paid,
+// each labelled with the salary period it was applied to.
 export function AdvanceHistoryList({ staff }) {
   const data = useData();
   const summary = data.staffSalarySummary(staff.id);
@@ -1022,17 +1018,11 @@ export function AdvanceHistoryList({ staff }) {
           <div key={a.id} className="border border-slate-200 rounded-lg p-3 text-sm">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
-                <p className="text-slate-700 font-medium">{formatMoney(a.amount)} <span className="text-slate-400 font-normal">given {fmtDate(a.date)}</span></p>
+                <p className="text-slate-700 font-medium">{formatMoney(a.amount)} <span className="text-slate-400 font-normal">paid {fmtDate(a.date)}</span></p>
                 {a.note && <p className="text-xs text-slate-400 mt-0.5">{a.note}</p>}
               </div>
-              <Badge tone={ADVANCE_STATUS_TONE[a.status]}>{ADVANCE_STATUS_LABEL[a.status]}</Badge>
+              <Badge tone="indigo">Applied to {monthLabel(a.appliedMonth)}</Badge>
             </div>
-            {a.applied > 0 && (
-              <div className="flex gap-4 mt-1.5 text-xs text-slate-500">
-                <span>Applied: <span className="font-medium text-slate-700">{formatMoney(a.applied)}</span></span>
-                <span>Remaining: <span className="font-medium text-slate-700">{formatMoney(a.remaining)}</span></span>
-              </div>
-            )}
           </div>
         ))}
       </div>

@@ -55,6 +55,7 @@ import { canTeacherPerformAcademicAction as canTeacherAct } from "../utils/staff
 import { effectiveResultLock } from "../utils/permissions";
 import { useToast } from "../context/ToastContext";
 import { notificationPageKey } from "../utils/notifications";
+import { profileSyncStore } from "../utils/profileSync";
 import {
   LayoutDashboard, Users, GraduationCap, UserCog, School, BookOpen, CalendarDays,
   ClipboardCheck, ClipboardList, FileBarChart, AlertTriangle, MessageSquare, Bell,
@@ -106,19 +107,31 @@ function mergeRealAccountsIntoUsers(parents, childIdsByParent, teacherAccounts, 
   return [...(ownerAccounts || []), ...(directorAccounts || []), ...realTeachers, ...realParents];
 }
 
-// Blocker 5: the payroll calculation used for every read-only display (staffSalarySummary,
-// dashboards, payslips), called with `db` (the last-fetched Supabase state). The authoritative
-// overpayment cap is enforced server-side by the record_payroll_payment RPC, which re-runs this
-// same month-status logic inside the insert transaction so concurrent payments can't jointly
-// exceed the remaining amount.
+// The payroll calculation used for every read-only display (staffSalarySummary, dashboards,
+// payslips), called with `db` (the last-fetched Supabase state). The authoritative overpayment
+// cap is enforced server-side by the record_payroll_payment / record_salary_advance RPCs, which
+// re-run this same month math inside the insert transaction so concurrent writes can't jointly
+// exceed a month's obligation.
 //
-// Blocker 5A fix: a month's own PAID/PARTIAL/UNPAID status is derived ONLY from real
-// payrollPayments recorded against that specific month — never from silently netting the advance
-// ledger's unconsumed balance against whichever month happens to be oldest-unpaid. The previous
-// "creditPool" version did exactly that, which meant giving someone an advance today could flip a
-// two-year-old month straight to "Paid in full" with no payment record, no date, and no way to
-// see it happened. An advance only ever reduces a month's obligation through recordPayrollPayment's
-// own `advanceApplied` field, i.e. a real transaction Finance explicitly recorded.
+// Salary-advance model (revised): a salary advance IS money paid to the employee against a
+// specific salary period (`salary_advances.payroll_month`, set when the advance is recorded), so
+// it reduces that month's remaining obligation exactly the way a direct payroll payment does.
+// There is ONE calculation, here, and every screen (staff detail, payroll summary/list, salary
+// history, payslip, "My Salary", dashboards) reads its status/balance from it.
+//
+//   paid for month M   = Σ payroll_payments.amount (month = M)      -- direct salary payments
+//                      + Σ salary_advances.amount   (payroll_month = M)  -- advances for that period
+//   remaining for M    = max(0, salary + allowances - deductions - paid for M)   -- never negative
+//   status             = remaining == 0 ? PAID : paid > 0 ? PARTIAL : UNPAID
+//
+// This is NOT the old "creditPool" bug (Blocker 5A): that silently netted an unconsumed advance
+// balance against whichever month happened to be oldest-unpaid, flipping unrelated months to
+// "Paid" with no record. Here an advance only ever touches the ONE month it was explicitly
+// recorded against — a real transaction, with a date, visible in the advance history.
+//
+// The legacy `payroll_payments.advance_applied` field is retired as a crediting mechanism (new
+// payments always write 0). It is no longer added to any month's paid total — the advance itself
+// is now the credit, via its own row — so the two can never double-count.
 function computeStaffPayrollSummary(dbLike, staffId) {
   const s = dbLike.staff.find((x) => x.id === staffId);
   if (!s) return null;
@@ -134,41 +147,54 @@ function computeStaffPayrollSummary(dbLike, staffId) {
     m += 1; if (m > 11) { m = 0; y += 1; }
   }
   const history = dbLike.payrollPayments.filter((p) => p.staffId === staffId).sort((a, b) => b.createdAt - a.createdAt);
-  const totalPaid = history.reduce((sum, p) => sum + p.amount, 0);
-  const totalExpected = months.length * s.salary;
   const rawAdvances = dbLike.salaryAdvances.filter((a) => a.staffId === staffId).sort((a, b) => a.createdAt - b.createdAt);
+  const cashPaid = history.reduce((sum, p) => sum + p.amount, 0);
   const advanceGiven = rawAdvances.reduce((sum, a) => sum + a.amount, 0);
-  const advanceAppliedTotal = history.reduce((sum, p) => sum + (p.advanceApplied || 0), 0);
-  const advanceBalance = Math.max(0, advanceGiven - advanceAppliedTotal);
-  // Every advance stays a permanent record (never deleted/overwritten when settled). Its own
-  // applied/remaining/status is derived, purely for display, by walking the REAL advanceAppliedTotal
-  // across the advances oldest-given-first (FIFO) — this never feeds back into a month's status above.
-  let recoveryPool = advanceAppliedTotal;
-  const advances = rawAdvances.map((a) => {
-    const applied = Math.min(recoveryPool, a.amount);
-    recoveryPool -= applied;
-    const remaining = a.amount - applied;
-    const status = remaining <= 0 ? "SETTLED" : applied > 0 ? "PARTIALLY_SETTLED" : "OUTSTANDING";
-    return { ...a, applied, remaining, status };
-  }).sort((a, b) => b.createdAt - a.createdAt);
+  // "Total paid" = every Birr that has actually reached the employee for salary — direct payments
+  // plus advances (advances are real cash out the door the moment they're given).
+  const totalPaid = cashPaid + advanceGiven;
+  const totalExpected = months.length * s.salary;
   const rows = months.map((mk) => {
     const paymentsForMonth = history.filter((p) => p.month === mk);
+    const advancesForMonth = rawAdvances.filter((a) => a.payrollMonth === mk);
     const monthAllowances = paymentsForMonth.reduce((sum, p) => sum + (p.allowances || 0), 0);
     const monthDeductions = paymentsForMonth.reduce((sum, p) => sum + (p.deductions || 0), 0);
-    const paidThisMonth = paymentsForMonth.reduce((sum, p) => sum + p.amount + (p.advanceApplied || 0), 0);
-    const remaining = Math.max(0, s.salary + monthAllowances - monthDeductions - paidThisMonth);
+    const cashThisMonth = paymentsForMonth.reduce((sum, p) => sum + p.amount, 0);
+    const advanceThisMonth = advancesForMonth.reduce((sum, a) => sum + a.amount, 0);
+    const paidThisMonth = cashThisMonth + advanceThisMonth;
+    const gross = s.salary + monthAllowances - monthDeductions;
+    const remaining = Math.max(0, gross - paidThisMonth);
     const status = remaining <= 0 ? "PAID" : paidThisMonth > 0 ? "PARTIAL" : "UNPAID";
-    return { month: mk, payments: paymentsForMonth, payment: paymentsForMonth[0] || null, paidThisMonth, remaining, status };
+    return {
+      month: mk, payments: paymentsForMonth, payment: paymentsForMonth[0] || null,
+      advancesForMonth, cashThisMonth, advanceThisMonth, paidThisMonth, remaining, status,
+    };
   });
-  // A single flat subtraction, not a sum of the rows — an advance only ever offsets the aggregate
-  // obligation once, so this can't double-count across months.
-  const outstanding = Math.max(0, totalExpected - totalPaid - advanceGiven);
-  // The most recently elapsed month's own unmet obligation — the only base a NEW advance can ever
-  // be given against (see recordSalaryAdvance's cap below). A backlog of unpaid older months never
-  // enlarges this: an advance is money against upcoming pay, not a loan against arrears.
-  const currentMonthAvailable = rows.length ? rows[rows.length - 1].remaining : 0;
-  const maxAdvance = Math.max(0, currentMonthAvailable - advanceBalance);
-  return { staff: s, months, history, rows, totalPaid, totalExpected, outstanding, advances, advanceGiven, advanceBalance, currentMonthAvailable, maxAdvance };
+  const monthRemaining = (mk) => {
+    const r = rows.find((x) => x.month === mk);
+    if (r) return r.remaining;
+    // A month outside the elapsed-employment window (e.g. a future period) has its full salary
+    // still to pay.
+    return Math.max(0, s.salary);
+  };
+  // Each advance stays a permanent record. Its display just names the salary period it was
+  // applied to — there is no separate "recovery" step any more.
+  const advances = rawAdvances.map((a) => ({
+    ...a, appliedMonth: a.payrollMonth, status: "APPLIED",
+  })).sort((a, b) => b.createdAt - a.createdAt);
+  // Aggregate still owed across the whole employment span — a single flat subtraction so an
+  // advance (already inside totalPaid) can never be double-counted across months.
+  const outstanding = Math.max(0, totalExpected - totalPaid);
+  const currentMonthKey = rows.length ? rows[rows.length - 1].month : months[months.length - 1] || null;
+  const currentMonthAvailable = currentMonthKey ? monthRemaining(currentMonthKey) : 0;
+  // Most a NEW advance can be for a given month: that month's own unmet obligation. Defaults to
+  // the current month when no month is named.
+  const maxAdvanceForMonth = (mk) => monthRemaining(mk || currentMonthKey);
+  const maxAdvance = currentMonthAvailable;
+  return {
+    staff: s, months, history, rows, totalPaid, cashPaid, totalExpected, outstanding,
+    advances, advanceGiven, currentMonthKey, currentMonthAvailable, maxAdvance, maxAdvanceForMonth, monthRemaining,
+  };
 }
 
 // ---- Blocker 2: fee/payment academic-year schema (catalog → yearly schedule → installments →
@@ -1084,6 +1110,14 @@ function DataProvider({ children }) {
   ];
   const commsRefetchRef = useRef({});
   commsRefetchRef.current = { refetchNotifications, refetchMessages, refetchAnnouncements, refetchActivities };
+  // Directory refetches the same auth-scoped Realtime channel triggers on a profiles/staff/students
+  // row change (photo, name, status). Each is already RLS-scoped, so a session only ever re-reads
+  // what it is entitled to -- the Realtime event is used purely as a "something changed" signal.
+  const directoryRefetchRef = useRef({});
+  directoryRefetchRef.current = {
+    refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchParents,
+    refetchStaff, refetchStudents,
+  };
 
   // Auth-scoped realtime + full re-hydrate on account switch / logout.
   useEffect(() => {
@@ -1095,6 +1129,17 @@ function DataProvider({ children }) {
       debouncers[key] = setTimeout(() => { fn().catch(() => {}); }, 350);
     };
     const teardown = () => { if (channel) { supabase.removeChannel(channel); channel = null; } };
+    // Re-read every directory list a session might render an avatar / name from. All RLS-scoped;
+    // Promise.allSettled so one denied/empty read never aborts the rest. profiles photo edits are
+    // always mirrored into the linked staff row (see updateOwnProfile / updateTeacher / staffService),
+    // so a profiles event refreshes staff too and vice-versa -- one debounce key collapses both.
+    const refreshDirectory = () => {
+      const d = directoryRefetchRef.current;
+      return Promise.allSettled([
+        d.refetchTeacherAccounts(), d.refetchDirectorAccounts(), d.refetchOwnerAccounts(),
+        d.refetchParents(), d.refetchStaff(),
+      ]);
+    };
     const establish = (uid) => {
       teardown();
       if (!uid) return;
@@ -1111,6 +1156,17 @@ function DataProvider({ children }) {
           () => bounce("ann", c.refetchAnnouncements))
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "activities" },
           () => bounce("act", c.refetchActivities))
+        .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, (payload) => {
+          bounce("dir", refreshDirectory);
+          // The signed-in user's OWN row changed elsewhere (e.g. Owner set this Finance Director's
+          // photo) -> tell AuthContext to reload currentUser so the top-bar avatar updates too.
+          const row = payload.new || payload.old || {};
+          if (row.id === uid) bounce("self", async () => { profileSyncStore.bump(); });
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "staff" },
+          () => bounce("dir", refreshDirectory))
+        .on("postgres_changes", { event: "*", schema: "public", table: "students" },
+          () => bounce("stu", directoryRefetchRef.current.refetchStudents))
         .subscribe();
     };
     const onAuth = (uid) => {
@@ -3959,14 +4015,16 @@ function DataProvider({ children }) {
         return computeStaffPayrollSummary(db, staffId);
       },
 
-      // Blocker 5 (payroll overpayment + salary advance policy, approved 2026-08-25): a payment
-      // can never exceed the employee's actual remaining obligation for that month, and a zero/
-      // negative amount is rejected rather than silently no-op'd. The cap is now enforced
-      // server-side by the record_payroll_payment RPC (see payrollService.js) -- it re-runs this
-      // exact math inside the same transaction as the insert, so two payments landing at once can't
-      // jointly exceed the remaining amount (a client-side check on stale data never could
-      // guarantee that). The RPC's own exception message is surfaced verbatim on rejection.
-      async recordPayrollPayment(staffId, { amount, method, month, date, note, allowances, deductions, advanceApplied }, recordedBy) {
+      // A direct salary payment can never push a month's paid total (direct payments + advances
+      // recorded against that period) over its net obligation, and a zero/negative amount is
+      // rejected rather than silently no-op'd. The cap is enforced server-side by the
+      // record_payroll_payment RPC (see payrollService.js) -- it re-runs the exact
+      // computeStaffPayrollSummary month math (salary + allowances - deductions - cash already
+      // paid this month - advances recorded for this month) inside the same transaction as the
+      // insert, so two payments landing at once can't jointly exceed the remaining amount. The
+      // RPC's own exception message is surfaced verbatim on rejection. `advanceApplied` is retired
+      // (always 0) -- an advance now reduces its month directly, via its own row.
+      async recordPayrollPayment(staffId, { amount, method, month, date, note, allowances, deductions }, recordedBy) {
         try {
           const s = db.staff.find((x) => x.id === staffId);
           if (!s) return { success: false, error: "Staff member not found." };
@@ -3975,7 +4033,7 @@ function DataProvider({ children }) {
           const payment = await payrollService.recordPayment({
             staffId, amount: cash, method, month, date, note,
             allowances: Math.max(0, Number(allowances) || 0), deductions: Math.max(0, Number(deductions) || 0),
-            advanceApplied: Math.max(0, Number(advanceApplied) || 0), recordedBy,
+            advanceApplied: 0, recordedBy,
           });
           await refetchPayrollPayments();
           await logActivityFeed(
@@ -3998,35 +4056,33 @@ function DataProvider({ children }) {
         }
       },
 
-      // A salary advance is money given to a staff member ahead of a regular payroll payment —
-      // tracked as its own ledger (see staffSalarySummary's advances/advanceBalance) rather than
-      // a payment, so it's never mistaken for a month's salary having been paid. It's settled
-      // later via recordPayrollPayment's advanceApplied field.
-      //
-      // Blocker 5A's cap (this month's own unmet obligation, minus any advance balance already
-      // outstanding) is enforced server-side by the record_salary_advance RPC — same reasoning as
-      // recordPayrollPayment above, so two advances landing at once can't jointly overshoot it.
-      async recordSalaryAdvance(staffId, { amount, date, note }, recordedBy) {
+      // A salary advance is real money paid to a staff member against a specific salary period
+      // (`payrollMonth`, defaulting to the month of `date`). It reduces that period's remaining
+      // obligation directly — the same way a direct payroll payment does — and is shown in the
+      // advance history as "applied to <that month>". The cap (the target month's own unmet
+      // obligation: salary minus cash already paid that month minus advances already recorded for
+      // it) is enforced server-side by the record_salary_advance RPC, so two advances landing at
+      // once can't jointly overshoot the month and no negative balance can ever arise.
+      async recordSalaryAdvance(staffId, { amount, date, note, payrollMonth }, recordedBy) {
         try {
           const s = db.staff.find((x) => x.id === staffId);
           if (!s) return { success: false, error: "Staff member not found." };
           const cash = Number(amount);
           if (!Number.isFinite(cash) || cash <= 0) return { success: false, error: "Advance amount must be greater than zero." };
-          const summaryBefore = computeStaffPayrollSummary(db, staffId) || { advanceBalance: 0 };
-          const advance = await payrollService.recordAdvance({ staffId, amount: cash, date, note, recordedBy });
+          const month = payrollMonth || (date || "").slice(0, 7);
+          const advance = await payrollService.recordAdvance({ staffId, amount: cash, date, note, payrollMonth: month, recordedBy });
           await refetchSalaryAdvances();
           await logActivityFeed(
-            `${formatMoney(advance.amount)} salary advance recorded for ${s.name}.`,
+            `${formatMoney(advance.amount)} salary advance recorded for ${s.name} (${monthLabel(advance.payrollMonth)}).`,
             { page: "payroll", staffId: s.id }, "FINANCE",
           );
           // Phase 6: notify_salary_advance notifies the staff member (server-derived, idempotent
           // via salary_advances.notified_at).
           if (s.userId && advance && advance.id) {
-            const newBalance = summaryBefore.advanceBalance + advance.amount;
             await dispatchNotify("notify_salary_advance", {
               p_salary_advance_id: advance.id,
               p_title: "Salary Advance Recorded",
-              p_message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}. Your remaining advance balance is ${formatMoney(newBalance)}.`,
+              p_message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}, applied to your ${monthLabel(advance.payrollMonth)} salary.`,
             });
           }
           return { success: true, advance };

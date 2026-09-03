@@ -141,14 +141,20 @@ printed, never stored as files.
 
 ### Realtime — notifications, messaging, presence
 
-- **Notifications / messages / announcements / activity** — `DataContext`
+- **Notifications / messages / announcements / activity / directory** — `DataContext`
   opens one RLS-scoped Realtime channel per signed-in user
   (`comms:<uid>`), debounces a refetch of the affected domain, and tears the
-  channel down + rebuilds it on account switch (torn down on logout).
+  channel down + rebuilds it on account switch (torn down on logout). The
+  channel also watches `profiles` / `staff` / `students` so a profile- or
+  student-photo (or name / status) change made in one session shows up in every
+  other open session without a refresh; `AuthContext` reloads the signed-in
+  user's own `currentUser` via `profileSyncStore` when their own row changes.
 - **Presence ("online now")** — `src/utils/presence.js` uses Supabase Realtime
   **Presence** on a single app-wide channel, keyed by the real logged-in user.
-- **"Last seen"** — `profiles.last_seen_at`, stamped by the `touch_presence()`
-  RPC on connect and on a ~25s heartbeat, so status survives a disconnect.
+- **"Last seen"** — `public.user_presence.last_seen_at`, stamped by the
+  `touch_presence()` RPC on connect and on a ~25s heartbeat, so status survives a
+  disconnect. Kept off the `profiles` row so the heartbeat doesn't churn the
+  directory Realtime subscription above.
 - **Typing indicator** — Realtime **Broadcast** on a per-conversation channel.
 
 None of this touches `localStorage`.

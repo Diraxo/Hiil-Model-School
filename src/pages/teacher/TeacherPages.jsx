@@ -808,11 +808,11 @@ function MySalaryPage() {
       <h1 className="text-lg font-semibold text-slate-800 mb-1">My Salary</h1>
       <p className="text-sm text-slate-400 mb-4">Your monthly salary and payment history. Tap a paid month to view its payslip.</p>
 
-      <div className={`grid ${summary.advanceBalance > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-3 mb-4`}>
+      <div className={`grid ${summary.advanceGiven > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-3 mb-4`}>
         <Card className="p-3.5"><p className="text-xs text-slate-400 mb-1">Monthly Salary</p><p className="text-sm font-semibold text-slate-800">{formatMoney(myStaffRec.salary)}/mo</p></Card>
         <Card className="p-3.5"><p className="text-xs text-slate-400 mb-1">Total paid</p><p className="text-sm font-semibold text-emerald-700">{formatMoney(summary.totalPaid)}</p></Card>
         <Card className="p-3.5"><p className="text-xs text-slate-400 mb-1">Net Pay</p><p className="text-sm font-semibold text-amber-600">{formatMoney(summary.outstanding)}</p></Card>
-        {summary.advanceBalance > 0 && <Card className="p-3.5"><p className="text-xs text-slate-400 mb-1">Advance balance</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(summary.advanceBalance)}</p></Card>}
+        {summary.advanceGiven > 0 && <Card className="p-3.5"><p className="text-xs text-slate-400 mb-1">Advances</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(summary.advanceGiven)}</p></Card>}
       </div>
       <Card className="p-3.5 mb-4">
         <p className="text-xs text-slate-400 mb-1">Bank account</p>
@@ -834,7 +834,7 @@ function MySalaryPage() {
                 <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center shrink-0"><Banknote size={15} /></div>
                 <div>
                   <p className="text-sm font-medium text-slate-700">{monthLabel(r.month)}</p>
-                  <p className="text-xs text-slate-400">{r.payment ? `${fmtDate(r.payment.date)} · ${r.payment.method}` : "No payment recorded yet"}</p>
+                  <p className="text-xs text-slate-400">{r.payment ? `${fmtDate(r.payment.date)} · ${r.payment.method}` : r.advanceThisMonth > 0 ? `Advance of ${formatMoney(r.advanceThisMonth)} applied` : "No payment recorded yet"}</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">

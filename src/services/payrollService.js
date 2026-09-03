@@ -1,10 +1,12 @@
 // Real Supabase-backed staff payroll (payroll_payments + salary_advances). Writes go exclusively
-// through the record_payroll_payment/record_salary_advance RPCs (see
-// supabase/migrations/20260825190000_rls_policies.sql) -- they re-run the exact same
-// overpayment-cap / advance-cap math DataContext.jsx's computeStaffPayrollSummary documents
-// client-side (kept there only for display, e.g. showing a recommended amount before submit), so
-// the server is the single authoritative enforcement point, not a duplicated client check. Direct
-// INSERT on these tables isn't how the RLS design expects them to be written (same reasoning as
+// through the record_payroll_payment/record_salary_advance RPCs (latest definitions in
+// supabase/migrations/20260906030000_payroll_advance_salary_period.sql) -- they re-run the exact
+// same per-month cap math DataContext.jsx's computeStaffPayrollSummary documents client-side (kept
+// there only for display, e.g. showing the remaining amount before submit), so the server is the
+// single authoritative enforcement point, not a duplicated client check. An advance is recorded
+// against a salary period (p_payroll_month) and reduces that month directly; the RPC caps it to
+// that month's own unmet obligation so no negative balance can arise. Direct INSERT on these
+// tables isn't how the RLS design expects them to be written (same reasoning as
 // record_payment_batch/void_payment for student fees), so this file never inserts directly.
 import { supabase } from "../lib/supabaseClient";
 
@@ -61,9 +63,10 @@ export function createPayrollService() {
       if (error) throw error;
       return mapPayment(data);
     },
-    async recordAdvance({ staffId, amount, date, note, recordedBy }) {
+    async recordAdvance({ staffId, amount, date, note, payrollMonth, recordedBy }) {
       const { data, error } = await supabase.rpc("record_salary_advance", {
-        p_staff_id: staffId, p_amount: amount, p_date: date, p_note: note || null, p_recorded_by: recordedBy,
+        p_staff_id: staffId, p_amount: amount, p_date: date, p_note: note || null,
+        p_payroll_month: payrollMonth || null, p_recorded_by: recordedBy,
       });
       if (error) throw error;
       return mapAdvance(data);

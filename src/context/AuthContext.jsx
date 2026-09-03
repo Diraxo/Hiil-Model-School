@@ -5,6 +5,7 @@ import { ROLES, ROLE_LABEL } from "../utils/constants";
 import { usePresenceHeartbeat } from "../utils/presence";
 import { createProfilePhotoService } from "../services/profilePhotoService";
 import { isStoragePath, signPaths } from "../lib/storageMedia";
+import { profileSyncStore } from "../utils/profileSync";
 
 const profilePhotoService = createProfilePhotoService();
 
@@ -99,6 +100,33 @@ function AuthProvider({ children }) {
       finishLoading();
     });
     return () => { active = false; sub.subscription.unsubscribe(); };
+  }, [loadProfile]);
+
+  // Real-time sync of the signed-in user's OWN account. DataContext owns the single authenticated
+  // Realtime channel; when it sees this user's `profiles` row change from another session (an
+  // Owner/Director editing their photo, name or status) it calls `profileSyncStore.bump()`. Reload
+  // so the top-bar avatar / own profile page reflect it without a browser refresh. Only fields that
+  // actually changed are adopted, and an unchanged photo path is left alone so we don't re-sign a
+  // URL we already hold.
+  useEffect(() => {
+    const reload = async () => {
+      try {
+        const { profile: fresh } = await loadProfile();
+        if (!fresh) return;
+        setProfile((p) => {
+          if (!p || p.id !== fresh.id) return p;
+          const photoChanged = fresh.photoPath !== p.photoPath;
+          return {
+            ...p,
+            name: fresh.name,
+            phone: fresh.phone,
+            mustChangePassword: fresh.mustChangePassword,
+            ...(photoChanged ? { photo: fresh.photo, photoPath: fresh.photoPath } : {}),
+          };
+        });
+      } catch { /* a failed refresh just leaves the current value in place */ }
+    };
+    return profileSyncStore.subscribe(reload);
   }, [loadProfile]);
 
   const login = useCallback(async (email, password) => {

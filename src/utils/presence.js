@@ -4,9 +4,10 @@ import { supabase } from "../lib/supabaseClient";
 // Presence + typing for the Messages page, backed by Supabase Realtime (not the browser).
 //   - "online now"  -> Realtime Presence on a single app-wide channel ("presence:app"). Every
 //     authenticated tab tracks { user_id } while mounted; peers read the union of tracked ids.
-//   - "last seen X"  -> profiles.last_seen_at, stamped by the touch_presence() RPC on connect and
-//     on a heartbeat (migration 20260906000000). Survives the user disconnecting, which Realtime
-//     Presence alone cannot.
+//   - "last seen X"  -> public.user_presence.last_seen_at, stamped by the touch_presence() RPC on
+//     connect and on a heartbeat (migrations 20260906000000 + 20260906020000). Kept off the
+//     profiles row so the ~25s heartbeat doesn't spam the profile-photo realtime subscription.
+//     Survives the user disconnecting, which Realtime Presence alone cannot.
 //   - "… is typing"  -> Realtime Broadcast on a per-conversation channel ("typing:<id>").
 // None of this touches the persisted app db or localStorage, so a 25s heartbeat / per-keystroke
 // typing ping never re-serializes app state.
@@ -99,11 +100,11 @@ function usePresenceMap() {
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      const { data, error } = await supabase.from("profiles").select("id, last_seen_at");
+      const { data, error } = await supabase.from("user_presence").select("user_id, last_seen_at");
       if (!alive || error || !data) return;
       const map = new Map();
       data.forEach((row) => {
-        if (row.last_seen_at) map.set(row.id, new Date(row.last_seen_at).getTime());
+        if (row.last_seen_at) map.set(row.user_id, new Date(row.last_seen_at).getTime());
       });
       setLastSeen(map);
     };
