@@ -4674,7 +4674,8 @@ function CreateAnnouncementModal({ open, onClose, role }) {
       if (expiresAt <= (publishAt || Date.now())) { toast("Expiry date must be after the publish date.", "error"); return; }
     }
     run(async () => {
-      await data.createAnnouncement({ title: form.title, message: form.message, audience, priority: form.priority, authorId: auth.currentUser.id, attachment: form.attachment, pinned: form.pinned, publishAt, expiresAt });
+      const res = await data.createAnnouncement({ title: form.title, message: form.message, audience, priority: form.priority, authorId: auth.currentUser.id, attachment: form.attachment, pinned: form.pinned, publishAt, expiresAt });
+      if (res && res.ok === false) { toast(res.message || "Couldn't publish the announcement.", "error"); return; }
       toast(publishAt ? "Announcement scheduled." : "Announcement published.", "success");
       setForm(empty); onClose();
     });
@@ -5820,9 +5821,12 @@ function MessagesPage({ target, clearTarget }) {
 
   useEffect(() => {
     if (target) {
-      const convId = data.getOrCreateConversation(myId, target);
-      setActiveConv(convId);
+      let cancelled = false;
+      Promise.resolve(data.getOrCreateConversation(myId, target)).then((convId) => {
+        if (!cancelled) setActiveConv(convId);
+      });
       clearTarget();
+      return () => { cancelled = true; };
     }
   }, [target]);
 
@@ -5883,7 +5887,7 @@ function MessagesPage({ target, clearTarget }) {
               <div className="px-3 py-2 border-t border-slate-100 mt-1">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Start new</p>
                 {directory.filter((u) => !myConvos.some((c) => c.participantIds.includes(u.id))).slice(0, 6).map((u) => (
-                  <button key={u.id} onClick={() => setActiveConv(data.getOrCreateConversation(myId, u.id))} className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-slate-50 rounded-lg">
+                  <button key={u.id} onClick={() => Promise.resolve(data.getOrCreateConversation(myId, u.id)).then(setActiveConv)} className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-slate-50 rounded-lg">
                     <Avatar name={u.name} photo={u.photo} size={26} /><span className="text-xs text-slate-600">{u.name}</span>
                   </button>
                 ))}

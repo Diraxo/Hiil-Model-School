@@ -1,7 +1,126 @@
-// Phase 1: thin pass-through to DataContext. Phase 2: swap for Supabase.
-export function createAnnouncementService(data) {
+// Phase 6: real Supabase-backed announcements.
+//
+// RLS is the boundary (announcements_select in migration 20260825190000): Owner/Educational
+// Director see every row; an author always sees their own (even scheduled/expired); everyone
+// else sees only a live (published, not expired) row whose audience matches their role/grade/
+// section/user id. author_id is stamped server-side by the announcements_stamp_author trigger --
+// the client-supplied authorId is ignored.
+//
+// The recipient fan-out ("New announcement" notifications) is done by notify_announcement, a
+// SECURITY DEFINER RPC that derives the audience server-side and is idempotent via
+// announcements.publish_notified.
+//
+// Attachment: the mock stores a { type, name, dataUrl } object inline. The real column is a
+// single `attachment_url text` -- we serialise that object into it as JSON (same pragmatic
+// choice as students.photo_url / expenses receipts before Storage wiring) and parse it back on
+// read, so src/components/announcements.jsx stays unchanged.
+import { supabase } from "../lib/supabaseClient";
+
+function parseAttachment(text) {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && parsed.dataUrl) return parsed;
+  } catch {
+    // A bare URL string (not our JSON shape) -- surface it as a generic file chip.
+    return { type: "pdf", name: "Attachment", dataUrl: text };
+  }
+  return null;
+}
+
+function mapAnnouncement(row) {
   return {
-    list: () => data.db.announcements,
-    create: (payload) => data.createAnnouncement(payload),
+    id: row.id,
+    title: row.title,
+    message: row.message || "",
+    audience: row.audience || { type: "ALL" },
+    priority: row.priority || "Normal",
+    authorId: row.author_id || null,
+    attachment: parseAttachment(row.attachment_url),
+    pinned: !!row.pinned,
+    publishAt: row.publish_at ? new Date(row.publish_at).getTime() : null,
+    expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : null,
+    publishNotified: !!row.publish_notified,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
+  };
+}
+
+const toIso = (ms) => (ms ? new Date(ms).toISOString() : null);
+
+export function createAnnouncementService() {
+  return {
+    async list() {
+      const { data, error } = await supabase
+        .from("announcements")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data || []).map(mapAnnouncement);
+    },
+
+    async create({ title, message, audience, priority, attachment, pinned, publishAt, expiresAt }) {
+      const row = {
+        title: (title || "").trim(),
+        message: (message || "").trim() || null,
+        audience: audience || { type: "ALL" },
+        priority: priority || "Normal",
+        attachment_url: attachment ? JSON.stringify(attachment) : null,
+        pinned: !!pinned,
+        publish_at: toIso(publishAt),
+        expires_at: toIso(expiresAt),
+        // A future-dated announcement is not yet dispatched; an immediate one is dispatched by
+        // notify_announcement right after insert, which sets this itself. Seed it false so the
+        // RPC's idempotency guard starts clean.
+        publish_notified: false,
+      };
+      const { data, error } = await supabase.from("announcements").insert(row).select().single();
+      if (error) throw error;
+      return mapAnnouncement(data);
+    },
+
+    async togglePinned(id, pinned) {
+      const { error } = await supabase.from("announcements").update({ pinned: !!pinned }).eq("id", id);
+      if (error) throw error;
+    },
+
+    // Present for completeness / RLS parity (author or Owner/ED). No UI path today.
+    async update(id, patch) {
+      const row = {};
+      if (patch.title !== undefined) row.title = patch.title;
+      if (patch.message !== undefined) row.message = patch.message;
+      if (patch.priority !== undefined) row.priority = patch.priority;
+      if (patch.pinned !== undefined) row.pinned = !!patch.pinned;
+      if (patch.expiresAt !== undefined) row.expires_at = toIso(patch.expiresAt);
+      const { error } = await supabase.from("announcements").update(row).eq("id", id);
+      if (error) throw error;
+    },
+
+    async remove(id) {
+      const { error } = await supabase.from("announcements").delete().eq("id", id);
+      if (error) throw error;
+    },
+
+    // notify_announcement(p_announcement_id, p_title, p_message, p_navigation) -- idempotent,
+    // server-derives the audience, no-ops if not yet due or already dispatched.
+    async dispatch(announcementId, { title, message } = {}) {
+      const { data, error } = await supabase.rpc("notify_announcement", {
+        p_announcement_id: announcementId,
+        p_title: title || "New announcement",
+        p_message: message || "",
+        p_navigation: { page: "announcements" },
+      });
+      if (error) throw error;
+      return data;
+    },
+
+    // announcement_read_stats(uuid[]) -> [{ announcement_id, total, read_count }]
+    async readStats(ids) {
+      if (!ids || ids.length === 0) return {};
+      const { data, error } = await supabase.rpc("announcement_read_stats", { p_announcement_ids: ids });
+      if (error) throw error;
+      const map = {};
+      (data || []).forEach((r) => { map[r.announcement_id] = { total: r.total, read: r.read_count }; });
+      return map;
+    },
   };
 }

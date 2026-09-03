@@ -142,13 +142,16 @@ export function createStaffService() {
     },
     // Upserts on the table's own unique(staff_id, date, period) constraint -- one call per marked
     // record, mirroring how DataContext already builds one record per staff member per save.
-    async saveAttendanceRecord({ staffId, date, period, status, arrivalTime, note, markedBy, leaveRequestId }) {
+    async saveAttendanceRecord({ staffId, date, period, status, arrivalTime, note, markedBy, leaveRequestId, resetNotified }) {
       const row = {
         staff_id: staffId, date, period: period || "FULL_DAY", status,
         arrival_time: status === "Late" ? (arrivalTime || null) : null,
         note: note || null, marked_by: markedBy || null, marked_at: new Date().toISOString(),
         leave_request_id: leaveRequestId || null,
       };
+      // Phase 6: a genuine status change re-arms the staff notification (notify_staff_attendance
+      // no-ops while staff_attendance.notified_at is set -- migration 20260827000000).
+      if (resetNotified) row.notified_at = null;
       const { data, error } = await supabase
         .from("staff_attendance")
         .upsert(row, { onConflict: "staff_id,date,period" })

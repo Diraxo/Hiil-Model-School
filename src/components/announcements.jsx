@@ -18,9 +18,11 @@ function isAnnouncementLive(a, now = Date.now()) {
   return (!a.publishAt || a.publishAt <= now) && (!a.expiresAt || a.expiresAt >= now);
 }
 
+// Phase 6: cross-user read counts can't come from the RLS-scoped notifications list anymore
+// (a client only sees its own rows). DataContext fetches them via the announcement_read_stats
+// SECURITY DEFINER RPC (author / Owner / Educational Director only) and exposes them as a map.
 function announcementReadStats(db, announcementId) {
-  const notifs = db.notifications.filter((n) => n.type === "ANNOUNCEMENT" && n.announcementId === announcementId);
-  return { total: notifs.length, read: notifs.filter((n) => n.read).length };
+  return (db.announcementReadStatsById && db.announcementReadStatsById[announcementId]) || { total: 0, read: 0 };
 }
 
 function audienceLabel(audience) {

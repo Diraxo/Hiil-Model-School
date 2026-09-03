@@ -19,6 +19,7 @@ export { createBehaviorService } from "./behaviorService";
 export { createAnnouncementService } from "./announcementService";
 export { createMessageService } from "./messageService";
 export { createNotificationService } from "./notificationService";
+export { createActivityService } from "./activityService";
 export { createFeeService } from "./feeService";
 export { createPaymentService } from "./paymentService";
 export { createTimetableService } from "./timetableService";

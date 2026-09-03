@@ -65,7 +65,7 @@ export function createAttendanceService() {
 
     // One upsert per student, on the table's unique(student_id, date) constraint — the same
     // "existing ? update : insert" semantics _upsertAttendanceRecord always had, now atomic in PG.
-    async upsertRecord({ studentId, classId, date, status, note, markedBy, leaveRequestId }) {
+    async upsertRecord({ studentId, classId, date, status, note, markedBy, leaveRequestId, resetParentNotified }) {
       const row = {
         student_id: studentId,
         class_id: classId,
@@ -76,6 +76,9 @@ export function createAttendanceService() {
         marked_at: new Date().toISOString(),
       };
       if (leaveRequestId !== undefined) row.leave_request_id = leaveRequestId ?? null;
+      // Phase 6: a genuine status change re-arms the parent notification (notify_student_attendance
+      // no-ops while attendance.parent_notified is true -- see migration 20260827000000).
+      if (resetParentNotified) row.parent_notified = false;
       const { data, error } = await supabase
         .from("attendance")
         .upsert(row, { onConflict: "student_id,date" })

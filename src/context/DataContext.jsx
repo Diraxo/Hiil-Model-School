@@ -18,6 +18,11 @@ import {
   announcementSenderLabel as computeAnnouncementSenderLabel,
 } from "../utils/identity";
 import { buildSeed, migrateDB, loadDB, saveDB } from "../data/seed";
+import { supabase } from "../lib/supabaseClient";
+import { createNotificationService } from "../services/notificationService";
+import { createAnnouncementService } from "../services/announcementService";
+import { createMessageService } from "../services/messageService";
+import { createActivityService } from "../services/activityService";
 import { createAcademicYearService } from "../services/academicYearService";
 import { createSubjectService } from "../services/subjectService";
 import { createClassService } from "../services/classService";
@@ -910,6 +915,145 @@ function DataProvider({ children }) {
     [expensesRaw, expenseReceiptUrls],
   );
 
+  // ---------------------------------------------------------------------
+  // Phase 6: communications -> real Supabase. notifications / announcements /
+  // messages / conversations / activities each become their own independent
+  // Supabase-backed state (same shadow pattern as every earlier domain: the
+  // `api` db object and the commit() draft below overlay these onto the mock
+  // `db.*` shape, so every existing consumer keeps working unchanged).
+  //
+  // Notification + activity rows are NEVER written from the client -- every
+  // fan-out goes through a notify_* / log_activity SECURITY DEFINER RPC
+  // (migration 20260827000000) that resolves recipients + entitlement
+  // server-side and is idempotent via guard columns.
+  //
+  // Realtime: one RLS-scoped channel per signed-in user. Torn down + rebuilt
+  // on account switch, torn down on logout. On any auth change every domain is
+  // refetched so no prior account's data survives the switch (isolation).
+  // ---------------------------------------------------------------------
+  const notificationService = useMemo(() => createNotificationService(), []);
+  const announcementService = useMemo(() => createAnnouncementService(), []);
+  const messageService = useMemo(() => createMessageService(), []);
+  const activityService = useMemo(() => createActivityService(), []);
+  const [notificationsRaw, setNotificationsRaw] = useState([]);
+  const [announcementsRaw, setAnnouncementsRaw] = useState([]);
+  const [messagesRaw, setMessagesRaw] = useState([]);
+  const [conversationsRaw, setConversationsRaw] = useState([]);
+  const [activitiesRaw, setActivitiesRaw] = useState([]);
+  const [announcementReadStatsById, setAnnouncementReadStatsById] = useState(() => ({}));
+  const [sessionUserId, setSessionUserId] = useState(null);
+
+  const refetchNotifications = useCallback(async () => {
+    const rows = await notificationService.list().catch(() => []);
+    setNotificationsRaw(rows);
+    return rows;
+  }, [notificationService]);
+  const refetchActivities = useCallback(async () => {
+    const rows = await activityService.list().catch(() => []);
+    setActivitiesRaw(rows);
+    return rows;
+  }, [activityService]);
+  const refetchMessages = useCallback(async () => {
+    const [convs, msgs] = await Promise.all([
+      messageService.listConversations().catch(() => []),
+      messageService.listMessages().catch(() => []),
+    ]);
+    setConversationsRaw(convs);
+    setMessagesRaw(msgs);
+    return msgs;
+  }, [messageService]);
+  const refetchAnnouncements = useCallback(async () => {
+    const rows = await announcementService.list().catch(() => []);
+    setAnnouncementsRaw(rows);
+    try {
+      setAnnouncementReadStatsById(await announcementService.readStats(rows.map((a) => a.id)));
+    } catch { setAnnouncementReadStatsById({}); }
+    return rows;
+  }, [announcementService]);
+  useEffect(() => {
+    refetchNotifications().catch((e) => console.error("Failed to load notifications", e));
+    refetchAnnouncements().catch((e) => console.error("Failed to load announcements", e));
+    refetchMessages().catch((e) => console.error("Failed to load messages", e));
+    refetchActivities().catch((e) => console.error("Failed to load activity feed", e));
+  }, [refetchNotifications, refetchAnnouncements, refetchMessages, refetchActivities]);
+
+  // Phase 6 fan-out helpers, shared by every domain mutator. Notification + activity rows are
+  // NEVER written from the client -- these call the notify_* / log_activity SECURITY DEFINER
+  // RPCs (migration 20260827000000), which resolve recipients + entitlement server-side and are
+  // idempotent via guard columns. Best-effort: a failed feed/notification write must not fail
+  // the domain action that already succeeded.
+  const logActivityFeed = useCallback(async (text, navigation = null) => {
+    await activityService.log(text, navigation);
+    await refetchActivities();
+  }, [activityService, refetchActivities]);
+  const dispatchNotify = useCallback(async (rpc, args) => {
+    try {
+      const { error } = await supabase.rpc(rpc, args);
+      if (error) console.error(rpc, error);
+    } catch (e) {
+      console.error(rpc, e);
+    }
+    await refetchNotifications();
+  }, [refetchNotifications]);
+
+  // A ref holding every domain's current refetch fn, so the auth listener can re-hydrate
+  // everything on an account switch without a 30-entry useCallback dep array.
+  const allRefetchRef = useRef([]);
+  allRefetchRef.current = [
+    refetchAcademicYears, refetchSubjects, refetchClasses, refetchStudents, refetchEnrollments,
+    refetchStudentDocuments, refetchParents, refetchParentLinks, refetchTeacherAccounts,
+    refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance,
+    refetchPayrollPayments, refetchSalaryAdvances, refetchTimetable, refetchClosures,
+    refetchAttendance, refetchLeaveRequests, refetchBehavior, refetchHomework, refetchResults,
+    refetchResultEvidence, refetchExamAnnouncements, refetchReportCards, refetchFees,
+    refetchPayments, refetchExpenses, refetchNotifications, refetchAnnouncements,
+    refetchMessages, refetchActivities,
+  ];
+  const commsRefetchRef = useRef({});
+  commsRefetchRef.current = { refetchNotifications, refetchMessages, refetchAnnouncements, refetchActivities };
+
+  // Auth-scoped realtime + full re-hydrate on account switch / logout.
+  useEffect(() => {
+    let channel = null;
+    let lastUid;
+    const debouncers = {};
+    const bounce = (key, fn) => {
+      clearTimeout(debouncers[key]);
+      debouncers[key] = setTimeout(() => { fn().catch(() => {}); }, 350);
+    };
+    const teardown = () => { if (channel) { supabase.removeChannel(channel); channel = null; } };
+    const establish = (uid) => {
+      teardown();
+      if (!uid) return;
+      const c = commsRefetchRef.current;
+      channel = supabase
+        .channel(`comms:${uid}`)
+        .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` },
+          () => bounce("notif", c.refetchNotifications))
+        .on("postgres_changes", { event: "*", schema: "public", table: "messages" },
+          () => bounce("msg", c.refetchMessages))
+        .on("postgres_changes", { event: "*", schema: "public", table: "conversations" },
+          () => bounce("msg", c.refetchMessages))
+        .on("postgres_changes", { event: "*", schema: "public", table: "announcements" },
+          () => bounce("ann", c.refetchAnnouncements))
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "activities" },
+          () => bounce("act", c.refetchActivities))
+        .subscribe();
+    };
+    const onAuth = (uid) => {
+      if (uid === lastUid) return;
+      lastUid = uid;
+      setSessionUserId(uid);
+      establish(uid);
+      Promise.allSettled(allRefetchRef.current.map((fn) => fn())).catch(() => {});
+    };
+    supabase.auth.getUser().then(({ data }) => onAuth(data?.user?.id ?? null)).catch(() => onAuth(null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      onAuth(session?.user?.id ?? null);
+    });
+    return () => { sub?.subscription?.unsubscribe(); teardown(); Object.values(debouncers).forEach(clearTimeout); };
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -990,6 +1134,13 @@ function DataProvider({ children }) {
       draft.resultEvidence = resultEvidence;
       draft.examAnnouncements = examAnnouncements;
       draft.reportCards = reportCards;
+      // Phase 6: communications are real Supabase state now -- overlay so any commit() mutator
+      // still reading d.notifications/d.messages/... sees live rows, not stale seed.
+      draft.notifications = notificationsRaw;
+      draft.announcements = announcementsRaw;
+      draft.messages = messagesRaw;
+      draft.conversations = conversationsRaw;
+      draft.activities = activitiesRaw;
       draft.users = mergeRealAccountsIntoUsers(draft.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw);
       const next = mutator(draft);
       next.updatedAt = Date.now();
@@ -1004,6 +1155,7 @@ function DataProvider({ children }) {
     timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw, homework,
     attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw, behaviorRecordsRaw,
     results, resultAuditLog, resultEvidence, examAnnouncements, reportCards,
+    notificationsRaw, announcementsRaw, messagesRaw, conversationsRaw, activitiesRaw,
   ]);
 
   function structuredCloneLite(obj) {
@@ -1052,30 +1204,12 @@ function DataProvider({ children }) {
     };
   }
 
-  // Shared by createAnnouncement (fires immediately) and checkScheduledAnnouncements (fires once
-  // a scheduled announcement's publish time arrives) so the audience → recipient-list mapping
-  // can't drift between the two call sites.
-  function announcementTargets(d, audience) {
-    if (audience.type === "ALL") return d.users.map((u) => u.id);
-    if (audience.type === "ALL_PARENTS") return d.users.filter((u) => u.role === ROLES.PARENT).map((u) => u.id);
-    if (audience.type === "ALL_TEACHERS") return d.users.filter((u) => u.role === ROLES.TEACHER).map((u) => u.id);
-    if (audience.type === "DIRECTORS") return d.staff.filter((s) => staffGroupLabel(s.position) === "Directors").map((s) => s.userId).filter(Boolean);
-    if (audience.type === "GRADE") {
-      const studentIds = d.students.filter((s) => s.grade === audience.grade && s.status === "ACTIVE").map((s) => s.id);
-      return d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).some((cid) => studentIds.includes(cid))).map((u) => u.id);
-    }
-    if (audience.type === "SECTION") {
-      const studentIds = d.students.filter((s) => s.grade === audience.grade && s.section === audience.section && s.status === "ACTIVE").map((s) => s.id);
-      return d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).some((cid) => studentIds.includes(cid))).map((u) => u.id);
-    }
-    if (audience.type === "USER") return [audience.userId];
-    return [];
-  }
-  function dispatchAnnouncementNotifications(d, ann) {
-    const senderShortLabel = computeUserIdentity(d, ann.authorId).display;
-    announcementTargets(d, ann.audience).forEach((uid_) => {
-      d.notifications = [{ id: uid("notif"), userId: uid_, title: "📢 New announcement", message: `${ann.title} — From: ${senderShortLabel}`, read: false, createdAt: Date.now(), type: "ANNOUNCEMENT", announcementId: ann.id }, ...d.notifications];
-    });
+  // Phase 6: the recipient fan-out for a published announcement is done server-side by
+  // notify_announcement (audience resolved from the row, idempotent via publish_notified). This
+  // only builds the display text the RPC stamps onto each notification row.
+  function announcementNotifyText(dbLike, ann) {
+    const senderShortLabel = computeUserIdentity(dbLike, ann.authorId).display;
+    return { title: "📢 New announcement", message: `${ann.title} — From: ${senderShortLabel}` };
   }
 
   /* ---------- derived lookups ---------- */
@@ -1125,6 +1259,15 @@ function DataProvider({ children }) {
       payments: paymentsRaw,
       paymentAllocations: allocationsRaw,
       expenses,
+      // Phase 6: communications -> real Supabase. RLS scopes notifications to the caller and
+      // messages/conversations to the caller's threads, so account switching can't leak a prior
+      // user's feed.
+      notifications: notificationsRaw,
+      announcements: announcementsRaw,
+      messages: messagesRaw,
+      conversations: conversationsRaw,
+      activities: activitiesRaw,
+      announcementReadStatsById,
       users: mergeRealAccountsIntoUsers(mockDb.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw),
       academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
     };
@@ -1314,31 +1457,15 @@ function DataProvider({ children }) {
 
         await Promise.all([refetchPayments(), refetchFees()]);
 
-        // Leftover mock fan-out: one consolidated "Payment Received" notification per parent per
-        // receipt, plus the shared activity line. (Notifications/activities haven't converted.)
-        commit((d) => {
-          const byParent = new Map();
-          entries.forEach((entry) => {
-            const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(entry.studentId)).map((u) => u.id);
-            parentIds.forEach((pid) => {
-              if (!byParent.has(pid)) byParent.set(pid, []);
-              byParent.get(pid).push(entry);
-            });
-          });
-          byParent.forEach((parentEntries, pid) => {
-            const total = parentEntries.reduce((sum, e) => sum + e.amount, 0);
-            const uniqueChildren = [...new Map(parentEntries.map((e) => [e.studentId, e])).values()];
-            const childrenLabel = joinWithAnd(uniqueChildren.map((e) => `${e.studentName} · ${e.grade}`));
-            d.notifications = [{
-              id: uid("notif"), userId: pid, title: "Payment Received",
-              message: `Your payment of ${formatMoney(total)} for ${childrenLabel} has been recorded.`,
-              read: false, createdAt: Date.now(), type: "PAYMENT", paymentId: payment.id,
-            }, ...d.notifications];
-          });
-          const namesSummary = [...new Set(entries.map((e) => e.studentName))].join(", ");
-          d.activities = [{ id: uid("act"), text: `${formatMoney(payment.amountTotal)} payment recorded for ${namesSummary} (receipt #${payment.receiptNo}).`, createdAt: Date.now(), navigation: { page: "payments", studentId: entries[0]?.studentId || null, paymentId: payment.id, receiptNo: payment.receiptNo } }, ...d.activities];
-          return d;
-        });
+        // Phase 6: the per-parent "Payment Received" fan-out (amount + child list built per
+        // parent, idempotent via payments.notified_at) is done server-side by
+        // notify_payment_received; the shared activity line by log_activity.
+        const namesSummary = [...new Set(entries.map((e) => e.studentName))].join(", ");
+        await dispatchNotify("notify_payment_received", { p_payment_id: payment.id });
+        await logActivityFeed(
+          `${formatMoney(payment.amountTotal)} payment recorded for ${namesSummary} (receipt #${payment.receiptNo}).`,
+          { page: "payments", studentId: entries[0]?.studentId || null, paymentId: payment.id, receiptNo: payment.receiptNo },
+        );
 
         return { receiptNo: payment.receiptNo, paymentId: payment.id, entries };
       } catch (e) {
@@ -1449,10 +1576,7 @@ function DataProvider({ children }) {
               console.error("Student created, but fee obligations failed to materialize", obErr);
             }
           }
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${studentFullName(student)} was added to ${student.grade}${student.section} (${student.studentId}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${studentFullName(student)} was added to ${student.grade}${student.section} (${student.studentId}).`);
           return { ok: true, studentId: student.studentId, id: student.id };
         } catch (e) {
           console.error("Failed to create student", e);
@@ -1502,10 +1626,7 @@ function DataProvider({ children }) {
           const updated = await studentService.update(id, patch);
           await syncStudentEnrollment(updated);
           await Promise.all([refetchStudents(), refetchEnrollments()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${studentFullName(updated)} status changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${studentFullName(updated)} status changed to ${status}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to change student status", e);
@@ -1520,10 +1641,7 @@ function DataProvider({ children }) {
           const base = defaultAcademicCalendar(fields.yearStart ? new Date(fields.yearStart) : undefined);
           const newYear = await academicYearService.create({ ...base, ...fields }, createdBy);
           await refetchAcademicYears();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Academic year ${formatAcademicYearLabel(newYear)} was created.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Academic year ${formatAcademicYearLabel(newYear)} was created.`);
           return { ok: true, year: newYear };
         } catch (e) {
           console.error("Failed to create academic year", e);
@@ -1536,10 +1654,7 @@ function DataProvider({ children }) {
         try {
           await academicYearService.setCurrent(id);
           await refetchAcademicYears();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${formatAcademicYearLabel(year)} is now the current academic year.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${formatAcademicYearLabel(year)} is now the current academic year.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to set current academic year", e);
@@ -1560,10 +1675,7 @@ function DataProvider({ children }) {
           const updated = await studentService.update(studentId, { grade: nextGrade, section: nextSection, classId: cls ? cls.id : null, status: "ACTIVE", suspension: null });
           await syncStudentEnrollment(updated, academicYearId);
           await Promise.all([refetchStudents(), refetchEnrollments()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${studentFullName(updated)} was promoted/re-enrolled into ${formatAcademicYearLabel(year)} (${nextGrade}${nextSection}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${studentFullName(updated)} was promoted/re-enrolled into ${formatAcademicYearLabel(year)} (${nextGrade}${nextSection}).`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to promote student", e);
@@ -1635,10 +1747,7 @@ function DataProvider({ children }) {
           const doc = await studentService.createDocument(studentId, { category, title, fileDataUrl, fileType, fileName }, year ? year.id : null);
           await refetchStudentDocuments();
           const s = studentsRaw.find((x) => x.id === studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `A document ("${doc.title}") was uploaded for ${s ? studentFullName(s) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`A document ("${doc.title}") was uploaded for ${s ? studentFullName(s) : "a student"}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to upload student document", e);
@@ -1677,21 +1786,11 @@ function DataProvider({ children }) {
           await leaveService.deleteForSubject("STUDENT", id).catch((e) => console.error("Failed to clean up student leave requests", e));
           await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments(), refetchAttendance(), refetchLeaveRequests(), refetchBehavior()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
-          commit((d) => {
-            // attendance / behavior_records / results / obligations all cascade server-side on
-            // student delete — the refetches above pick that up.
-            // results + result_audit_log + result_evidence rows cascade-delete in Postgres
-            // (student_id is ON DELETE CASCADE on all three) -- refetchResults / refetchResultEvidence
-            // above pick that up; the Storage objects were cleaned up just above.
-            // student_fee_obligations.student_id is ON DELETE CASCADE and fee_obligation_adjustments
-            // cascade from the obligation, so those clear server-side too (refetchFees above picks
-            // it up). NOTE: payment_allocations.obligation_id is ON DELETE RESTRICT, so a student
-            // who has ever had a payment recorded cannot be hard-deleted at all — studentService
-            // .remove() will reject. Payments are immutable financial records (Locked Principle #4);
-            // archive such a student instead.
-            d.activities = [{ id: uid("act"), text: `${name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          // attendance / behavior_records / results / result_audit_log / result_evidence /
+          // student_fee_obligations / notifications all cascade server-side on student/profile
+          // delete -- the refetches above pick that up. NOTE: payment_allocations.obligation_id is
+          // ON DELETE RESTRICT, so a student who ever had a payment can't be hard-deleted at all.
+          await logActivityFeed(`${name} was permanently deleted.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete student", e);
@@ -1730,11 +1829,9 @@ function DataProvider({ children }) {
             refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances(), refetchClasses(),
             refetchTimetable(), refetchHomework(), refetchAttendance(), refetchLeaveRequests(),
           ]);
-          commit((d) => {
-            d.notifications = d.notifications.filter((n) => n.userId !== userId);
-            d.activities = [{ id: uid("act"), text: `${u.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          // notifications.user_id is ON DELETE CASCADE on the profile -- the deleted teacher's
+          // rows go server-side; nothing to prune client-side.
+          await logActivityFeed(`${u.name} was permanently deleted.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete teacher", e);
@@ -1757,10 +1854,7 @@ function DataProvider({ children }) {
           await leaveService.deleteForSubject("STAFF", staffId).catch((e) => console.error("Failed to clean up staff leave requests", e));
           await staffService.remove(staffId);
           await Promise.all([refetchStaff(), refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances(), refetchLeaveRequests()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${staffRec.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${staffRec.name} was permanently deleted.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete staff", e);
@@ -1864,7 +1958,7 @@ function DataProvider({ children }) {
             });
           } catch (staffErr) {
             await Promise.all([refetchTeacherAccounts(), refetchStaff()]);
-            commit((d) => { d.activities = [{ id: uid("act"), text: `Teacher ${name} was added, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            await logActivityFeed(`Teacher ${name} was added, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`);
             return { ok: false, message: `The teacher account was created, but the staff/payroll record failed: ${staffErr.message || "unknown error"}. Add it from the Staff page.`, teacherId };
           }
 
@@ -1883,15 +1977,12 @@ function DataProvider({ children }) {
             }
           } catch (assignErr) {
             await Promise.all([refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff()]);
-            commit((d) => { d.activities = [{ id: uid("act"), text: `Teacher ${name} was added, but assigning classes/subjects failed partway through: ${assignErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            await logActivityFeed(`Teacher ${name} was added, but assigning classes/subjects failed partway through: ${assignErr.message || "unknown error"}.`);
             return { ok: false, message: `The teacher account was created, but assigning classes/subjects failed: ${assignErr.message || "unknown error"}. Finish it from the Teachers page.`, teacherId };
           }
 
           await Promise.all([refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Teacher ${name} was added${classLabels.size ? ` and assigned to ${[...classLabels].join(", ")}` : ""}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Teacher ${name} was added${classLabels.size ? ` and assigned to ${[...classLabels].join(", ")}` : ""}.`);
           return { ok: true, message: "Teacher added successfully.", teacherId };
         } catch (e) {
           console.error("Failed to create teacher", e);
@@ -1952,10 +2043,7 @@ function DataProvider({ children }) {
             }
           }
           await refetchTeacherAssignments();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${teacher.name}'s class and subject assignments were updated${classLabels.size ? ` (${[...classLabels].join(", ")})` : ""}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${teacher.name}'s class and subject assignments were updated${classLabels.size ? ` (${[...classLabels].join(", ")})` : ""}.`);
           return { ok: true, message: "Teacher assignments updated." };
         } catch (e) {
           console.error("Failed to update teacher assignments", e);
@@ -1968,10 +2056,7 @@ function DataProvider({ children }) {
           const t = db.users.find((u) => u.id === teacherId);
           const res = await accountService.resetPassword(teacherId, newPassword);
           if (!res.ok) return { ok: false, message: res.message || "Couldn't reset the password." };
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Password was reset for ${t?.name || "a teacher"}. The new temporary password was shared privately and is not stored anywhere visible.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Password was reset for ${t?.name || "a teacher"}. The new temporary password was shared privately and is not stored anywhere visible.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to reset teacher password", e);
@@ -1999,10 +2084,7 @@ function DataProvider({ children }) {
             if (subj) await classService.addCurriculumSubject(cls.id, subj.id);
           }
           await refetchClasses();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${grade}${section} was added as a new class.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${grade}${section} was added as a new class.`);
           return { ok: true, classId: cls.id };
         } catch (e) {
           console.error("Failed to create class", e);
@@ -2064,9 +2146,9 @@ function DataProvider({ children }) {
               // section at announce-time, so there's nothing to cascade there)
               d.students.forEach((s) => { if (s.classId === id) { s.grade = nextGrade; s.section = nextSection; } });
             }
-            d.activities = [{ id: uid("act"), text: `${nextGrade}${nextSection} was updated.`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
+          await logActivityFeed(`${nextGrade}${nextSection} was updated.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update class", e);
@@ -2087,13 +2169,10 @@ function DataProvider({ children }) {
           await classService.remove(id); // class_subjects, teacher_assignments, timetable_entries, homework AND results cascade-delete in Postgres
           await Promise.all([refetchClasses(), refetchTeacherAssignments(), refetchTimetable(), refetchHomework(), refetchResults(), refetchResultEvidence(), refetchReportCards()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
-          commit((d) => {
-            // results cascade-delete via results.class_id ON DELETE CASCADE; result_audit_log +
-            // result_evidence rows follow via their result_id ON DELETE CASCADE -- refetchResults /
-            // refetchResultEvidence pick it up; Storage objects were cleaned up just above.
-            d.activities = [{ id: uid("act"), text: `${cls.grade}${cls.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          // results cascade-delete via results.class_id ON DELETE CASCADE; result_audit_log +
+          // result_evidence rows follow via their result_id ON DELETE CASCADE (refetches above
+          // pick it up); Storage objects were cleaned up just above.
+          await logActivityFeed(`${cls.grade}${cls.section} was deleted.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete class", e);
@@ -2109,10 +2188,7 @@ function DataProvider({ children }) {
         try {
           await subjectService.create(name);
           await refetchSubjects();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${name} was added as a new subject.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${name} was added as a new subject.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to create subject", e);
@@ -2137,11 +2213,9 @@ function DataProvider({ children }) {
             d.teacherAssignments.forEach((ta) => { if (ta.subject === oldName) ta.subject = trimmed; });
             d.classSubjects.forEach((cs) => { if (cs.subject === oldName) cs.subject = trimmed; });
             d.users.forEach((u) => { if (u.role === ROLES.TEACHER && u.subject === oldName) u.subject = trimmed; });
-            // results are real Supabase data keyed by subject_id -- the name resolves fresh from the
-            // renamed subjects row (DataContext's `results` useMemo), nothing to cascade here.
-            d.activities = [{ id: uid("act"), text: `Subject "${oldName}" was renamed to "${trimmed}".`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
+          await logActivityFeed(`Subject "${oldName}" was renamed to "${trimmed}".`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to rename subject", e);
@@ -2157,10 +2231,7 @@ function DataProvider({ children }) {
         try {
           await subjectService.remove(id);
           await refetchSubjects();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${subj.name} was removed from the subject list.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${subj.name} was removed from the subject list.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete subject", e);
@@ -2208,18 +2279,12 @@ function DataProvider({ children }) {
               linkedStudentIds.push(student.studentId);
             } catch (linkErr) {
               await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
-              commit((d) => {
-                d.activities = [{ id: uid("act"), text: `New parent account (${name}) created${linkedStudentIds.length ? ` and connected to ${linkedStudentIds.join(", ")}` : ""}.`, createdAt: Date.now() }, ...d.activities];
-                return d;
-              });
+              await logActivityFeed(`New parent account (${name}) created${linkedStudentIds.length ? ` and connected to ${linkedStudentIds.join(", ")}` : ""}.`);
               return { ok: false, message: `The parent account was created, but connecting ${studentFullName(student)} failed: ${linkErr.message || "unknown error"}. Connect them from the Parents screen's Manage panel.`, parentId };
             }
           }
           await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `New parent account (${name}) connected to ${resolvedChildren.map((s) => s.studentId).join(", ") || "no children yet"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`New parent account (${name}) connected to ${resolvedChildren.map((s) => s.studentId).join(", ") || "no children yet"}.`);
           return { ok: true, message: "Account created.", parentId };
         } catch (e) {
           console.error("Failed to create parent account", e);
@@ -2239,10 +2304,7 @@ function DataProvider({ children }) {
           if (!student) return { ok: false, message: "We couldn't find a student with this ID. Please check the ID provided by the school." };
           await parentService.link(parentId, student.id);
           await Promise.all([refetchParentLinks(), refetchStudents()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Parent account connected to student ${student.studentId}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Parent account connected to student ${student.studentId}.`);
           return { ok: true, message: `${studentFullName(student)} has been added to this account.` };
         } catch (e) {
           console.error("Failed to connect child", e);
@@ -2257,11 +2319,8 @@ function DataProvider({ children }) {
         try {
           await parentService.unlink(parentId, studentId);
           await Promise.all([refetchParentLinks(), refetchStudents()]);
-          commit((d) => {
-            const student = d.students.find((s) => s.id === studentId);
-            d.activities = [{ id: uid("act"), text: `A parent account was disconnected from ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          const student = studentsRaw.find((s) => s.id === studentId);
+          await logActivityFeed(`A parent account was disconnected from ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to disconnect child", e);
@@ -2279,10 +2338,7 @@ function DataProvider({ children }) {
           const res = await accountService.remove(parentId);
           if (!res.ok) return { ok: false, message: res.message || "Couldn't delete the parent account." };
           await Promise.all([refetchParents(), refetchParentLinks(), refetchStudents()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${parent ? parent.name : "A parent"}'s account was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${parent ? parent.name : "A parent"}'s account was permanently deleted.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete parent account", e);
@@ -2325,18 +2381,17 @@ function DataProvider({ children }) {
             academicYearId: year ? year.id : null,
           });
           await refetchHomework();
-          commit((d) => {
-            const teacher = d.users.find((u) => u.id === data.teacherId);
-            d.activities = [{ id: uid("act"), text: `${teacher?.name || "A teacher"} published ${data.subject} homework for ${data.grade}${data.section}.`, createdAt: Date.now(), navigation: { page: "homework", homeworkId: created.id, classId: cls.id } }, ...d.activities];
-            const studentIds = d.students.filter((s) => s.classId === cls.id).map((s) => s.id);
-            const parentIds = new Set();
-            d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
-            parentIds.forEach((pid) => {
-              const parentUser = d.users.find((u) => u.id === pid);
-              const childId = (parentUser?.childIds || []).find((cid) => studentIds.includes(cid)) || null;
-              d.notifications = [{ id: uid("notif"), userId: pid, title: `New ${data.subject} homework`, message: `${data.title} — due ${fmtDate(data.dueDate)}.`, read: false, createdAt: Date.now(), type: "HOMEWORK", navigation: { page: "homework", studentId: childId, homeworkId: created.id } }, ...d.notifications];
-            });
-            return d;
+          // Phase 6: notify_homework fans a notification out to every parent of a student in the
+          // class (server-derived, idempotent via homework.notified_at); log_activity for the feed.
+          const teacher = (db.users || []).find((u) => u.id === data.teacherId);
+          await logActivityFeed(
+            `${teacher ? teacher.name : "A teacher"} published ${data.subject} homework for ${data.grade}${data.section}.`,
+            { page: "homework", homeworkId: created.id, classId: cls.id },
+          );
+          await dispatchNotify("notify_homework", {
+            p_homework_id: created.id,
+            p_title: `New ${data.subject} homework`,
+            p_message: `${data.title} — due ${fmtDate(data.dueDate)}.`,
           });
           return { ok: true, message: "" };
         } catch (e) {
@@ -2380,12 +2435,11 @@ function DataProvider({ children }) {
         try {
           await homeworkService.update(id, servicePatch);
           await refetchHomework();
-          commit((d) => {
+          {
             const g = servicePatch.grade ?? hw.grade, sec = servicePatch.section ?? hw.section;
             const subj = patch.subject ?? hw.subject;
-            d.activities = [{ id: uid("act"), text: `${subj} homework for ${g}${sec} was updated.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+            await logActivityFeed(`${subj} homework for ${g}${sec} was updated.`);
+          }
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to update homework", e);
@@ -2403,10 +2457,7 @@ function DataProvider({ children }) {
         try {
           await homeworkService.remove(id);
           await refetchHomework();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${hw.subject} homework "${hw.title}" for ${hw.grade}${hw.section} was deleted.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${hw.subject} homework "${hw.title}" for ${hw.grade}${hw.section} was deleted.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to delete homework", e);
@@ -2414,41 +2465,39 @@ function DataProvider({ children }) {
         }
       },
 
-      // Notification-only side effect of an attendance change, applied to a commit() draft AFTER
-      // the real row has been written (attendance is real Supabase as of Phase 5 CP1; notifications
-      // are still on the mock bridge). `notifyList` is [{ studentId, status }] for the rows whose
-      // status actually CHANGED to something non-Present — re-saving an unchanged class re-notifies
-      // nobody (see the Section 8 audit's dedup-notify fix).
-      _applyAttendanceNotifications(d, date, notifyList) {
-        notifyList.forEach(({ studentId, status }) => {
-          const student = d.students.find((s) => s.id === studentId);
-          const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title: `Attendance update for ${student?.firstName}`, message: `${student?.firstName} was marked ${status.toLowerCase()} on ${fmtDate(date)}.`, read: false, createdAt: Date.now(), type: "ATTENDANCE", navigation: { page: "attendance", studentId, date } }, ...d.notifications];
-          });
-        });
-      },
-
       // Real Supabase (attendance). RLS: write = is_owner_or_admin(), or a Teacher who heads the
       // class and is not themselves marked Absent/Sick/Permission that day. The
       // attendance_date_guard trigger re-checks the calendar gate the UI already enforces
       // (classifyAttendanceDate). One upsert per student on unique(student_id, date).
+      //
+      // Phase 6: the "marked absent/late/..." parent notification is fanned out by
+      // notify_student_attendance (server-derives the parents, idempotent via
+      // attendance.parent_notified which upsertRecord re-arms on a genuine status change).
       async saveAttendance(classId, date, records, markedBy) {
         try {
-          const notifyList = [];
+          const notifyIds = [];
           for (const r of records) {
             const prev = db.attendance.find((a) => a.studentId === r.studentId && a.date === date);
             const statusChanged = !prev || prev.status !== r.status;
-            await attendanceService.upsertRecord({ studentId: r.studentId, classId, date, status: r.status, note: r.note, markedBy });
-            if (r.status !== "Present" && statusChanged) notifyList.push({ studentId: r.studentId, status: r.status });
+            const row = await attendanceService.upsertRecord({ studentId: r.studentId, classId, date, status: r.status, note: r.note, markedBy, resetParentNotified: statusChanged });
+            if (r.status !== "Present" && statusChanged && row && row.id) {
+              notifyIds.push({ id: row.id, studentId: r.studentId, status: r.status });
+            }
           }
           await refetchAttendance();
-          commit((d) => {
-            this._applyAttendanceNotifications(d, date, notifyList);
-            const cls = d.classes.find((c) => c.id === classId);
-            d.activities = [{ id: uid("act"), text: `Attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`, createdAt: Date.now(), navigation: { page: "attendance", classId, date } }, ...d.activities];
-            return d;
-          });
+          const cls = (db.classes || []).find((c) => c.id === classId);
+          await logActivityFeed(
+            `Attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`,
+            { page: "attendance", classId, date },
+          );
+          for (const n of notifyIds) {
+            const student = (db.students || []).find((s) => s.id === n.studentId);
+            await dispatchNotify("notify_student_attendance", {
+              p_attendance_id: n.id,
+              p_title: `Attendance update for ${student ? student.firstName : "your child"}`,
+              p_message: `${student ? student.firstName : "Your child"} was marked ${n.status.toLowerCase()} on ${fmtDate(date)}.`,
+            });
+          }
           return { ok: true };
         } catch (e) {
           console.error("Failed to save attendance", e);
@@ -2471,8 +2520,10 @@ function DataProvider({ children }) {
         const finalArrivalTime = status === "Late" ? (arrivalTime || "") : null;
         const existing = db.staffAttendance.find((a) => a.staffId === staffId && a.date === date && (a.period || "FULL_DAY") === finalPeriod);
         const statusChanged = !existing || existing.status !== status || (status === "Late" && existing.arrivalTime !== finalArrivalTime);
-        await staffService.saveAttendanceRecord({ staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime, note, markedBy, leaveRequestId });
-        return (status !== "Present" && statusChanged) ? { staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime } : null;
+        const row = await staffService.saveAttendanceRecord({ staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime, note, markedBy, leaveRequestId, resetNotified: statusChanged });
+        return (status !== "Present" && statusChanged && row && row.id)
+          ? { id: row.id, staffId, date, period: finalPeriod, status, arrivalTime: finalArrivalTime }
+          : null;
       },
 
       async saveStaffAttendance(date, records, markedBy) {
@@ -2483,29 +2534,30 @@ function DataProvider({ children }) {
             if (n) notifyList.push(n);
           }
           await refetchStaffAttendance();
-          commit((d) => {
-            this._applyStaffAttendanceNotifications(d, notifyList);
-            d.activities = [{ id: uid("act"), text: `Staff attendance was recorded for ${fmtDate(date)}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Staff attendance was recorded for ${fmtDate(date)}.`);
+          await this._dispatchStaffAttendanceNotifications(notifyList);
           return { ok: true };
         } catch (e) {
           console.error("Failed to save staff attendance", e);
           return { ok: false, message: e.message || "Couldn't save staff attendance." };
         }
       },
-      // Shared by saveStaffAttendance and decideLeaveRequest's STAFF branch.
-      _applyStaffAttendanceNotifications(d, notifyList) {
-        notifyList.forEach(({ staffId, date, period, status, arrivalTime }) => {
-          const staffRec = d.staff.find((s) => s.id === staffId);
+      // Phase 6: notify_staff_attendance fans one notification to the staff member (server-derived
+      // from staff.user_id, idempotent via notified_at). Shared by saveStaffAttendance and
+      // decideLeaveRequest's STAFF branch.
+      async _dispatchStaffAttendanceNotifications(notifyList) {
+        for (const { id, staffId, date, period, status, arrivalTime } of notifyList) {
+          const staffRec = (db.staff || []).find((s) => s.id === staffId);
           const periodPrefix = period === "AM" ? "Morning — " : period === "PM" ? "Afternoon — " : "";
           const message = status === "Late"
             ? `${periodPrefix}You were marked late on ${fmtDate(date)}${arrivalTime ? ` — arrived at ${to12Hour(arrivalTime)}` : ""}.`
             : `${periodPrefix}You were marked ${status.toLowerCase()} on ${fmtDate(date)}.`;
-          if (staffRec?.userId) {
-            d.notifications = [{ id: uid("notif"), userId: staffRec.userId, title: "Attendance recorded", message, read: false, createdAt: Date.now(), type: "ATTENDANCE" }, ...d.notifications];
+          if (staffRec && staffRec.userId) {
+            await dispatchNotify("notify_staff_attendance", {
+              p_staff_attendance_id: id, p_title: "Attendance recorded", p_message: message,
+            });
           }
-        });
+        }
       },
 
       /* ---------- Leave / permission requests ---------- */
@@ -2523,21 +2575,17 @@ function DataProvider({ children }) {
         try {
           const created = await leaveService.create({ kind, subjectId, requestedBy, status, fromDate, toDate, note });
           await refetchLeaveRequests();
-          commit((d) => {
-            const who = leaveSubjectLabel(d, kind, subjectId);
-            d.activities = [{ id: uid("act"), text: `A ${status.toLowerCase()} leave request was submitted for ${who} (${fmtDate(fromDate)} – ${fmtDate(toDate)}).`, createdAt: Date.now() }, ...d.activities];
-
-            // A Director's own leave only goes to the Owner (nobody else can decide it); everyone
-            // else's goes to both the Owner and every Educational Director — matches canDecideLeaveRequest.
-            const subjectStaff = kind === "STAFF" ? d.staff.find((s) => s.id === subjectId) : null;
-            const isDirectorSubject = !!subjectStaff && staffGroupLabel(subjectStaff.position) === "Directors";
-            const recipientRoles = isDirectorSubject ? [ROLES.OWNER] : [ROLES.OWNER, ROLES.ADMIN];
-            const { title, message } = leaveSubmittedNotification(d, created);
-            const leaveStudentId = kind === "STUDENT" ? subjectId : null;
-            d.users.filter((u) => recipientRoles.includes(u.role)).forEach((u) => {
-              d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: leaveStudentId } }, ...d.notifications];
-            });
-            return d;
+          const who = leaveSubjectLabel(db, kind, subjectId);
+          await logActivityFeed(`A ${status.toLowerCase()} leave request was submitted for ${who} (${fmtDate(fromDate)} – ${fmtDate(toDate)}).`);
+          // Phase 6: notify_leave_submitted fans the request out to the Owner + every Educational
+          // Director (minus the ED for a Director's own leave) -- recipients + entitlement derived
+          // server-side, idempotent via leave_requests.submitted_notified.
+          const submitted = leaveSubmittedNotification(db, created);
+          await dispatchNotify("notify_leave_submitted", {
+            p_leave_request_id: created.id,
+            p_title: submitted.title,
+            p_message: submitted.message,
+            p_navigation: { page: "leaveRequests", studentId: kind === "STUDENT" ? subjectId : null },
           });
           return { ok: true };
         } catch (e) {
@@ -2562,13 +2610,18 @@ function DataProvider({ children }) {
           const res = await leaveService.decide(id, approvalStatus, reason);
           await Promise.all([refetchLeaveRequests(), refetchAttendance(), refetchStaffAttendance()]);
           if (res && res.noop) return { ok: true };
-          commit((d) => {
-            const liveReq = d.leaveRequests.find((r) => r.id === id) || { ...req, approvalStatus, decidedBy, decidedAt: Date.now(), rejectionReason: approvalStatus === "REJECTED" ? reason.trim() : null };
-            d.activities = [{ id: uid("act"), text: `A leave request was ${approvalStatus.toLowerCase()}.`, createdAt: Date.now() }, ...d.activities];
-            const decider = d.users.find((u) => u.id === decidedBy);
-            const { title, message } = leaveDecidedNotification(d, liveReq, decider);
-            d.notifications = [{ id: uid("notif"), userId: liveReq.requestedBy, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: liveReq.kind === "STUDENT" ? liveReq.subjectId : null } }, ...d.notifications];
-            return d;
+          const liveReq = (db.leaveRequests || []).find((r) => r.id === id)
+            || { ...req, approvalStatus, decidedBy, decidedAt: Date.now(), rejectionReason: approvalStatus === "REJECTED" ? reason.trim() : null };
+          await logActivityFeed(`A leave request was ${approvalStatus.toLowerCase()}.`);
+          // Phase 6: notify_leave_decided sends the decision to the requester (server-checked via
+          // can_decide_leave, idempotent via leave_requests.decision_notified).
+          const decider = (db.users || []).find((u) => u.id === decidedBy);
+          const decided = leaveDecidedNotification(db, liveReq, decider);
+          await dispatchNotify("notify_leave_decided", {
+            p_leave_request_id: id,
+            p_title: decided.title,
+            p_message: decided.message,
+            p_navigation: { page: "leaveRequests", studentId: liveReq.kind === "STUDENT" ? liveReq.subjectId : null },
           });
           return { ok: true };
         } catch (e) {
@@ -2610,38 +2663,26 @@ function DataProvider({ children }) {
         const todayKey = todayKeyStr();
         const due = db.leaveRequests.filter((r) => r.approvalStatus === "APPROVED" && !r.completionNotified && r.toDate < todayKey);
         if (due.length === 0) return;
-        try {
-          await leaveService.markCompletionNotified(due.map((r) => r.id));
-          await refetchLeaveRequests();
-        } catch (e) {
-          console.error("Failed to mark leave completions", e);
-          return;
-        }
-        commit((d) => {
-          const toNotify = due;
-          if (toNotify.length === 0) return d;
-          toNotify.forEach((req) => {
-            const base = leaveTitleBase(req.status);
-            const duration = leaveDurationLabel(req.fromDate, req.toDate);
-            const returnDate = addDays(req.toDate, 1);
-            const who = leaveSubjectLabel(d, req.kind, req.subjectId);
-            const leaveStudentId = req.kind === "STUDENT" ? req.subjectId : null;
-            d.notifications = [
-              { id: uid("notif"), userId: req.requestedBy, title: `${base} completed`, message: `Your ${duration} ${base.toLowerCase()} has ended. You are expected to return on ${fmtDate(returnDate)}.`, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: leaveStudentId } },
-              ...d.notifications,
-            ];
-            const subjectStaff = req.kind === "STAFF" ? d.staff.find((s) => s.id === req.subjectId) : null;
-            const isDirectorSubject = !!subjectStaff && staffGroupLabel(subjectStaff.position) === "Directors";
-            const recipientRoles = isDirectorSubject ? [ROLES.OWNER] : [ROLES.OWNER, ROLES.ADMIN];
-            d.users.filter((u) => recipientRoles.includes(u.role)).forEach((u) => {
-              d.notifications = [
-                { id: uid("notif"), userId: u.id, title: "Leave completed", message: `${who}'s approved ${base.toLowerCase()} ended on ${fmtDate(req.toDate)}.`, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: leaveStudentId } },
-                ...d.notifications,
-              ];
-            });
+        // Phase 6: notify_leave_completed sends the requester + the leave-admins their "leave
+        // ended" note AND flips leave_requests.completion_notified itself (state-guarded +
+        // idempotent, safe for any authenticated poll -- see migration 20260827000000). Don't
+        // pre-mark: that would make the RPC a no-op.
+        for (const req of due) {
+          const base = leaveTitleBase(req.status);
+          const duration = leaveDurationLabel(req.fromDate, req.toDate);
+          const returnDate = addDays(req.toDate, 1);
+          const who = leaveSubjectLabel(db, req.kind, req.subjectId);
+          const leaveStudentId = req.kind === "STUDENT" ? req.subjectId : null;
+          await dispatchNotify("notify_leave_completed", {
+            p_leave_request_id: req.id,
+            p_requester_title: `${base} completed`,
+            p_requester_message: `Your ${duration} ${base.toLowerCase()} has ended. You are expected to return on ${fmtDate(returnDate)}.`,
+            p_admin_title: "Leave completed",
+            p_admin_message: `${who}'s approved ${base.toLowerCase()} ended on ${fmtDate(req.toDate)}.`,
+            p_navigation: { page: "leaveRequests", studentId: leaveStudentId },
           });
-          return d;
-        });
+        }
+        await refetchLeaveRequests();
       },
 
       // The Owner sits above everyone else, so their own leave has no approver and — since the
@@ -2651,20 +2692,22 @@ function DataProvider({ children }) {
       // Director. Notification to the Educational Director stays on the mock bridge.
       async logOwnerLeave({ status, fromDate, toDate, note }, ownerUserId) {
         try {
-          await leaveService.logOwnerLeave({ status, fromDate, toDate, note });
+          const row = await leaveService.logOwnerLeave({ status, fromDate, toDate, note });
           await refetchLeaveRequests();
-          commit((d) => {
-            const owner = d.users.find((u) => u.id === ownerUserId);
-            const base = leaveTitleBase(status);
-            const dateRange = fromDate === toDate ? fmtDate(fromDate) : `${fmtDate(fromDate)} – ${fmtDate(toDate)}`;
-            d.activities = [{ id: uid("act"), text: `Owner ${owner?.name || ""} logged ${base.toLowerCase()} for ${dateRange}.`, createdAt: Date.now() }, ...d.activities];
-            const title = `Owner ${base.toLowerCase()}`;
-            const message = `${owner?.name || "The Owner"} will be on ${base.toLowerCase()} from ${dateRange}${note ? ` — ${note}` : ""}.`;
-            d.users.filter((u) => u.role === ROLES.ADMIN).forEach((u) => {
-              d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE" }, ...d.notifications];
+          const owner = (db.users || []).find((u) => u.id === ownerUserId);
+          const base = leaveTitleBase(status);
+          const dateRange = fromDate === toDate ? fmtDate(fromDate) : `${fmtDate(fromDate)} – ${fmtDate(toDate)}`;
+          await logActivityFeed(`Owner ${owner ? owner.name : ""} logged ${base.toLowerCase()} for ${dateRange}.`);
+          // Phase 6: notify_owner_leave notifies every active Educational Director (server-derived,
+          // idempotent via owner_leave_log.notified_at).
+          if (row && row.id) {
+            await dispatchNotify("notify_owner_leave", {
+              p_owner_leave_log_id: row.id,
+              p_title: `Owner ${base.toLowerCase()}`,
+              p_message: `${owner ? owner.name : "The Owner"} will be on ${base.toLowerCase()} from ${dateRange}${note ? ` — ${note}` : ""}.`,
+              p_navigation: { page: "leaveRequests" },
             });
-            return d;
-          });
+          }
           return { ok: true };
         } catch (e) {
           console.error("Failed to log owner leave", e);
@@ -2760,10 +2803,7 @@ function DataProvider({ children }) {
         try {
           await closureService.create({ date, reason }, createdBy);
           await refetchClosures();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${fmtDate(date)} was marked as a school closure (${reason}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${fmtDate(date)} was marked as a school closure (${reason}).`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to create school closure", e);
@@ -2802,10 +2842,7 @@ function DataProvider({ children }) {
             resultFinalizationGraceDays: fields.resultFinalizationGraceDays,
           }, updatedBy);
           await refetchAcademicYears();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `The academic calendar was updated (${fields.yearName}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`The academic calendar was updated (${fields.yearName}).`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update academic calendar", e);
@@ -2836,10 +2873,7 @@ function DataProvider({ children }) {
         try {
           await timetableService.createEntry({ classId, day, period, subjectId, teacherId: assignment.teacherId });
           await refetchTimetable();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${subject} was added to ${cls.grade}${cls.section}'s timetable on ${day}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${subject} was added to ${cls.grade}${cls.section}'s timetable on ${day}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to create timetable entry", e);
@@ -2880,12 +2914,11 @@ function DataProvider({ children }) {
         try {
           await attendanceService.savePeriodAttendance({ timetableEntryId, date, records, markedBy });
           await refetchAttendance();
-          commit((d) => {
-            const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
-            const cls = entry ? d.classes.find((c) => c.id === entry.classId) : null;
-            d.activities = [{ id: uid("act"), text: `Period ${entry?.period ?? ""} attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          {
+            const entry = (db.timetableEntries || []).find((e) => e.id === timetableEntryId);
+            const cls = entry ? (db.classes || []).find((c) => c.id === entry.classId) : null;
+            await logActivityFeed(`Period ${entry ? entry.period : ""} attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`);
+          }
           return { ok: true };
         } catch (e) {
           console.error("Failed to save period attendance", e);
@@ -2974,27 +3007,28 @@ function DataProvider({ children }) {
         const existing = db.substitutions.find((s) => s.timetableEntryId === timetableEntryId && s.date === date);
         const previousSubstituteId = existing && existing.substituteTeacherId !== substituteTeacherId ? existing.substituteTeacherId : null;
         try {
-          await timetableService.upsertSubstitution({
+          const subRow = await timetableService.upsertSubstitution({
             timetableEntryId, date, originalTeacherId: entry.teacherId, substituteTeacherId, assignedBy,
           });
           await refetchTimetable();
-          commit((d) => {
-            const cls = d.classes.find((c) => c.id === entry.classId);
-            const originalTeacher = d.users.find((u) => u.id === entry.teacherId);
-            if (previousSubstituteId) {
-              d.notifications = [{ id: uid("notif"), userId: previousSubstituteId, title: "Substitute coverage changed", message: `You're no longer covering ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period} today — ${substitute.name} will cover it instead.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-            }
-            const studentIds = d.students.filter((s) => s.classId === entry.classId).map((s) => s.id);
-            const parentIds = new Set();
-            d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
-            parentIds.forEach((pid) => {
-              d.notifications = [{ id: uid("notif"), userId: pid, title: "Class schedule changed", message: `Today's ${entry.subject} class for ${cls ? cls.grade + cls.section : ""} will be covered by ${substitute.name} — ${originalTeacher?.name || "the usual teacher"} is away today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
+          const cls = (db.classes || []).find((c) => c.id === entry.classId);
+          const originalTeacher = (db.users || []).find((u) => u.id === entry.teacherId);
+          const entrySlot = computePeriodSchedule(db.timetableConfig).periods.find((p) => p.period === entry.period);
+          await logActivityFeed(`${substitute.name} will substitute for ${originalTeacher ? originalTeacher.name : "a teacher"} in ${cls ? cls.grade + cls.section : ""} ${entry.subject} today.`);
+          // Phase 6: notify_substitute_assigned fans out to the class's parents + the incoming
+          // substitute (server-derived) + the replaced teacher (id passed since it's gone from the
+          // row after the upsert). Titles are fixed server-side.
+          if (subRow && subRow.id) {
+            await dispatchNotify("notify_substitute_assigned", {
+              p_substitution_id: subRow.id,
+              p_class_message: `Today's ${entry.subject} class for ${cls ? cls.grade + cls.section : ""} will be covered by ${substitute.name} — ${originalTeacher ? originalTeacher.name : "the usual teacher"} is away today.`,
+              p_substitute_message: `Please cover ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period}${entrySlot ? ` (${entrySlot.startLabel}–${entrySlot.endLabel})` : ""}.`,
+              p_previous_substitute_id: previousSubstituteId,
+              p_previous_message: previousSubstituteId
+                ? `You're no longer covering ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period} today — ${substitute.name} will cover it instead.`
+                : null,
             });
-            const entrySlot = computePeriodSchedule(d.timetableConfig).periods.find((p) => p.period === entry.period);
-            d.notifications = [{ id: uid("notif"), userId: substituteTeacherId, title: "You're covering a class today", message: `Please cover ${entry.subject} for ${cls ? cls.grade + cls.section : ""}, period ${entry.period}${entrySlot ? ` (${entrySlot.startLabel}–${entrySlot.endLabel})` : ""}.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-            d.activities = [{ id: uid("act"), text: `${substitute.name} will substitute for ${originalTeacher?.name || "a teacher"} in ${cls ? cls.grade + cls.section : ""} ${entry.subject} today.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          }
           return { ok: true };
         } catch (e) {
           console.error("Failed to assign substitute", e);
@@ -3007,11 +3041,12 @@ function DataProvider({ children }) {
         try {
           await timetableService.deleteSubstitution(timetableEntryId, date);
           await refetchTimetable();
-          commit((d) => {
-            const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
-            const cls = entry ? d.classes.find((c) => c.id === entry.classId) : null;
-            d.notifications = [{ id: uid("notif"), userId: sub.substituteTeacherId, title: "Substitute coverage cancelled", message: `You're no longer needed to cover ${entry?.subject || "that period"} for ${cls ? cls.grade + cls.section : ""} today.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-            return d;
+          const entry = (db.timetableEntries || []).find((e) => e.id === timetableEntryId);
+          const cls = entry ? (db.classes || []).find((c) => c.id === entry.classId) : null;
+          // Phase 6: notify_substitute_removed -- one note to the ex-substitute, title fixed server-side.
+          await dispatchNotify("notify_substitute_removed", {
+            p_substitute_teacher_id: sub.substituteTeacherId,
+            p_message: `You're no longer needed to cover ${entry ? entry.subject : "that period"} for ${cls ? cls.grade + cls.section : ""} today.`,
           });
           return { ok: true };
         } catch (e) {
@@ -3068,10 +3103,7 @@ function DataProvider({ children }) {
             actorId,
           );
           await refetchTimetable();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Timetable settings were updated (${periodsCount} periods, starting ${to12Hour(candidate.startTime)}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Timetable settings were updated (${periodsCount} periods, starting ${to12Hour(candidate.startTime)}).`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update timetable settings", e);
@@ -3087,7 +3119,7 @@ function DataProvider({ children }) {
         try {
           const ft = await feeService.createFeeType(data);
           await refetchFees();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was added as a new fee type.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`${ft.name} was added as a new fee type.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to create fee type", e);
@@ -3098,7 +3130,7 @@ function DataProvider({ children }) {
         try {
           const ft = await feeService.updateFeeType(id, patch);
           await refetchFees();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was updated.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`${ft.name} was updated.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update fee type", e);
@@ -3146,11 +3178,10 @@ function DataProvider({ children }) {
           }
           await feeService.materializeForSchedule(schedule.id, todayKeyStr(), "YEAR_ROLLOUT");
           await refetchFees();
-          commit((d) => {
-            const yr = d.academicYears.find((y) => y.id === academicYearId);
-            d.activities = [{ id: uid("act"), text: `${ft.name} was rolled out for ${formatAcademicYearLabel(yr)} (monthly installments).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          {
+            const yr2 = (db.academicYears || []).find((y) => y.id === academicYearId);
+            await logActivityFeed(`${ft.name} was rolled out for ${formatAcademicYearLabel(yr2)} (monthly installments).`);
+          }
           return { ok: true, message: `${ft.name} rolled out for this year — monthly installments generated.` };
         } catch (e) {
           console.error("Failed to roll out fee type", e);
@@ -3203,7 +3234,7 @@ function DataProvider({ children }) {
             await feeService.deleteFeeType(id);
           }
           await refetchFees();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `${ft.name} was ${hasSchedules ? "archived" : "removed"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`${ft.name} was ${hasSchedules ? "archived" : "removed"}.`);
           return hasSchedules
             ? { ok: true, archived: true, message: `${ft.name} has fee schedules and can't be deleted — it was archived instead, to keep financial history intact.` }
             : { ok: true, archived: false, message: `${ft.name} was removed from the fee list.` };
@@ -3255,14 +3286,10 @@ function DataProvider({ children }) {
 
           await paymentService.voidPayment(paymentId, trimmedReason, actorId, actorRole || actor?.role || null, actor?.name || null);
           await Promise.all([refetchPayments(), refetchFees()]);
-          commit((d) => {
-            d.activities = [{
-              id: uid("act"),
-              text: `${formatMoney(payment?.amountTotal || 0)} payment for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment?.receiptNo || "—"}) was voided by ${actor?.name || "an admin"}.`,
-              createdAt: Date.now(), navigation: { page: "payments", studentId: studentIds[0] || null, paymentId, receiptNo: payment?.receiptNo },
-            }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(
+            `${formatMoney(payment?.amountTotal || 0)} payment for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment?.receiptNo || "—"}) was voided by ${actor?.name || "an admin"}.`,
+            { page: "payments", studentId: studentIds[0] || null, paymentId, receiptNo: payment?.receiptNo },
+          );
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to void payment", e);
@@ -3270,15 +3297,23 @@ function DataProvider({ children }) {
         }
       },
 
-      sendPaymentReminder({ parentIds, message, image, feeTypeName }, sentBy) {
-        commit((d) => {
-          const title = feeTypeName ? `Payment reminder — ${feeTypeName}` : "Payment reminder";
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title, message, image: image || null, read: false, createdAt: Date.now(), type: "PAYMENT", navigation: { page: "payments" } }, ...d.notifications];
+      // Phase 6: notify_payment_reminder is the ONE notify_* RPC that takes a caller-supplied
+      // recipient list -- Finance deliberately picks parents to remind, the body is Finance-authored
+      // free text, and every id is still validated server-side to an ACTIVE PARENT profile.
+      async sendPaymentReminder({ parentIds, message, image, feeTypeName }, sentBy) {
+        try {
+          await dispatchNotify("notify_payment_reminder", {
+            p_parent_ids: parentIds,
+            p_message: message,
+            p_fee_type_name: feeTypeName || null,
+            p_image: image || null,
           });
-          d.activities = [{ id: uid("act"), text: `A payment reminder was sent to ${parentIds.length} parent${parentIds.length === 1 ? "" : "s"}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
-        });
+          await logActivityFeed(`A payment reminder was sent to ${parentIds.length} parent${parentIds.length === 1 ? "" : "s"}.`);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to send payment reminder", e);
+          return { ok: false, message: e.message || "Couldn't send the reminder." };
+        }
       },
 
       // `academicYearId` defaults to the current year — see findOrCreateResultRecord for why it
@@ -3366,10 +3401,7 @@ function DataProvider({ children }) {
           await resultService.saveComponent({ resultId, component, score: nextScore, max, sharedWithParents: nextShared, updatedBy: actorId });
           await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component, action: "COMPONENT_UPDATED", diff, reason: reason || null });
           await refetchResults();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${ASSESSMENT_COMPONENT_LABEL[component]} recorded for ${studentFullName(student)} in ${subject} (${semester}).`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${ASSESSMENT_COMPONENT_LABEL[component]} recorded for ${studentFullName(student)} in ${subject} (${semester}).`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to save result component", e);
@@ -3394,16 +3426,22 @@ function DataProvider({ children }) {
             await resultService.addAudit({ resultId: r.id, studentId: r.student_id, classId, subjectId, semester, component: null, action: "PUBLISHED", diff: [{ field: "publishStatus", from: "DRAFT", to: "PUBLISHED" }], reason: null });
           }
           await refetchResults();
-          commit((d) => {
-            published.forEach((r) => {
-              const student = d.students.find((s) => s.id === r.student_id);
-              d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(r.student_id)).forEach((p) => {
-                d.notifications = [{ id: uid("notif"), userId: p.id, title: `Results published — ${subject}`, message: `${student ? student.firstName : "Your child"}'s ${subject} results for ${semester} are ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId: r.student_id, semester } }, ...d.notifications];
-              });
-            });
-            d.activities = [{ id: uid("act"), text: `${subject} ${semester} results published for ${published.length} student${published.length === 1 ? "" : "s"}.`, createdAt: Date.now(), navigation: { page: "exams", classId, subject, semester } }, ...d.activities];
-            return d;
+          // Phase 6: notify_results_published re-checks each published row (class+subject+semester+
+          // year), fans one notification to the parents of the surviving set, idempotent via
+          // results.publish_notified_at.
+          await dispatchNotify("notify_results_published", {
+            p_class_id: classId,
+            p_subject_id: subjectId,
+            p_semester: semester,
+            p_academic_year_id: academicYearId,
+            p_student_ids: published.map((r) => r.student_id),
+            p_title: `Results published — ${subject}`,
+            p_message: `Your child's ${subject} results for ${semester} are ready to view.`,
           });
+          await logActivityFeed(
+            `${subject} ${semester} results published for ${published.length} student${published.length === 1 ? "" : "s"}.`,
+            { page: "exams", classId, subject, semester },
+          );
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to publish results", e);
@@ -3421,10 +3459,7 @@ function DataProvider({ children }) {
           await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "LOCKED", diff: [{ field: "publishStatus", from, to: "LOCKED" }], reason: null });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${record.subject} ${record.semester} result locked for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to lock result", e);
@@ -3447,10 +3482,7 @@ function DataProvider({ children }) {
           await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "UNLOCKED", diff: [{ field: "publishStatus", from, to: toStatus }], reason: reason.trim() });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result unlocked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${record.subject} ${record.semester} result unlocked for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to unlock result", e);
@@ -3482,10 +3514,7 @@ function DataProvider({ children }) {
           await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component: null, action: "AUTO_LOCK_OVERRIDDEN", diff: [{ field: "autoLockOverride", from: null, to: true }], reason: reason.trim() });
           await refetchResults();
           const student = db.students.find((s) => s.id === studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${subject} ${semester} result unlocked (auto-lock override) for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${subject} ${semester} result unlocked (auto-lock override) for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to override auto-lock", e);
@@ -3505,10 +3534,7 @@ function DataProvider({ children }) {
           await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "AUTO_LOCK_REINSTATED", diff: [{ field: "autoLockOverride", from: true, to: null }], reason: null });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${record.subject} ${record.semester} result re-locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${record.subject} ${record.semester} result re-locked for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to reinstate auto-lock", e);
@@ -3634,37 +3660,27 @@ function DataProvider({ children }) {
       // exam_announcements_insert). The parent + head-teacher notification fan-out stays on the
       // mock bridge (locked Phase 2 decision — notify_exam_announcement exists but isn't wired).
       async announceExam({ title, audience, date, message, priority }, authorId) {
+        let created;
         try {
-          await examService.create({ title, message, audience, priority: priority || "Important", examDate: date, authorId });
+          created = await examService.create({ title, message, audience, priority: priority || "Important", examDate: date, authorId });
           await refetchExamAnnouncements();
         } catch (e) {
           console.error("Failed to announce exam", e);
           return { ok: false, message: /row-level security|violates/i.test(e.message || "") ? "Only the Owner or Educational Director can announce an exam." : (e.message || "Couldn't announce the exam.") };
         }
-        commit((d) => {
-          let targetClasses = [];
-          if (audience.type === "ALL") targetClasses = d.classes;
-          else if (audience.type === "GRADE") targetClasses = d.classes.filter((c) => c.grade === audience.grade);
-          else if (audience.type === "SECTION") targetClasses = d.classes.filter((c) => c.grade === audience.grade && c.section === audience.section);
-
-          const studentIds = d.students.filter((s) => targetClasses.some((c) => c.id === s.classId)).map((s) => s.id);
-          const parentIds = new Set();
-          d.users.filter((u) => u.role === ROLES.PARENT).forEach((p) => { if ((p.childIds || []).some((cid) => studentIds.includes(cid))) parentIds.add(p.id); });
-          parentIds.forEach((pid) => {
-            const parentUser = d.users.find((u) => u.id === pid);
-            const childId = (parentUser?.childIds || []).find((cid) => studentIds.includes(cid)) || null;
-            d.notifications = [{ id: uid("notif"), userId: pid, title: `Upcoming exam: ${title}`, message: `${message} (${fmtDate(date)})`, read: false, createdAt: Date.now(), type: "EXAM", navigation: { page: "exams", studentId: childId } }, ...d.notifications];
-          });
-
-          const headTeacherClassId = new Map();
-          targetClasses.forEach((c) => { if (c.headTeacherId && !headTeacherClassId.has(c.headTeacherId)) headTeacherClassId.set(c.headTeacherId, c.id); });
-          headTeacherClassId.forEach((classId, tid) => {
-            d.notifications = [{ id: uid("notif"), userId: tid, title: `Exam announced: ${title}`, message: `${title} was announced for your class on ${fmtDate(date)}. Please enter results once it's complete.`, read: false, createdAt: Date.now(), type: "EXAM", navigation: { page: "exams", classId } }, ...d.notifications];
-          });
-
-          d.activities = [{ id: uid("act"), text: `${title} was announced for ${audience.type === "ALL" ? "the whole school" : audience.type === "GRADE" ? audience.grade : `${audience.grade}${audience.section}`}.`, createdAt: Date.now() }, ...d.activities];
-          return d;
+        // Phase 6: notify_exam_announcement fans out to the parents of students in the targeted
+        // classes AND those classes' head teachers, with per-group wording; server derives every
+        // recipient, idempotent via exam_announcements.notified_at.
+        await dispatchNotify("notify_exam_announcement", {
+          p_exam_announcement_id: created.id,
+          p_parent_title: `Upcoming exam: ${title}`,
+          p_parent_message: `${message} (${fmtDate(date)})`,
+          p_teacher_title: `Exam announced: ${title}`,
+          p_teacher_message: `${title} was announced for your class on ${fmtDate(date)}. Please enter results once it's complete.`,
+          p_parent_navigation: { page: "exams" },
+          p_teacher_navigation: { page: "exams" },
         });
+        await logActivityFeed(`${title} was announced for ${audience.type === "ALL" ? "the whole school" : audience.type === "GRADE" ? audience.grade : `${audience.grade}${audience.section}`}.`);
         return { ok: true };
       },
 
@@ -3672,19 +3688,20 @@ function DataProvider({ children }) {
       // Notification to the parent stays on the mock bridge.
       async createBehaviorRecord(payload) {
         try {
-          await behaviorService.create(payload);
+          const created = await behaviorService.create(payload);
           await refetchBehavior();
-          commit((d) => {
-            const student = d.students.find((s) => s.id === payload.studentId);
-            d.activities = [{ id: uid("act"), text: `A ${payload.type.toLowerCase()} behavior record was added for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            if (payload.parentNotified) {
-              const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(payload.studentId)).map((u) => u.id);
-              parentIds.forEach((pid) => {
-                d.notifications = [{ id: uid("notif"), userId: pid, title: `Behavior record — ${student ? computeStudentIdentity(d, student).display : "a student"}`, message: `${payload.type}: ${(payload.description || "").slice(0, 80)}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId: payload.studentId } }, ...d.notifications];
-              });
-            }
-            return d;
-          });
+          const student = (db.students || []).find((s) => s.id === payload.studentId);
+          await logActivityFeed(`A ${payload.type.toLowerCase()} behavior record was added for ${student ? studentFullName(student) : "a student"}.`);
+          // Phase 6: notify_behavior_record fans out to the student's parents -- only when the
+          // record was flagged parent_notified (RPC re-checks that), idempotent via notified_at.
+          if (payload.parentNotified && created && created.id) {
+            await dispatchNotify("notify_behavior_record", {
+              p_behavior_record_id: created.id,
+              p_title: `Behavior record — ${student ? computeStudentIdentity(db, student).display : "a student"}`,
+              p_message: `${payload.type}: ${(payload.description || "").slice(0, 80)}`,
+              p_navigation: { page: "behavior", studentId: payload.studentId },
+            });
+          }
           return { ok: true };
         } catch (e) {
           console.error("Failed to add behavior record", e);
@@ -3707,26 +3724,18 @@ function DataProvider({ children }) {
             action: `Suspended ${startDate} to ${endDate}`, parentNotified: true,
           }).catch((e) => console.error("Failed to log suspension behavior record", e));
           await Promise.all([refetchStudents(), refetchEnrollments(), refetchBehavior()]);
-          commit((d) => {
-            const s = updated;
-            const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
-            parentIds.forEach((pid) => {
-              d.notifications = [{ id: uid("notif"), userId: pid, title: `Suspension notice — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended: ${reason}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
-            });
-            // The student's teacher(s) need to know too — head teacher of their class, plus every
-            // subject teacher assigned to it, so no one keeps expecting the student in class.
-            if (s.classId) {
-              const cls = d.classes.find((c) => c.id === s.classId);
-              const teacherIds = new Set();
-              if (cls?.headTeacherId) teacherIds.add(cls.headTeacherId);
-              d.teacherAssignments.filter((ta) => ta.classId === s.classId).forEach((ta) => teacherIds.add(ta.teacherId));
-              teacherIds.forEach((tid) => {
-                d.notifications = [{ id: uid("notif"), userId: tid, title: `Student suspended — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended (${fmtDate(startDate)}–${fmtDate(endDate)}): ${reason}. They should not be marked in daily attendance during this period.`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
-              });
-            }
-            d.activities = [{ id: uid("act"), text: `${studentFullName(s)} was suspended.`, createdAt: Date.now() }, ...d.activities];
-            return d;
+          const s = updated;
+          // Phase 6: notify_student_suspension fans out to the student's parents AND the class's
+          // head teacher + subject teachers, with per-group wording -- all recipients derived
+          // server-side.
+          await dispatchNotify("notify_student_suspension", {
+            p_student_id: studentId,
+            p_parent_title: `Suspension notice — ${computeStudentIdentity(db, s).display}`,
+            p_parent_message: `${studentFullName(s)} has been suspended: ${reason}`,
+            p_teacher_title: `Student suspended — ${computeStudentIdentity(db, s).display}`,
+            p_teacher_message: `${studentFullName(s)} has been suspended (${fmtDate(startDate)}–${fmtDate(endDate)}): ${reason}. They should not be marked in daily attendance during this period.`,
           });
+          await logActivityFeed(`${studentFullName(s)} was suspended.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to suspend student", e);
@@ -3734,126 +3743,131 @@ function DataProvider({ children }) {
         }
       },
 
-      createAnnouncement(data) {
-        commit((d) => {
-          const now = Date.now();
-          const publishAt = data.publishAt || null;
-          const isDueNow = !publishAt || publishAt <= now;
-          const ann = { id: uid("ann"), ...data, pinned: !!data.pinned, publishAt, expiresAt: data.expiresAt || null, publishNotified: isDueNow, createdAt: now };
-          d.announcements.push(ann);
+      // Phase 6: real Supabase. Insert the announcements row (RLS: Owner/ED/Finance; author
+      // stamped server-side), then -- if due now -- fan the "New announcement" notifications out
+      // via notify_announcement (audience resolved server-side, idempotent). A future-dated one
+      // is left for checkScheduledAnnouncements to dispatch once its time arrives.
+      async createAnnouncement(payload) {
+        try {
+          const ann = await announcementService.create(payload);
+          const publishAt = payload.publishAt || null;
+          const isDueNow = !publishAt || publishAt <= Date.now();
           if (isDueNow) {
-            dispatchAnnouncementNotifications(d, ann);
-            d.activities = [{ id: uid("act"), text: `Announcement "${data.title}" was published.`, createdAt: now }, ...d.activities];
+            await announcementService.dispatch(ann.id, announcementNotifyText(db, ann)).catch((e) => console.error("notify_announcement", e));
+            await logActivityFeed(`Announcement "${ann.title}" was published.`);
           } else {
-            d.activities = [{ id: uid("act"), text: `Announcement "${data.title}" scheduled for ${fmtDate(publishAt)}.`, createdAt: now }, ...d.activities];
+            await logActivityFeed(`Announcement "${ann.title}" scheduled for ${fmtDate(publishAt)}.`);
           }
-          return d;
-        });
+          await Promise.all([refetchAnnouncements(), refetchNotifications()]);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to create announcement", e);
+          return { ok: false, message: e.message || "Couldn't publish the announcement." };
+        }
       },
 
-      // Scheduled announcements have no "event" to hook a notification dispatch to — nothing
-      // happens when their publish time arrives except time passing — so, like
-      // checkLeaveCompletions, this is polled on an interval. `publishNotified` keeps it
-      // idempotent no matter how many times it runs.
-      checkScheduledAnnouncements() {
+      // Scheduled announcements have no "event" to hook a dispatch to -- polled on an interval
+      // (see the useEffect near the bottom). notify_announcement is idempotent via
+      // announcements.publish_notified, and only the author / an Owner/ED can dispatch, so this
+      // only bothers calling it for announcements the current session authored.
+      async checkScheduledAnnouncements() {
         const now = Date.now();
-        if (!db.announcements.some((a) => a.publishAt && !a.publishNotified && a.publishAt <= now)) return;
-        commit((d) => {
-          const due = d.announcements.filter((a) => a.publishAt && !a.publishNotified && a.publishAt <= Date.now());
-          if (due.length === 0) return d;
-          due.forEach((ann) => {
-            ann.publishNotified = true;
-            dispatchAnnouncementNotifications(d, ann);
-            d.activities = [{ id: uid("act"), text: `Announcement "${ann.title}" was published.`, createdAt: Date.now() }, ...d.activities];
-          });
-          return d;
-        });
+        const due = (db.announcements || []).filter(
+          (a) => a.publishAt && !a.publishNotified && a.publishAt <= now && a.authorId === sessionUserId,
+        );
+        if (due.length === 0) return;
+        for (const ann of due) {
+          await announcementService.dispatch(ann.id, announcementNotifyText(db, ann)).catch((e) => console.error("notify_announcement", e));
+          await logActivityFeed(`Announcement "${ann.title}" was published.`);
+        }
+        await Promise.all([refetchAnnouncements(), refetchNotifications()]);
       },
 
-      toggleAnnouncementPinned(id) {
-        commit((d) => { const a = d.announcements.find((x) => x.id === id); if (a) a.pinned = !a.pinned; return d; });
+      async toggleAnnouncementPinned(id) {
+        const a = (db.announcements || []).find((x) => x.id === id);
+        try {
+          await announcementService.togglePinned(id, !(a && a.pinned));
+          await refetchAnnouncements();
+        } catch (e) { console.error("Failed to pin/unpin announcement", e); }
       },
 
-      markNotificationRead(id) {
-        commit((d) => { const n = d.notifications.find((x) => x.id === id); if (n) n.read = true; return d; });
+      // Read-state lives in the real notifications table (notifications_update = own rows only,
+      // guard trigger allows only the `read` column). Idempotent -- re-marking is a no-op write.
+      async markNotificationRead(id) {
+        try {
+          await notificationService.markRead(id);
+          await refetchNotifications();
+        } catch (e) { console.error("Failed to mark notification read", e); }
       },
-      markAllNotificationsRead(userId) {
-        commit((d) => { d.notifications.forEach((n) => { if (n.userId === userId) n.read = true; }); return d; });
+      async markAllNotificationsRead() {
+        try {
+          await notificationService.markAllRead();
+          await refetchNotifications();
+        } catch (e) { console.error("Failed to mark all notifications read", e); }
       },
       // Bulk-clears the unread notifications behind one sidebar section's badge the moment its
-      // page is opened — e.g. visiting Homework marks every unread HOMEWORK notification read.
-      // Messages/Announcements/Notifications keep their own finer-grained (per-item) read
-      // tracking and are never routed through this (see the callers).
-      markNotificationsForPageRead(userId, pageKey) {
+      // page is opened. Runs on every navigation, so it no-ops fast when there's nothing to do.
+      async markNotificationsForPageRead(userId, pageKey) {
         if (!pageKey) return;
-        // Guard against committing (deep-clones db, writes localStorage) on every navigation —
-        // this runs on every page change, so most calls have nothing to update.
-        const hasUnread = db.notifications.some((n) => n.userId === userId && !n.read && notificationPageKey(n) === pageKey);
-        if (!hasUnread) return;
-        commit((d) => {
-          d.notifications.forEach((n) => { if (n.userId === userId && !n.read && notificationPageKey(n) === pageKey) n.read = true; });
-          return d;
-        });
+        const ids = (db.notifications || [])
+          .filter((n) => n.userId === userId && !n.read && notificationPageKey(n) === pageKey)
+          .map((n) => n.id);
+        if (ids.length === 0) return;
+        try {
+          await notificationService.markManyRead(ids);
+          await refetchNotifications();
+        } catch (e) { console.error("Failed to mark section notifications read", e); }
       },
 
-      // Returns the conversation id immediately (never null) so callers like MessagesPage's
-      // "open this conversation right now" effect can synchronously setActiveConv(id) without
-      // waiting for a re-render. This deliberately does NOT read the id back out of the commit()
-      // mutator (as most other DataContext creators do) — setDb's functional updater is only
-      // guaranteed to run synchronously for the *first* queued update on a fiber; a second
-      // getOrCreateConversation call in the same tick (e.g. React StrictMode's intentional double
-      // effect-invocation in dev, or any caller that ends up invoking this twice before a render
-      // lands) would otherwise read back `newId` before its own commit mutator has actually run,
-      // getting `null`. Using a deterministic id derived from the sorted participant pair — instead
-      // of a random uid() minted inside the mutator — means every call for the same two users
-      // converges on the identical id up front, so duplicate/racing calls are harmless: whichever
-      // commit runs first creates the row, and any later one for the same pair is a no-op guarded
-      // by id, and every caller ends up pointed at the same, real conversation.
-      getOrCreateConversation(userIdA, userIdB) {
-        const existing = db.conversations.find((c) => c.participantIds.includes(userIdA) && c.participantIds.includes(userIdB));
+      // get_or_create_conversation() (SECURITY DEFINER, hardened to require the caller be one of
+      // the pair) returns the real conversation id -- now async, callers await it.
+      async getOrCreateConversation(userIdA, userIdB) {
+        const existing = (db.conversations || []).find(
+          (c) => c.participantIds.includes(userIdA) && c.participantIds.includes(userIdB),
+        );
         if (existing) return existing.id;
-        const newId = `conv_${[userIdA, userIdB].sort().join("_")}`;
-        commit((d) => {
-          if (!d.conversations.some((c) => c.id === newId)) {
-            d.conversations.push({ id: newId, participantIds: [userIdA, userIdB] });
-          }
-          return d;
-        });
-        return newId;
+        const id = await messageService.getOrCreateConversation(userIdA, userIdB);
+        await refetchMessages();
+        return id;
       },
 
-      sendMessage(conversationId, senderId, text) {
-        commit((d) => {
-          d.messages.push({ id: uid("msg"), conversationId, senderId, text, createdAt: Date.now(), read: false });
-          const conv = d.conversations.find((c) => c.id === conversationId);
-          const recipientId = conv?.participantIds.find((id) => id !== senderId);
-          if (recipientId) {
-            const sender = d.users.find((u) => u.id === senderId);
-            d.notifications = [{ id: uid("notif"), userId: recipientId, title: `New message from ${sender?.name}`, message: text.slice(0, 100), read: false, createdAt: Date.now(), type: "MESSAGE", navigation: { page: "messages", userId: senderId } }, ...d.notifications];
-          }
-          return d;
-        });
+      async sendMessage(conversationId, senderId, text) {
+        const body = (text || "").trim();
+        if (!body || !conversationId) return { ok: false };
+        try {
+          const msg = await messageService.send({ conversationId, senderId, text: body });
+          const sender = (db.users || []).find((u) => u.id === senderId);
+          await messageService
+            .notify(msg.id, { title: `New message from ${sender ? sender.name : "someone"}`, message: body.slice(0, 100) })
+            .catch((e) => console.error("notify_message", e));
+          await Promise.all([refetchMessages(), refetchNotifications()]);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to send message", e);
+          return { ok: false, message: e.message || "Couldn't send the message." };
+        }
       },
-      markMessagesRead(conversationId, userId) {
-        commit((d) => { d.messages.forEach((m) => { if (m.conversationId === conversationId && m.senderId !== userId) m.read = true; }); return d; });
+      async markMessagesRead(conversationId, userId) {
+        try {
+          await messageService.markRead(conversationId, userId);
+          await refetchMessages();
+        } catch (e) { console.error("Failed to mark messages read", e); }
       },
 
-      recordTeacherAbsence({ teacherId, subject, classId, reason, replacementSubject }) {
-        commit((d) => {
-          const teacher = d.users.find((u) => u.id === teacherId);
-          const cls = d.classes.find((c) => c.id === classId);
-          d.activities = [{ id: uid("act"), text: `${teacher?.name} marked absent (${reason}). ${subject} for ${cls?.grade}${cls?.section} replaced with ${replacementSubject}.`, createdAt: Date.now() }, ...d.activities];
-          const parentIds = parentsOfClass(classId);
-          parentIds.forEach((pid) => {
-            d.notifications = [{ id: uid("notif"), userId: pid, title: "Class schedule changed", message: `Today's ${subject} class has been replaced by ${replacementSubject}.`, read: false, createdAt: Date.now(), type: "SCHEDULE", navigation: { page: "timetable" } }, ...d.notifications];
-          });
-          return d;
-        });
+      // Dead code (no call site anywhere in the app). The substitute flow that IS used is
+      // assignSubstitute / removeSubstitute below.
+      async recordTeacherAbsence({ teacherId, subject, classId, reason, replacementSubject }) {
+        const teacher = (db.users || []).find((u) => u.id === teacherId);
+        const cls = (db.classes || []).find((c) => c.id === classId);
+        await logActivityFeed(`${teacher ? teacher.name : "A teacher"} marked absent (${reason}). ${subject} for ${cls ? cls.grade + cls.section : ""} replaced with ${replacementSubject}.`);
       },
 
       /* ---------- Staff & Payroll (Phase 1A) ---------- */
-      logActivity(text) {
-        commit((d) => { d.activities = [{ id: uid("act"), text, createdAt: Date.now() }, ...d.activities]; return d; });
+      // Phase 6: real Supabase activity feed via log_activity (SECURITY DEFINER, staff-only).
+      // Best-effort -- activityService.log swallows a "not staff" rejection (e.g. a PARENT
+      // password change) rather than throwing.
+      async logActivity(text, navigation = null) {
+        await logActivityFeed(text, navigation);
       },
 
       async createStaff(data) {
@@ -3863,10 +3877,7 @@ function DataProvider({ children }) {
             phone: data.phone, salary: data.salary, photo: data.photo, hasShifts: data.hasShifts, bankAccount: data.bankAccount,
           });
           await refetchStaff();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${created.name} was added to staff as ${created.position}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${created.name} was added to staff as ${created.position}.`);
           return created.id;
         } catch (e) {
           console.error("Failed to create staff", e);
@@ -3892,10 +3903,7 @@ function DataProvider({ children }) {
           // Payroll while Accounts & Access says disabled. See setAccountStatus for the mirror.
           if (s?.userId) await staffService.setProfileStatus(s.userId, status);
           await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${s?.name || "A staff member"}'s status was changed to ${status}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${s?.name || "A staff member"}'s status was changed to ${status}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to set staff status", e);
@@ -3918,10 +3926,7 @@ function DataProvider({ children }) {
           await staffService.update(staffId, { employmentStatus: "ENDED", employmentEndDate: endDate, status: "DISABLED" });
           if (s.userId) await staffService.setProfileStatus(s.userId, "DISABLED");
           await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${s.name}'s employment ended effective ${endDate}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${s.name}'s employment ended effective ${endDate}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to end employment", e);
@@ -3935,10 +3940,7 @@ function DataProvider({ children }) {
           await staffService.update(staffId, { employmentStatus: "ACTIVE", employmentEndDate: null, status: "ACTIVE" });
           if (s.userId) await staffService.setProfileStatus(s.userId, "ACTIVE");
           await Promise.all([refetchStaff(), refetchTeacherAccounts(), refetchDirectorAccounts()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${s.name}'s employment was reactivated.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${s.name}'s employment was reactivated.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to reactivate employment", e);
@@ -3977,17 +3979,19 @@ function DataProvider({ children }) {
             advanceApplied: Math.max(0, Number(advanceApplied) || 0), recordedBy,
           });
           await refetchPayrollPayments();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${monthLabel(month)}).`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
-            if (s.userId) {
-              d.notifications = [{
-                id: uid("notif"), userId: s.userId, title: "Salary Paid",
-                message: `Your ${monthLabel(month)} salary of ${formatMoney(payment.amount)} has been recorded as paid. Tap to view your payslip.`,
-                read: false, createdAt: Date.now(), type: "PAYROLL", paymentId: payment.id,
-              }, ...d.notifications];
-            }
-            return d;
-          });
+          await logActivityFeed(
+            `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${monthLabel(month)}).`,
+            { page: "payroll", staffId: s.id },
+          );
+          // Phase 6: notify_salary_paid notifies the staff member (server-derived from staff.user_id,
+          // payslip deep-link in navigation.payrollPaymentId, idempotent via notified_at).
+          if (s.userId && payment && payment.id) {
+            await dispatchNotify("notify_salary_paid", {
+              p_payroll_payment_id: payment.id,
+              p_title: "Salary Paid",
+              p_message: `Your ${monthLabel(month)} salary of ${formatMoney(payment.amount)} has been recorded as paid. Tap to view your payslip.`,
+            });
+          }
           return { success: true, payment };
         } catch (e) {
           console.error("Failed to record payroll payment", e);
@@ -4012,18 +4016,20 @@ function DataProvider({ children }) {
           const summaryBefore = computeStaffPayrollSummary(db, staffId) || { advanceBalance: 0 };
           const advance = await payrollService.recordAdvance({ staffId, amount: cash, date, note, recordedBy });
           await refetchSalaryAdvances();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${formatMoney(advance.amount)} salary advance recorded for ${s.name}.`, createdAt: Date.now(), navigation: { page: "payroll", staffId: s.id } }, ...d.activities];
-            if (s.userId) {
-              const newBalance = summaryBefore.advanceBalance + advance.amount;
-              d.notifications = [{
-                id: uid("notif"), userId: s.userId, title: "Salary Advance Recorded",
-                message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}. Your remaining advance balance is ${formatMoney(newBalance)}.`,
-                read: false, createdAt: Date.now(), type: "PAYROLL",
-              }, ...d.notifications];
-            }
-            return d;
-          });
+          await logActivityFeed(
+            `${formatMoney(advance.amount)} salary advance recorded for ${s.name}.`,
+            { page: "payroll", staffId: s.id },
+          );
+          // Phase 6: notify_salary_advance notifies the staff member (server-derived, idempotent
+          // via salary_advances.notified_at).
+          if (s.userId && advance && advance.id) {
+            const newBalance = summaryBefore.advanceBalance + advance.amount;
+            await dispatchNotify("notify_salary_advance", {
+              p_salary_advance_id: advance.id,
+              p_title: "Salary Advance Recorded",
+              p_message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}. Your remaining advance balance is ${formatMoney(newBalance)}.`,
+            });
+          }
           return { success: true, advance };
         } catch (e) {
           console.error("Failed to record salary advance", e);
@@ -4041,7 +4047,7 @@ function DataProvider({ children }) {
           }
           await paymentService.addMethod(trimmed);
           await refetchPayments();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `Payment method "${trimmed}" was added.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`Payment method "${trimmed}" was added.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to create payment method", e);
@@ -4115,7 +4121,7 @@ function DataProvider({ children }) {
           await refetchExpenses();
           const totalAmount = items.reduce((sum, it) => sum + it.lineTotal, 0);
           const label = items.length === 1 ? items[0].itemName : `${items.length} items`;
-          commit((d) => { d.activities = [{ id: uid("act"), text: `${formatMoney(totalAmount)} expense recorded: ${label}.`, createdAt: Date.now(), navigation: { page: "expenses", expenseId: id } }, ...d.activities]; return d; });
+          await logActivityFeed(`${formatMoney(totalAmount)} expense recorded: ${label}.`, { page: "expenses", expenseId: id });
           return { success: true, expense: { id, expenseNo }, warning: receiptWarning };
         } catch (e) {
           console.error("Failed to create expense", e);
@@ -4147,7 +4153,7 @@ function DataProvider({ children }) {
             items, receiptImageUrl, receiptName, receiptType,
           });
           await refetchExpenses();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `Expense ${current.expenseNo || ""} was updated.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`Expense ${current.expenseNo || ""} was updated.`);
           return { success: true, expense: { id } };
         } catch (e) {
           console.error("Failed to update expense", e);
@@ -4160,7 +4166,7 @@ function DataProvider({ children }) {
           if (exp?.receiptStoragePath) await expenseService.removeReceiptObject(exp.receiptStoragePath).catch((err) => console.error("Receipt object not removed", err));
           await expenseService.remove(id);
           await refetchExpenses();
-          commit((d) => { d.activities = [{ id: uid("act"), text: `Expense "${exp?.expenseNo || ""}" was removed.`, createdAt: Date.now() }, ...d.activities]; return d; });
+          await logActivityFeed(`Expense "${exp?.expenseNo || ""}" was removed.`);
           return { success: true };
         } catch (e) {
           console.error("Failed to delete expense", e);
@@ -4180,10 +4186,7 @@ function DataProvider({ children }) {
           const linkedStaff = db.staff.find((s) => s.userId === userId);
           if (linkedStaff) await staffService.update(linkedStaff.id, { status });
           await Promise.all([refetchTeacherAccounts(), refetchDirectorAccounts(), refetchStaff()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${u?.name || "An account"}'s access was set to ${status}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${u?.name || "An account"}'s access was set to ${status}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to set account status", e);
@@ -4207,14 +4210,11 @@ function DataProvider({ children }) {
             });
           } catch (staffErr) {
             await Promise.all([refetchDirectorAccounts(), refetchStaff()]);
-            commit((d) => { d.activities = [{ id: uid("act"), text: `${data.name} was added as ${position}, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`, createdAt: Date.now() }, ...d.activities]; return d; });
+            await logActivityFeed(`${data.name} was added as ${position}, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`);
             return { ok: false, message: `The account was created, but the staff/payroll record failed: ${staffErr.message || "unknown error"}. Add it from the Staff page.`, userId };
           }
           await Promise.all([refetchDirectorAccounts(), refetchStaff()]);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `${data.name} was added as ${position}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`${data.name} was added as ${position}.`);
           return { ok: true, userId };
         } catch (e) {
           console.error(`Failed to create ${position} account`, e);
@@ -4232,10 +4232,7 @@ function DataProvider({ children }) {
           const u = db.users.find((x) => x.id === userId);
           const res = await accountService.resetPassword(userId, newPassword);
           if (!res.ok) return { ok: false, message: res.message || "Couldn't reset the password." };
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Password was reset for ${u?.name || "an account"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Password was reset for ${u?.name || "an account"}.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to reset password", e);
@@ -4317,10 +4314,7 @@ function DataProvider({ children }) {
         try {
           await reportCardService.ensure({ studentId, classId, academicYearId: yearId, generatedBy });
           await refetchReportCards();
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Report card generated for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Report card generated for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to generate report card", e);
@@ -4354,15 +4348,15 @@ function DataProvider({ children }) {
           const flipped = await reportCardService.publish(id, publishedBy);
           await refetchReportCards();
           if (flipped) {
-            const student = db.students.find((s) => s.id === rc.studentId);
-            commit((d) => {
-              const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(rc.studentId)).map((u) => u.id);
-              parentIds.forEach((pid) => {
-                d.notifications = [{ id: uid("notif"), userId: pid, title: `Report card published — ${student?.firstName}`, message: `${student?.firstName}'s report card is ready to view.`, read: false, createdAt: Date.now(), type: "RESULT", navigation: { page: "exams", studentId: rc.studentId, openReportCard: true } }, ...d.notifications];
-              });
-              d.activities = [{ id: uid("act"), text: `Report card published for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-              return d;
+            const student = (db.students || []).find((s) => s.id === rc.studentId);
+            // Phase 6: notify_report_card_published fans out to the student's parents (server-
+            // derived, idempotent via report_cards.publish_notified_at).
+            await dispatchNotify("notify_report_card_published", {
+              p_report_card_id: id,
+              p_title: `Report card published — ${student ? student.firstName : "your child"}`,
+              p_message: `${student ? student.firstName : "Your child"}'s report card is ready to view.`,
             });
+            await logActivityFeed(`Report card published for ${student ? studentFullName(student) : "a student"}.`);
           }
           return { ok: true, message: "" };
         } catch (e) {
@@ -4378,10 +4372,7 @@ function DataProvider({ children }) {
           await reportCardService.lock(id, lockedBy);
           await refetchReportCards();
           const student = db.students.find((s) => s.id === rc.studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Report card locked for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Report card locked for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to lock report card", e);
@@ -4395,10 +4386,7 @@ function DataProvider({ children }) {
           await reportCardService.reopen(id);
           await refetchReportCards();
           const student = db.students.find((s) => s.id === rc.studentId);
-          commit((d) => {
-            d.activities = [{ id: uid("act"), text: `Report card reopened for editing for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-            return d;
-          });
+          await logActivityFeed(`Report card reopened for editing for ${student ? studentFullName(student) : "a student"}.`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to reopen report card", e);
@@ -4436,6 +4424,10 @@ function DataProvider({ children }) {
     feeTypesRaw, feeSchedulesRaw, feeInstallmentsRaw, obligationsRaw, adjustmentsRaw,
     paymentsRaw, allocationsRaw, paymentMethodsRaw, expensesRaw, expenses,
     refetchFees, refetchPayments, refetchExpenses,
+    notificationService, announcementService, messageService, activityService,
+    notificationsRaw, announcementsRaw, messagesRaw, conversationsRaw, activitiesRaw, announcementReadStatsById,
+    refetchNotifications, refetchAnnouncements, refetchMessages, refetchActivities, sessionUserId,
+    logActivityFeed, dispatchNotify,
   ]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not
