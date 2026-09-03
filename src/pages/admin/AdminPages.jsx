@@ -1224,7 +1224,8 @@ function BehaviorModal({ open, onClose, studentId }) {
     // behaviorRecords, which broke every ISO string-range date comparison against it (e.g. the
     // student profile's "Behavior Records" stat, which filters by selectedYear.yearStart/yearEnd).
     run(async () => {
-      await data.createBehaviorRecord({ studentId, ...form });
+      const res = await data.createBehaviorRecord({ studentId, ...form });
+      if (!res?.ok) { toast(res?.message || "Couldn't add the behavior record.", "error"); return; }
       toast("Behavior record added.", "success");
       setForm(empty); onClose();
     });

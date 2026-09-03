@@ -31,6 +31,7 @@ import { createTimetableService } from "../services/timetableService";
 import { createClosureService } from "../services/closureService";
 import { createAttendanceService } from "../services/attendanceService";
 import { createLeaveService } from "../services/leaveService";
+import { createBehaviorService } from "../services/behaviorService";
 import { createHomeworkService } from "../services/homeworkService";
 import { createResultService } from "../services/resultService";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
@@ -705,6 +706,18 @@ function DataProvider({ children }) {
     refetchLeaveRequests().catch((e) => console.error("Failed to load leave requests", e));
   }, [refetchAttendance, refetchLeaveRequests]);
 
+  // Student behavior / discipline: Phase 5 CP2. Real Supabase (behavior_records). RLS: read =
+  // Owner/ED + a Teacher for a class they teach/head + a Parent for their own child (Finance
+  // never); write = Owner + Educational Director only. Notifications stay on the mock bridge.
+  const behaviorService = useMemo(() => createBehaviorService(), []);
+  const [behaviorRecordsRaw, setBehaviorRecordsRaw] = useState([]);
+  const refetchBehavior = useCallback(async () => {
+    const rows = await behaviorService.list().catch(() => []);
+    setBehaviorRecordsRaw(rows);
+    return rows;
+  }, [behaviorService]);
+  useEffect(() => { refetchBehavior().catch((e) => console.error("Failed to load behavior records", e)); }, [refetchBehavior]);
+
   // Homework: Phase 3 checkpoint 1. Real Supabase data (`homework` table) -- same independent-state
   // pattern every earlier converted domain uses. `homework` below resolves the real subject_id to
   // the mock app's subject-NAME convention (like classSubjects/teacherAssignments/timetableEntries)
@@ -970,6 +983,7 @@ function DataProvider({ children }) {
       draft.periodLogs = periodLogsRaw;
       draft.leaveRequests = leaveRequestsRaw;
       draft.ownerLeaveLog = ownerLeaveLogRaw;
+      draft.behaviorRecords = behaviorRecordsRaw;
       draft.homework = homework;
       draft.results = results;
       draft.resultAuditLog = resultAuditLog;
@@ -988,7 +1002,7 @@ function DataProvider({ children }) {
     parentsRaw, childIdsByParent, teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw,
     salaryAdvancesRaw, teacherAccountsRaw, directorAccountsRaw,
     timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw, homework,
-    attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw,
+    attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw, behaviorRecordsRaw,
     results, resultAuditLog, resultEvidence, examAnnouncements, reportCards,
   ]);
 
@@ -1093,6 +1107,7 @@ function DataProvider({ children }) {
       periodLogs: periodLogsRaw,
       leaveRequests: leaveRequestsRaw,
       ownerLeaveLog: ownerLeaveLogRaw,
+      behaviorRecords: behaviorRecordsRaw,
       homework,
       results,
       resultAuditLog,
@@ -1660,10 +1675,11 @@ function DataProvider({ children }) {
           // polymorphic with no FK, so student leave rows are deleted explicitly (RLS delete policy
           // is scoped to can_decide_leave).
           await leaveService.deleteForSubject("STUDENT", id).catch((e) => console.error("Failed to clean up student leave requests", e));
-          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments(), refetchAttendance(), refetchLeaveRequests()]);
+          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments(), refetchAttendance(), refetchLeaveRequests(), refetchBehavior()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
           commit((d) => {
-            d.behaviorRecords = d.behaviorRecords.filter((b) => b.studentId !== id);
+            // attendance / behavior_records / results / obligations all cascade server-side on
+            // student delete — the refetches above pick that up.
             // results + result_audit_log + result_evidence rows cascade-delete in Postgres
             // (student_id is ON DELETE CASCADE on all three) -- refetchResults / refetchResultEvidence
             // above pick that up; the Storage objects were cleaned up just above.
@@ -3652,30 +3668,47 @@ function DataProvider({ children }) {
         return { ok: true };
       },
 
-      createBehaviorRecord(data) {
-        commit((d) => {
-          const record = { id: uid("beh"), ...data, createdAt: Date.now() };
-          d.behaviorRecords.push(record);
-          const student = d.students.find((s) => s.id === data.studentId);
-          d.activities = [{ id: uid("act"), text: `A ${data.type.toLowerCase()} behavior record was added for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
-          if (data.parentNotified) {
-            const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(data.studentId)).map((u) => u.id);
-            parentIds.forEach((pid) => {
-              d.notifications = [{ id: uid("notif"), userId: pid, title: `Behavior record — ${student ? computeStudentIdentity(d, student).display : "a student"}`, message: `${data.type}: ${data.description.slice(0, 80)}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId: data.studentId } }, ...d.notifications];
-            });
-          }
-          return d;
-        });
+      // Real Supabase (behavior_records). RLS: insert = is_owner_or_admin() (canAddBehavior).
+      // Notification to the parent stays on the mock bridge.
+      async createBehaviorRecord(payload) {
+        try {
+          await behaviorService.create(payload);
+          await refetchBehavior();
+          commit((d) => {
+            const student = d.students.find((s) => s.id === payload.studentId);
+            d.activities = [{ id: uid("act"), text: `A ${payload.type.toLowerCase()} behavior record was added for ${student ? studentFullName(student) : "a student"}.`, createdAt: Date.now() }, ...d.activities];
+            if (payload.parentNotified) {
+              const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(payload.studentId)).map((u) => u.id);
+              parentIds.forEach((pid) => {
+                d.notifications = [{ id: uid("notif"), userId: pid, title: `Behavior record — ${student ? computeStudentIdentity(d, student).display : "a student"}`, message: `${payload.type}: ${(payload.description || "").slice(0, 80)}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId: payload.studentId } }, ...d.notifications];
+              });
+            }
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to add behavior record", e);
+          const msg = /row-level security|violates row-level|permission denied/i.test(e.message || "")
+            ? "Only the Owner and Educational Director can add behavior records."
+            : (e.message || "Couldn't add the behavior record.");
+          return { ok: false, message: msg };
+        }
       },
 
       async suspendStudent(studentId, { reason, startDate, endDate, notes }) {
         try {
           const updated = await studentService.update(studentId, { status: "SUSPENDED", suspension: { reason, startDate, endDate, notes } });
           await syncStudentEnrollment(updated);
-          await Promise.all([refetchStudents(), refetchEnrollments()]);
+          // A suspension is logged as a behavior record too (real Supabase now) — RLS insert is
+          // is_owner_or_admin, which suspendStudent's own callers already satisfy.
+          await behaviorService.create({
+            studentId, date: todayKeyStr(), type: "Other", severity: "High",
+            description: `Suspension: ${reason}`, staff: "School Administrator",
+            action: `Suspended ${startDate} to ${endDate}`, parentNotified: true,
+          }).catch((e) => console.error("Failed to log suspension behavior record", e));
+          await Promise.all([refetchStudents(), refetchEnrollments(), refetchBehavior()]);
           commit((d) => {
             const s = updated;
-            d.behaviorRecords.push({ id: uid("beh"), studentId, date: new Date().toISOString().slice(0, 10), type: "Other", severity: "High", description: `Suspension: ${reason}`, staff: "School Administrator", action: `Suspended ${startDate} to ${endDate}`, parentNotified: true, createdAt: Date.now() });
             const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
             parentIds.forEach((pid) => {
               d.notifications = [{ id: uid("notif"), userId: pid, title: `Suspension notice — ${computeStudentIdentity(d, s).display}`, message: `${studentFullName(s)} has been suspended: ${reason}`, read: false, createdAt: Date.now(), type: "BEHAVIOR", navigation: { page: "behavior", studentId } }, ...d.notifications];
@@ -4394,6 +4427,7 @@ function DataProvider({ children }) {
     refetchTimetable, refetchClosures,
     attendanceService, leaveService, attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw,
     refetchAttendance, refetchLeaveRequests,
+    behaviorService, behaviorRecordsRaw, refetchBehavior,
     homeworkService, homework, refetchHomework,
     resultService, examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
     resultEvidenceService, resultEvidence, resultEvidenceRaw, refetchResultEvidence,
