@@ -439,7 +439,8 @@ function StudentLeaveRequestPage({ activeChildId, setActiveChildId }) {
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
     run(async () => {
-      await data.createLeaveRequest({ kind: "STUDENT", subjectId: child.id, requestedBy: auth.currentUser.id, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      const res = await data.createLeaveRequest({ kind: "STUDENT", subjectId: child.id, requestedBy: auth.currentUser.id, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      if (!res?.ok) { toast(res?.message || "Couldn't submit the leave request.", "error"); return; }
       toast("Leave request submitted.", "success");
       setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
     }, { key: `student-leave-request:${child.id}:${form.fromDate}:${form.toDate}` });

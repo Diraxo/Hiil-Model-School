@@ -441,7 +441,8 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
     const records = students.map((s) => ({ studentId: s.id, status: draft[s.id].status, note: draft[s.id]?.note || "" }));
     run(async () => {
-      await data.savePeriodAttendance(entry.id, date, records, auth.currentUser.id);
+      const res = await data.savePeriodAttendance(entry.id, date, records, auth.currentUser.id);
+      if (!res?.ok) { toast(res?.message || "Couldn't save attendance.", "error"); return; }
       toast(`Attendance saved for Period ${entry.period} · ${entry.subject}.`, "success");
       onClose();
     }, { key: `save-period-attendance:${entry.id}:${date}` });

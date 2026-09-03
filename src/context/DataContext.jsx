@@ -29,6 +29,8 @@ import { createStaffService } from "../services/staffService";
 import { createPayrollService } from "../services/payrollService";
 import { createTimetableService } from "../services/timetableService";
 import { createClosureService } from "../services/closureService";
+import { createAttendanceService } from "../services/attendanceService";
+import { createLeaveService } from "../services/leaveService";
 import { createHomeworkService } from "../services/homeworkService";
 import { createResultService } from "../services/resultService";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
@@ -326,6 +328,28 @@ function evidenceErrorMessage(e) {
     return "Unsupported file type — attach a JPEG, PNG, WebP, or PDF.";
   }
   return msg || "Couldn't attach the evidence.";
+}
+
+// Attendance / leave (attendance, staff_attendance, leave_requests + decide_leave_request RPC)
+// equivalent of resultRlsMessage. The attendance_date_guard trigger and decide_leave_request RPC
+// raise plain `raise exception` strings with the real rule ("Attendance cannot be recorded for a
+// future date.", "You are not authorized to decide this leave request.", ...) — pass those
+// through; only genericize the opaque RLS/constraint codes.
+function attendanceErrorMessage(e, fallback) {
+  const msg = e && e.message ? e.message : "";
+  if (/row-level security|violates row-level|permission denied|not authorized/i.test(msg)) {
+    return "You don't have permission to record this — it must be a school day, you must be assigned to (or head of) this class, and you must not be marked absent yourself.";
+  }
+  if (/duplicate key|already exists|unique constraint/i.test(msg)) {
+    return "That looks like it was already saved — refresh to see the current state.";
+  }
+  if (/foreign key|violates foreign key/i.test(msg)) {
+    return "Couldn't save — a linked record (student, class or leave request) no longer exists.";
+  }
+  if (/future date|school is closed|weekend|academic year|Semester|break/i.test(msg)) {
+    return msg; // the trigger's own, already user-facing, calendar-gate message
+  }
+  return msg || fallback || "Couldn't save attendance.";
 }
 
 // Finance (fees / payments / expenses) equivalent: turn a raw Postgres / RLS / RPC rejection into
@@ -644,6 +668,43 @@ function DataProvider({ children }) {
     [timetableConfigRaw],
   );
 
+  // Student attendance + per-period journal + leave requests + owner leave log: Phase 5 CP1.
+  // Real Supabase data (attendance, period_logs, leave_requests, owner_leave_log) -- same
+  // independent-state pattern every earlier converted domain uses. Calendar/date gating stays
+  // client-side (classifyAttendanceDate) and is re-stated server-side by the attendance_date_guard
+  // trigger; an APPROVED leave is applied to attendance transactionally by the decide_leave_request
+  // RPC. Notifications/activity stay bridged to the mock d.notifications/d.activities pipeline
+  // (locked Phase 2 decision) -- the mutators below refetch the real rows, then commit() only the
+  // notification/activity side effects.
+  const attendanceService = useMemo(() => createAttendanceService(), []);
+  const leaveService = useMemo(() => createLeaveService(), []);
+  const [attendanceRaw, setAttendanceRaw] = useState([]);
+  const [periodLogsRaw, setPeriodLogsRaw] = useState([]);
+  const [leaveRequestsRaw, setLeaveRequestsRaw] = useState([]);
+  const [ownerLeaveLogRaw, setOwnerLeaveLogRaw] = useState([]);
+  const refetchAttendance = useCallback(async () => {
+    const [rows, logs] = await Promise.all([
+      attendanceService.list(),
+      attendanceService.listPeriodLogs().catch(() => []),
+    ]);
+    setAttendanceRaw(rows);
+    setPeriodLogsRaw(logs);
+    return rows;
+  }, [attendanceService]);
+  const refetchLeaveRequests = useCallback(async () => {
+    const [rows, ownerLog] = await Promise.all([
+      leaveService.list().catch(() => []),
+      leaveService.listOwnerLeave().catch(() => []),
+    ]);
+    setLeaveRequestsRaw(rows);
+    setOwnerLeaveLogRaw(ownerLog);
+    return rows;
+  }, [leaveService]);
+  useEffect(() => {
+    refetchAttendance().catch((e) => console.error("Failed to load attendance", e));
+    refetchLeaveRequests().catch((e) => console.error("Failed to load leave requests", e));
+  }, [refetchAttendance, refetchLeaveRequests]);
+
   // Homework: Phase 3 checkpoint 1. Real Supabase data (`homework` table) -- same independent-state
   // pattern every earlier converted domain uses. `homework` below resolves the real subject_id to
   // the mock app's subject-NAME convention (like classSubjects/teacherAssignments/timetableEntries)
@@ -905,6 +966,10 @@ function DataProvider({ children }) {
       draft.timetableConfig = timetableConfig;
       draft.substitutions = substitutionsRaw;
       draft.schoolClosures = schoolClosuresRaw;
+      draft.attendance = attendanceRaw;
+      draft.periodLogs = periodLogsRaw;
+      draft.leaveRequests = leaveRequestsRaw;
+      draft.ownerLeaveLog = ownerLeaveLogRaw;
       draft.homework = homework;
       draft.results = results;
       draft.resultAuditLog = resultAuditLog;
@@ -923,6 +988,7 @@ function DataProvider({ children }) {
     parentsRaw, childIdsByParent, teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw,
     salaryAdvancesRaw, teacherAccountsRaw, directorAccountsRaw,
     timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw, homework,
+    attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw,
     results, resultAuditLog, resultEvidence, examAnnouncements, reportCards,
   ]);
 
@@ -1023,6 +1089,10 @@ function DataProvider({ children }) {
       timetableConfig,
       substitutions: substitutionsRaw,
       schoolClosures: schoolClosuresRaw,
+      attendance: attendanceRaw,
+      periodLogs: periodLogsRaw,
+      leaveRequests: leaveRequestsRaw,
+      ownerLeaveLog: ownerLeaveLogRaw,
       homework,
       results,
       resultAuditLog,
@@ -1586,10 +1656,13 @@ function DataProvider({ children }) {
           // -- grab their keys first so we can best-effort delete them after.
           const orphanEvidencePaths = resultEvidenceRaw.filter((e) => e.studentId === id).map((e) => e.storagePath);
           await studentService.remove(id);
-          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments()]);
+          // attendance.student_id is ON DELETE CASCADE (server-side); leave_requests.subject_id is
+          // polymorphic with no FK, so student leave rows are deleted explicitly (RLS delete policy
+          // is scoped to can_decide_leave).
+          await leaveService.deleteForSubject("STUDENT", id).catch((e) => console.error("Failed to clean up student leave requests", e));
+          await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments(), refetchAttendance(), refetchLeaveRequests()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
           commit((d) => {
-            d.attendance = d.attendance.filter((a) => a.studentId !== id);
             d.behaviorRecords = d.behaviorRecords.filter((b) => b.studentId !== id);
             // results + result_audit_log + result_evidence rows cascade-delete in Postgres
             // (student_id is ON DELETE CASCADE on all three) -- refetchResults / refetchResultEvidence
@@ -1600,7 +1673,6 @@ function DataProvider({ children }) {
             // who has ever had a payment recorded cannot be hard-deleted at all — studentService
             // .remove() will reject. Payments are immutable financial records (Locked Principle #4);
             // archive such a student instead.
-            d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STUDENT" && r.subjectId === id));
             d.activities = [{ id: uid("act"), text: `${name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
@@ -1634,16 +1706,16 @@ function DataProvider({ children }) {
           // Same purge-everything semantics the mock always had.
           await timetableService.deleteEntriesByTeacher(userId);
           if (staffRec) await staffService.remove(staffRec.id);
+          if (staffRec) await leaveService.deleteForSubject("STAFF", staffRec.id).catch((e) => console.error("Failed to clean up staff leave requests", e));
           const res = await accountService.remove(userId);
           if (!res.ok) return { ok: false, message: res.message || "Couldn't delete the teacher's account." };
           await Promise.all([
             refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff(),
             refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances(), refetchClasses(),
-            refetchTimetable(), refetchHomework(),
+            refetchTimetable(), refetchHomework(), refetchAttendance(), refetchLeaveRequests(),
           ]);
           commit((d) => {
             d.notifications = d.notifications.filter((n) => n.userId !== userId);
-            if (staffRec) d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffRec.id));
             d.activities = [{ id: uid("act"), text: `${u.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
@@ -1666,10 +1738,10 @@ function DataProvider({ children }) {
           if (linkedUser && (linkedUser.role === ROLES.ADMIN || linkedUser.role === ROLES.FINANCE)) {
             return { ok: false, message: "Director/Finance accounts can't be deleted from Staff — disable their access from Accounts & Access instead." };
           }
+          await leaveService.deleteForSubject("STAFF", staffId).catch((e) => console.error("Failed to clean up staff leave requests", e));
           await staffService.remove(staffId);
-          await Promise.all([refetchStaff(), refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances()]);
+          await Promise.all([refetchStaff(), refetchStaffAttendance(), refetchPayrollPayments(), refetchSalaryAdvances(), refetchLeaveRequests()]);
           commit((d) => {
-            d.leaveRequests = (d.leaveRequests || []).filter((r) => !(r.kind === "STAFF" && r.subjectId === staffId));
             d.activities = [{ id: uid("act"), text: `${staffRec.name} was permanently deleted.`, createdAt: Date.now() }, ...d.activities];
             return d;
           });
@@ -2326,36 +2398,46 @@ function DataProvider({ children }) {
         }
       },
 
-      // Shared by direct save (saveAttendance/saveStaffAttendance) and leave auto-apply
-      // (decideLeaveRequest), so a record created by an approved leave and a record edited by
-      // hand go through the exact same upsert path.
-      _upsertAttendanceRecord(d, { studentId, classId, date, status, note, markedBy, leaveRequestId }) {
-        const existing = d.attendance.find((a) => a.studentId === studentId && a.date === date);
-        // Only a genuinely new record or an actual status change is notification-worthy — re-saving
-        // the same class (e.g. to fix one student's note, or a plain repeat Save) would otherwise
-        // re-notify every already-marked-non-Present parent on every save, not just the one whose
-        // status actually changed.
-        const statusChanged = !existing || existing.status !== status;
-        if (existing) { existing.status = status; existing.note = note || ""; existing.markedBy = markedBy; existing.markedAt = Date.now(); existing.leaveRequestId = leaveRequestId ?? existing.leaveRequestId ?? null; }
-        else d.attendance.push({ id: uid("att"), studentId, classId, date, status, note: note || "", markedBy, markedAt: Date.now(), leaveRequestId: leaveRequestId ?? null });
-        if (status !== "Present" && statusChanged) {
+      // Notification-only side effect of an attendance change, applied to a commit() draft AFTER
+      // the real row has been written (attendance is real Supabase as of Phase 5 CP1; notifications
+      // are still on the mock bridge). `notifyList` is [{ studentId, status }] for the rows whose
+      // status actually CHANGED to something non-Present — re-saving an unchanged class re-notifies
+      // nobody (see the Section 8 audit's dedup-notify fix).
+      _applyAttendanceNotifications(d, date, notifyList) {
+        notifyList.forEach(({ studentId, status }) => {
           const student = d.students.find((s) => s.id === studentId);
           const parentIds = d.users.filter((u) => u.role === ROLES.PARENT && (u.childIds || []).includes(studentId)).map((u) => u.id);
           parentIds.forEach((pid) => {
             d.notifications = [{ id: uid("notif"), userId: pid, title: `Attendance update for ${student?.firstName}`, message: `${student?.firstName} was marked ${status.toLowerCase()} on ${fmtDate(date)}.`, read: false, createdAt: Date.now(), type: "ATTENDANCE", navigation: { page: "attendance", studentId, date } }, ...d.notifications];
           });
-        }
+        });
       },
 
-      saveAttendance(classId, date, records, markedBy) {
-        commit((d) => {
-          records.forEach((r) => {
-            this._upsertAttendanceRecord(d, { studentId: r.studentId, classId, date, status: r.status, note: r.note, markedBy });
+      // Real Supabase (attendance). RLS: write = is_owner_or_admin(), or a Teacher who heads the
+      // class and is not themselves marked Absent/Sick/Permission that day. The
+      // attendance_date_guard trigger re-checks the calendar gate the UI already enforces
+      // (classifyAttendanceDate). One upsert per student on unique(student_id, date).
+      async saveAttendance(classId, date, records, markedBy) {
+        try {
+          const notifyList = [];
+          for (const r of records) {
+            const prev = db.attendance.find((a) => a.studentId === r.studentId && a.date === date);
+            const statusChanged = !prev || prev.status !== r.status;
+            await attendanceService.upsertRecord({ studentId: r.studentId, classId, date, status: r.status, note: r.note, markedBy });
+            if (r.status !== "Present" && statusChanged) notifyList.push({ studentId: r.studentId, status: r.status });
+          }
+          await refetchAttendance();
+          commit((d) => {
+            this._applyAttendanceNotifications(d, date, notifyList);
+            const cls = d.classes.find((c) => c.id === classId);
+            d.activities = [{ id: uid("act"), text: `Attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`, createdAt: Date.now(), navigation: { page: "attendance", classId, date } }, ...d.activities];
+            return d;
           });
-          const cls = d.classes.find((c) => c.id === classId);
-          d.activities = [{ id: uid("act"), text: `Attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`, createdAt: Date.now(), navigation: { page: "attendance", classId, date } }, ...d.activities];
-          return d;
-        });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to save attendance", e);
+          return { ok: false, message: attendanceErrorMessage(e) };
+        }
       },
 
       // `period` distinguishes multiple attendance sessions on the same day for shift-based staff
@@ -2418,36 +2500,41 @@ function DataProvider({ children }) {
         return db.leaveRequests.filter((r) => r.kind === kind && r.approvalStatus === "PENDING").sort((a, b) => a.createdAt - b.createdAt);
       },
 
-      createLeaveRequest({ kind, subjectId, requestedBy, status, fromDate, toDate, note }) {
-        commit((d) => {
-          const req = { id: uid("leave"), kind, subjectId, requestedBy, status, fromDate, toDate, note: note || "", approvalStatus: "PENDING", decidedBy: null, decidedAt: null, rejectionReason: null, completionNotified: false, createdAt: Date.now() };
-          d.leaveRequests.unshift(req);
-          const who = leaveSubjectLabel(d, kind, subjectId);
-          d.activities = [{ id: uid("act"), text: `A ${status.toLowerCase()} leave request was submitted for ${who} (${fmtDate(fromDate)} – ${fmtDate(toDate)}).`, createdAt: Date.now() }, ...d.activities];
+      // Real Supabase (leave_requests). RLS: requested_by must equal the caller AND the caller must
+      // be entitled to request leave for that subject (parent-of-child / self / administrative
+      // remit). Notifications to the deciders stay on the mock bridge.
+      async createLeaveRequest({ kind, subjectId, requestedBy, status, fromDate, toDate, note }) {
+        try {
+          const created = await leaveService.create({ kind, subjectId, requestedBy, status, fromDate, toDate, note });
+          await refetchLeaveRequests();
+          commit((d) => {
+            const who = leaveSubjectLabel(d, kind, subjectId);
+            d.activities = [{ id: uid("act"), text: `A ${status.toLowerCase()} leave request was submitted for ${who} (${fmtDate(fromDate)} – ${fmtDate(toDate)}).`, createdAt: Date.now() }, ...d.activities];
 
-          // A Director's own leave only goes to the Owner (nobody else can decide it); everyone
-          // else's goes to both the Owner and every Educational Director — matches canDecideLeaveRequest.
-          const subjectStaff = kind === "STAFF" ? d.staff.find((s) => s.id === subjectId) : null;
-          const isDirectorSubject = !!subjectStaff && staffGroupLabel(subjectStaff.position) === "Directors";
-          const recipientRoles = isDirectorSubject ? [ROLES.OWNER] : [ROLES.OWNER, ROLES.ADMIN];
-          const { title, message } = leaveSubmittedNotification(d, req);
-          const leaveStudentId = kind === "STUDENT" ? subjectId : null;
-          d.users.filter((u) => recipientRoles.includes(u.role)).forEach((u) => {
-            d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: leaveStudentId } }, ...d.notifications];
+            // A Director's own leave only goes to the Owner (nobody else can decide it); everyone
+            // else's goes to both the Owner and every Educational Director — matches canDecideLeaveRequest.
+            const subjectStaff = kind === "STAFF" ? d.staff.find((s) => s.id === subjectId) : null;
+            const isDirectorSubject = !!subjectStaff && staffGroupLabel(subjectStaff.position) === "Directors";
+            const recipientRoles = isDirectorSubject ? [ROLES.OWNER] : [ROLES.OWNER, ROLES.ADMIN];
+            const { title, message } = leaveSubmittedNotification(d, created);
+            const leaveStudentId = kind === "STUDENT" ? subjectId : null;
+            d.users.filter((u) => recipientRoles.includes(u.role)).forEach((u) => {
+              d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: leaveStudentId } }, ...d.notifications];
+            });
+            return d;
           });
-          return d;
-        });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to submit leave request", e);
+          return { ok: false, message: attendanceErrorMessage(e, "Couldn't submit the leave request.") };
+        }
       },
 
-      // Approving auto-applies the request's status to every school day in range that's actually
-      // an available attendance date, reusing the same upsert path as a manually saved day — so a
-      // 7-day leave becomes one action instead of marking each day by hand.
-      // STAFF leave writes real staff_attendance rows (via _writeStaffAttendance), so that part has
-      // to happen BEFORE commit() -- a commit() draft mutator is synchronous and can't await. It's
-      // gated on the same PENDING check the final commit() re-checks against the fresh draft, so a
-      // double-approval race still can't apply staff attendance twice. STUDENT leave stays exactly
-      // as before (student attendance hasn't converted yet, so it's still a draft mutation inside
-      // commit()).
+      // Real Supabase: the decide_leave_request RPC flips the row AND transactionally auto-applies
+      // an APPROVED request to every eligible school day's attendance (STUDENT) / staff_attendance
+      // (STAFF), skipping weekends, closures and out-of-semester dates — one caller/role check
+      // (can_decide_leave), one PENDING guard (idempotent no-op otherwise). Afterwards we refetch
+      // the real rows and fan out the decision notification on the mock bridge.
       async decideLeaveRequest(id, approvalStatus, decidedBy, reason) {
         const req = db.leaveRequests.find((r) => r.id === id);
         if (!req || req.approvalStatus !== "PENDING") return { ok: true };
@@ -2455,67 +2542,23 @@ function DataProvider({ children }) {
         // is the last-line guard so the data layer can never end up with an unexplained rejection.
         if (approvalStatus === "REJECTED" && !(reason || "").trim()) return { ok: true };
 
-        let notifyList = [];
         try {
-          if (approvalStatus === "APPROVED" && req.kind === "STAFF") {
-            const staffRec = db.staff.find((s) => s.id === req.subjectId);
-            if (staffRec) {
-              const closures = closuresByDateMap(db);
-              const periods = staffRec.hasShifts ? ["AM", "PM"] : ["FULL_DAY"];
-              let cur = req.fromDate;
-              let guard = 0;
-              while (cur <= req.toDate && guard++ < 400) {
-                // See the original comment this replaces: passing `cur` as its own todayKey
-                // sidesteps classifyAttendanceDate's "hasn't happened yet" gate (leave is approved in
-                // advance, by design) while still enforcing every other rule.
-                const dateOk = classifyAttendanceDate(cur, db.academicCalendar, cur, closures).available;
-                const dow = new Date(cur + "T00:00:00").getDay(); // 0 = Sunday, 6 = Saturday
-                if (dateOk && dow >= 1 && dow <= 5) {
-                  for (const period of periods) {
-                    const n = await this._writeStaffAttendance({ staffId: req.subjectId, date: cur, period, status: req.status, note: req.note, markedBy: decidedBy, leaveRequestId: req.id });
-                    if (n) notifyList.push(n);
-                  }
-                }
-                cur = addDays(cur, 1);
-              }
-              await refetchStaffAttendance();
-            }
-          }
+          const res = await leaveService.decide(id, approvalStatus, reason);
+          await Promise.all([refetchLeaveRequests(), refetchAttendance(), refetchStaffAttendance()]);
+          if (res && res.noop) return { ok: true };
+          commit((d) => {
+            const liveReq = d.leaveRequests.find((r) => r.id === id) || { ...req, approvalStatus, decidedBy, decidedAt: Date.now(), rejectionReason: approvalStatus === "REJECTED" ? reason.trim() : null };
+            d.activities = [{ id: uid("act"), text: `A leave request was ${approvalStatus.toLowerCase()}.`, createdAt: Date.now() }, ...d.activities];
+            const decider = d.users.find((u) => u.id === decidedBy);
+            const { title, message } = leaveDecidedNotification(d, liveReq, decider);
+            d.notifications = [{ id: uid("notif"), userId: liveReq.requestedBy, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: liveReq.kind === "STUDENT" ? liveReq.subjectId : null } }, ...d.notifications];
+            return d;
+          });
+          return { ok: true };
         } catch (e) {
-          console.error("Failed to auto-apply approved leave to staff attendance", e);
-          return { ok: false, message: e.message || "Approving succeeded partway, but applying it to staff attendance failed. Check the Staff Attendance page and re-apply the affected dates if needed." };
+          console.error("Failed to decide leave request", e);
+          return { ok: false, message: attendanceErrorMessage(e, "Couldn't record the decision.") };
         }
-
-        commit((d) => {
-          const liveReq = d.leaveRequests.find((r) => r.id === id);
-          if (!liveReq || liveReq.approvalStatus !== "PENDING") return d;
-          liveReq.approvalStatus = approvalStatus;
-          liveReq.decidedBy = decidedBy;
-          liveReq.decidedAt = Date.now();
-          if (approvalStatus === "REJECTED") liveReq.rejectionReason = reason.trim();
-          if (approvalStatus === "APPROVED" && liveReq.kind === "STUDENT") {
-            const closures = closuresByDateMap(d);
-            let cur = liveReq.fromDate;
-            let guard = 0;
-            while (cur <= liveReq.toDate && guard++ < 400) {
-              const dateOk = classifyAttendanceDate(cur, d.academicCalendar, cur, closures).available;
-              const dow = new Date(cur + "T00:00:00").getDay();
-              if (dateOk && dow >= 1 && dow <= 5) {
-                const student = d.students.find((s) => s.id === liveReq.subjectId);
-                if (student) this._upsertAttendanceRecord(d, { studentId: student.id, classId: student.classId, date: cur, status: liveReq.status, note: liveReq.note, markedBy: decidedBy, leaveRequestId: liveReq.id });
-              }
-              cur = addDays(cur, 1);
-            }
-          }
-          this._applyStaffAttendanceNotifications(d, notifyList);
-          d.activities = [{ id: uid("act"), text: `A leave request was ${approvalStatus.toLowerCase()}.`, createdAt: Date.now() }, ...d.activities];
-
-          const decider = d.users.find((u) => u.id === decidedBy);
-          const { title, message } = leaveDecidedNotification(d, liveReq, decider);
-          d.notifications = [{ id: uid("notif"), userId: liveReq.requestedBy, title, message, read: false, createdAt: Date.now(), type: "LEAVE", navigation: { page: "leaveRequests", studentId: liveReq.kind === "STUDENT" ? liveReq.subjectId : null } }, ...d.notifications];
-          return d;
-        });
-        return { ok: true };
       },
 
       // STUDENT requests: Owner or Educational Director. STAFF requests mirror
@@ -2539,20 +2582,29 @@ function DataProvider({ children }) {
       // Once an approved leave's last day has passed, tell the requester it's over and let the
       // Owner/Educational Director know too — a `completionNotified` flag guarantees this fires
       // exactly once per request no matter how many times this runs (see the polling effect below).
-      checkLeaveCompletions() {
+      async checkLeaveCompletions() {
         // Pre-check against the read-only `db` closure before touching `commit` — commit()
         // unconditionally bumps `updatedAt` and replaces `db`, which recreates this whole `api`
         // object, which re-arms the polling effect that calls this very method (DataContext's
         // `useEffect([ready, api])`). Calling commit() here with nothing to actually notify was
         // a real infinite render loop (visible as "Maximum update depth exceeded" every ~60s,
-        // or immediately since this also runs once on mount) — this early return is the fix.
+        // or immediately since this also runs once on mount) — this early return is the fix. The
+        // `completion_notified` flag is now flipped in Supabase (leave_requests is real as of CP1),
+        // so the guard stops firing once the refetch lands.
         const todayKey = todayKeyStr();
-        if (!db.leaveRequests.some((r) => r.approvalStatus === "APPROVED" && !r.completionNotified && r.toDate < todayKey)) return;
+        const due = db.leaveRequests.filter((r) => r.approvalStatus === "APPROVED" && !r.completionNotified && r.toDate < todayKey);
+        if (due.length === 0) return;
+        try {
+          await leaveService.markCompletionNotified(due.map((r) => r.id));
+          await refetchLeaveRequests();
+        } catch (e) {
+          console.error("Failed to mark leave completions", e);
+          return;
+        }
         commit((d) => {
-          const toNotify = d.leaveRequests.filter((r) => r.approvalStatus === "APPROVED" && !r.completionNotified && r.toDate < todayKey);
+          const toNotify = due;
           if (toNotify.length === 0) return d;
           toNotify.forEach((req) => {
-            req.completionNotified = true;
             const base = leaveTitleBase(req.status);
             const duration = leaveDurationLabel(req.fromDate, req.toDate);
             const returnDate = addDays(req.toDate, 1);
@@ -2579,21 +2631,29 @@ function DataProvider({ children }) {
       // The Owner sits above everyone else, so their own leave has no approver and — since the
       // Owner deliberately has no `staff` row (see seed.js) — no staff-attendance record to flip.
       // This just logs it and lets the Educational Director know, for transparency.
-      logOwnerLeave({ status, fromDate, toDate, note }, ownerUserId) {
-        commit((d) => {
-          const owner = d.users.find((u) => u.id === ownerUserId);
-          const base = leaveTitleBase(status);
-          const dateRange = fromDate === toDate ? fmtDate(fromDate) : `${fmtDate(fromDate)} – ${fmtDate(toDate)}`;
-          d.ownerLeaveLog = d.ownerLeaveLog || [];
-          d.ownerLeaveLog.unshift({ id: uid("ownleave"), status, fromDate, toDate, note: note || "", createdAt: Date.now() });
-          d.activities = [{ id: uid("act"), text: `Owner ${owner?.name || ""} logged ${base.toLowerCase()} for ${dateRange}.`, createdAt: Date.now() }, ...d.activities];
-          const title = `Owner ${base.toLowerCase()}`;
-          const message = `${owner?.name || "The Owner"} will be on ${base.toLowerCase()} from ${dateRange}${note ? ` — ${note}` : ""}.`;
-          d.users.filter((u) => u.role === ROLES.ADMIN).forEach((u) => {
-            d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE" }, ...d.notifications];
+      // Real Supabase (owner_leave_log). RLS: insert = is_owner(); read = Owner + Educational
+      // Director. Notification to the Educational Director stays on the mock bridge.
+      async logOwnerLeave({ status, fromDate, toDate, note }, ownerUserId) {
+        try {
+          await leaveService.logOwnerLeave({ status, fromDate, toDate, note });
+          await refetchLeaveRequests();
+          commit((d) => {
+            const owner = d.users.find((u) => u.id === ownerUserId);
+            const base = leaveTitleBase(status);
+            const dateRange = fromDate === toDate ? fmtDate(fromDate) : `${fmtDate(fromDate)} – ${fmtDate(toDate)}`;
+            d.activities = [{ id: uid("act"), text: `Owner ${owner?.name || ""} logged ${base.toLowerCase()} for ${dateRange}.`, createdAt: Date.now() }, ...d.activities];
+            const title = `Owner ${base.toLowerCase()}`;
+            const message = `${owner?.name || "The Owner"} will be on ${base.toLowerCase()} from ${dateRange}${note ? ` — ${note}` : ""}.`;
+            d.users.filter((u) => u.role === ROLES.ADMIN).forEach((u) => {
+              d.notifications = [{ id: uid("notif"), userId: u.id, title, message, read: false, createdAt: Date.now(), type: "LEAVE" }, ...d.notifications];
+            });
+            return d;
           });
-          return d;
-        });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to log owner leave", e);
+          return { ok: false, message: attendanceErrorMessage(e, "Couldn't log the leave.") };
+        }
       },
 
       /* ---------- Attendance permissions ---------- */
@@ -2776,37 +2836,45 @@ function DataProvider({ children }) {
       async deleteTimetableEntry(id) {
         try {
           await timetableService.deleteEntry(id);
-          await refetchTimetable();
-          commit((d) => {
-            // period_logs stays mock until checkpoint 2; keep purging the orphaned mock rows.
-            d.periodLogs = d.periodLogs.filter((l) => l.timetableEntryId !== id);
-            return d;
-          });
+          // period_logs.timetable_entry_id is ON DELETE CASCADE — the refetch picks up the removal.
+          await Promise.all([refetchTimetable(), refetchAttendance()]);
           return { ok: true };
         } catch (e) {
           console.error("Failed to delete timetable entry", e);
           return { ok: false, message: e.message || "Couldn't remove the period." };
         }
       },
-      markPeriodDone(timetableEntryId, date, completedBy) {
-        commit((d) => {
-          const existing = d.periodLogs.find((l) => l.timetableEntryId === timetableEntryId && l.date === date);
-          if (existing) { existing.status = "done"; existing.completedBy = completedBy; existing.completedAt = Date.now(); }
-          else d.periodLogs.push({ id: uid("plog"), timetableEntryId, date, status: "done", completedBy, completedAt: Date.now() });
-          return d;
-        });
+      // Real Supabase (period_logs). RLS: write = can_act_on_period(entry, date) — Owner always;
+      // ED's uncovered-period exception; the acting teacher (substitute if assigned, else the
+      // timetable's own teacher) gated by teacher_academic_action_ok.
+      async markPeriodDone(timetableEntryId, date, completedBy) {
+        try {
+          await attendanceService.markPeriodDone({ timetableEntryId, date, completedBy });
+          await refetchAttendance();
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to mark period done", e);
+          return { ok: false, message: attendanceErrorMessage(e, "Couldn't mark the period done.") };
+        }
       },
       // Per-period, per-student attendance — distinct from the class-level daily db.attendance.
       // Saving also marks the period done (status: "done"): a period with attendance recorded is
       // definitionally a period that happened, so the two never drift apart.
-      savePeriodAttendance(timetableEntryId, date, records, markedBy) {
-        commit((d) => {
-          const existing = d.periodLogs.find((l) => l.timetableEntryId === timetableEntryId && l.date === date);
-          const payload = { status: "done", completedBy: markedBy, completedAt: Date.now(), attendance: records, attendanceMarkedBy: markedBy, attendanceMarkedAt: Date.now() };
-          if (existing) Object.assign(existing, payload);
-          else d.periodLogs.push({ id: uid("plog"), timetableEntryId, date, ...payload });
-          return d;
-        });
+      async savePeriodAttendance(timetableEntryId, date, records, markedBy) {
+        try {
+          await attendanceService.savePeriodAttendance({ timetableEntryId, date, records, markedBy });
+          await refetchAttendance();
+          commit((d) => {
+            const entry = d.timetableEntries.find((e) => e.id === timetableEntryId);
+            const cls = entry ? d.classes.find((c) => c.id === entry.classId) : null;
+            d.activities = [{ id: uid("act"), text: `Period ${entry?.period ?? ""} attendance was recorded for ${cls ? cls.grade + cls.section : "a class"} on ${fmtDate(date)}.`, createdAt: Date.now() }, ...d.activities];
+            return d;
+          });
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to save period attendance", e);
+          return { ok: false, message: attendanceErrorMessage(e, "Couldn't save period attendance.") };
+        }
       },
 
       // Resolves who actually covers a period/date: a formally assigned substitute
@@ -4324,6 +4392,8 @@ function DataProvider({ children }) {
     refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances,
     timetableService, closureService, timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw,
     refetchTimetable, refetchClosures,
+    attendanceService, leaveService, attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw,
+    refetchAttendance, refetchLeaveRequests,
     homeworkService, homework, refetchHomework,
     resultService, examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
     resultEvidenceService, resultEvidence, resultEvidenceRaw, refetchResultEvidence,

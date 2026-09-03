@@ -2753,7 +2753,8 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
     const records = students.map((s) => ({ studentId: s.id, status: draft[s.id].status, note: draft[s.id]?.note || "" }));
     run(async () => {
-      await data.saveAttendance(cls.id, dateKey, records, auth.currentUser.id);
+      const res = await data.saveAttendance(cls.id, dateKey, records, auth.currentUser.id);
+      if (!res?.ok) { toast(res?.message || "Couldn't save attendance.", "error"); return; }
       toast(`Attendance saved for ${dateKeyLabel(dateKey)}.`, "success");
       onClose();
     }, { key: `save-attendance:${cls.id}:${dateKey}` });
@@ -3442,7 +3443,8 @@ function StaffLeaveRequestForm({ staffId, requestedBy, onSubmitted }) {
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
     run(async () => {
-      await data.createLeaveRequest({ kind: "STAFF", subjectId: staffId, requestedBy, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      const res = await data.createLeaveRequest({ kind: "STAFF", subjectId: staffId, requestedBy, status: form.status, fromDate: form.fromDate, toDate: form.toDate, note: form.note });
+      if (!res?.ok) { toast(res?.message || "Couldn't submit the leave request.", "error"); return; }
       toast("Leave request submitted.", "success");
       setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
       onSubmitted && onSubmitted();
@@ -3479,7 +3481,8 @@ function OwnerLeavePanel() {
   function submit() {
     if (form.fromDate > form.toDate) { toast("The start date must be before the end date.", "error"); return; }
     run(async () => {
-      await data.logOwnerLeave(form, auth.currentUser.id);
+      const res = await data.logOwnerLeave(form, auth.currentUser.id);
+      if (!res?.ok) { toast(res?.message || "Couldn't log the leave.", "error"); return; }
       toast("Leave logged — the Educational Director has been notified.", "success");
       setForm({ status: "Sick", fromDate: todayKeyStr(), toDate: todayKeyStr(), note: "" });
     }, { key: `owner-leave:${form.fromDate}:${form.toDate}` });
