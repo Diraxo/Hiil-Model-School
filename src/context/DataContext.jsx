@@ -981,8 +981,8 @@ function DataProvider({ children }) {
   // RPCs (migration 20260827000000), which resolve recipients + entitlement server-side and are
   // idempotent via guard columns. Best-effort: a failed feed/notification write must not fail
   // the domain action that already succeeded.
-  const logActivityFeed = useCallback(async (text, navigation = null) => {
-    await activityService.log(text, navigation);
+  const logActivityFeed = useCallback(async (text, navigation = null, visibility = "STAFF") => {
+    await activityService.log(text, navigation, visibility);
     await refetchActivities();
   }, [activityService, refetchActivities]);
   const dispatchNotify = useCallback(async (rpc, args) => {
@@ -3973,7 +3973,7 @@ function DataProvider({ children }) {
           await refetchPayrollPayments();
           await logActivityFeed(
             `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${monthLabel(month)}).`,
-            { page: "payroll", staffId: s.id },
+            { page: "payroll", staffId: s.id }, "FINANCE",
           );
           // Phase 6: notify_salary_paid notifies the staff member (server-derived from staff.user_id,
           // payslip deep-link in navigation.payrollPaymentId, idempotent via notified_at).
@@ -4010,7 +4010,7 @@ function DataProvider({ children }) {
           await refetchSalaryAdvances();
           await logActivityFeed(
             `${formatMoney(advance.amount)} salary advance recorded for ${s.name}.`,
-            { page: "payroll", staffId: s.id },
+            { page: "payroll", staffId: s.id }, "FINANCE",
           );
           // Phase 6: notify_salary_advance notifies the staff member (server-derived, idempotent
           // via salary_advances.notified_at).

@@ -18,6 +18,7 @@ function mapActivity(row) {
     id: row.id,
     text: row.text,
     navigation: row.navigation || null,
+    visibility: row.visibility || "STAFF",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
   };
 }
@@ -39,13 +40,16 @@ export function createActivityService() {
       return (data || []).map(mapActivity);
     },
 
-    // log_activity(p_text, p_navigation) -> activities row. Best-effort: a failed feed write must
-    // never fail the domain action that triggered it.
-    async log(text, navigation = null) {
+    // log_activity(p_text, p_navigation, p_visibility) -> activities row. `visibility` 'FINANCE'
+    // restricts the row to Owner/Finance (used for lines quoting personal salary figures);
+    // anything else defaults to 'STAFF'. Best-effort: a failed feed write must never fail the
+    // domain action that triggered it.
+    async log(text, navigation = null, visibility = "STAFF") {
       try {
         const { data, error } = await supabase.rpc("log_activity", {
           p_text: text,
           p_navigation: navigation,
+          p_visibility: visibility,
         });
         if (error) throw error;
         return data ? mapActivity(data) : null;

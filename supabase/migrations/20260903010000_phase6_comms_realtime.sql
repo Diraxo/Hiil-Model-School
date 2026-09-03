@@ -36,12 +36,62 @@ revoke insert on public.conversations from anon, authenticated;
 
 -- The global activity feed is a STAFF operational log -- migration 8's activities_select allowed
 -- any role with a profile (PARENT included) to read it, which was harmless while only staff
--- dashboards rendered it but becomes a real leak now the frontend fetches it directly. Scope it
--- to the four staff roles (matches log_activity's own writer check and every activity-feed
--- consumer, all of which are staff-only screens).
+-- dashboards rendered it but becomes a real leak now the frontend fetches it directly.
+--
+-- Add a `visibility` column so the handful of lines that quote personal salary figures
+-- (payroll payments / advances) are readable only by the Owner and Finance & Operations
+-- Director -- a Teacher can otherwise reconstruct colleagues' pay from the feed text. Everything
+-- else stays 'STAFF' (all four staff roles), matching the mock's behaviour and every
+-- activity-feed consumer (all staff-only screens).
+alter table public.activities add column if not exists visibility text not null default 'STAFF';
+alter table public.activities drop constraint if exists activities_visibility_chk;
+alter table public.activities add constraint activities_visibility_chk
+  check (visibility in ('STAFF', 'FINANCE'));
+
 drop policy if exists activities_select on public.activities;
 create policy activities_select on public.activities
-  for select using (public.current_role()::text in ('OWNER', 'ADMIN', 'FINANCE', 'TEACHER'));
+  for select using (
+    case visibility
+      when 'FINANCE' then public.is_owner_or_finance()
+      else public.current_role()::text in ('OWNER', 'ADMIN', 'FINANCE', 'TEACHER')
+    end
+  );
+
+-- log_activity gains an optional visibility arg (default 'STAFF'). Drop the old 2-arg overload
+-- (nothing but this app's activityService calls it) so there's exactly one signature.
+drop function if exists public.log_activity(text, jsonb);
+create or replace function public.log_activity(
+  p_text text,
+  p_navigation jsonb default null,
+  p_visibility text default 'STAFF'
+)
+returns public.activities
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row public.activities;
+begin
+  if not (public.is_owner() or public.is_admin() or public.is_finance() or public.is_teacher()) then
+    raise exception 'Only staff may write to the activity feed';
+  end if;
+  if p_text is null or length(trim(p_text)) = 0 then
+    raise exception 'Activity text is required';
+  end if;
+  if coalesce(p_visibility, 'STAFF') not in ('STAFF', 'FINANCE') then
+    raise exception 'Invalid activity visibility';
+  end if;
+
+  insert into public.activities (text, navigation, visibility)
+  values (p_text, p_navigation, coalesce(p_visibility, 'STAFF'))
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+revoke all on function public.log_activity(text, jsonb, text) from public;
+grant execute on function public.log_activity(text, jsonb, text) to authenticated;
 
 -- =====================================================================
 -- 2. announcement_read_stats -- cross-user read counts for the author/admin oversight view
