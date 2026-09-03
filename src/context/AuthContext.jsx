@@ -195,7 +195,14 @@ function AuthProvider({ children }) {
   // this app. Deliberately reports success either way -- Supabase itself never reveals whether
   // the address has an account, to avoid leaking which emails are registered.
   const requestPasswordReset = useCallback(async (email) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+    // The emailed recovery link must return the user to whatever origin they started from:
+    // the deployed site in production, or the local dev server when developing. VITE_SITE_URL
+    // (set only in the production host's env) pins production regardless of the request origin;
+    // everywhere else we fall back to the live browser origin. Whichever value is used must also
+    // be present in the Supabase project's Auth "Redirect URLs" allow-list, or Supabase ignores
+    // it and falls back to the project's Site URL.
+    const redirectTo = import.meta.env.VITE_SITE_URL || window.location.origin;
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
     if (error) return { ok: false, message: error.message || "Couldn't send a reset email." };
     return { ok: true, message: "If an account exists for that email, a password reset link has been sent." };
   }, []);
