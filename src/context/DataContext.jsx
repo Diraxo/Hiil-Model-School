@@ -17,7 +17,7 @@ import {
   userIdentity as computeUserIdentity, leaveSubjectIdentity as computeLeaveSubjectIdentity,
   announcementSenderLabel as computeAnnouncementSenderLabel,
 } from "../utils/identity";
-import { buildSeed, migrateDB, loadDB, saveDB } from "../data/seed";
+import { buildSkeleton } from "../data/skeleton";
 import { supabase } from "../lib/supabaseClient";
 import { createNotificationService } from "../services/notificationService";
 import { createAnnouncementService } from "../services/announcementService";
@@ -59,7 +59,7 @@ import {
   Settings, Search, Plus, X, Check, ChevronRight, ChevronDown, LogOut, Copy,
   Camera, Trash2, Edit2, ArrowLeft, Menu, Send, Eye, EyeOff, Filter,
   TrendingUp, Loader2, RefreshCw, ShieldAlert,
-  Megaphone, ClipboardEdit, ChevronLeft, CheckCircle2, CircleAlert, Info, UserPlus,
+  Megaphone, ClipboardEdit, ChevronLeft, CheckCircle2, Info, UserPlus,
   Wallet, Bus, ImagePlus, BellRing,
 } from "lucide-react";
 
@@ -95,20 +95,15 @@ function withClassTeacherIds(classes, teacherAssignments) {
 // real `parent_students` rows on every render, never stored or mutated directly, so it can't drift
 // from the source of truth the way the old mock `user.childIds` array could. The actual mutation
 // path is parentService.link/unlink (see DataContext's connectChild/disconnectChild).
-// Splices every role that now has real Supabase Auth accounts into the still-mock `users` array,
-// so every existing `d.users.find(...)`/`u.role === ROLES.X` consumer across this file (and
-// AuthContext's "View as" target list) keeps reading the same shape it always has without
-// individual edits. Parents/Teachers/Educational-Director/Finance-Director are dropped from the
-// mock side entirely and replaced with the real rows; Owner stays mock (its one seeded row already
-// matches the real seeded Auth account, see supabase/seed_owner.sql) since there's no
-// login-account CRUD for Owner to convert.
-const REAL_ACCOUNT_ROLES = [ROLES.PARENT, ROLES.TEACHER, ROLES.ADMIN, ROLES.FINANCE];
-function mergeRealAccountsIntoUsers(users, parents, childIdsByParent, teacherAccounts, directorAccounts) {
-  const mockRest = (users || []).filter((u) => !REAL_ACCOUNT_ROLES.includes(u.role));
+// Builds the flat `users` array every `db.users.find(...)` / `u.role === ROLES.X` consumer across
+// this file (and AuthContext's "View as" target list) reads. Every account is now a real
+// `profiles` row -- Owner, Educational Director, Finance Director, Teacher, Parent -- fetched
+// through the account-list services. `childIds` is derived fresh from real `parent_students`
+// rows; profiles rows already carry their own role.
+function mergeRealAccountsIntoUsers(parents, childIdsByParent, teacherAccounts, directorAccounts, ownerAccounts) {
   const realParents = (parents || []).map((p) => ({ ...p, role: ROLES.PARENT, childIds: childIdsByParent.get(p.id) || [] }));
   const realTeachers = (teacherAccounts || []).map((t) => ({ ...t, role: ROLES.TEACHER }));
-  const realDirectors = directorAccounts || []; // profiles rows already carry their own role (ADMIN/FINANCE)
-  return [...mockRest, ...realParents, ...realTeachers, ...realDirectors];
+  return [...(ownerAccounts || []), ...(directorAccounts || []), ...realTeachers, ...realParents];
 }
 
 // Blocker 5: the one authoritative payroll calculation. Called with `db` (the committed state)
@@ -389,10 +384,14 @@ function monthsBetweenInclusive(startStr, endStr) {
 }
 
 function DataProvider({ children }) {
-  const [mockDb, setDb] = useState(null);
+  // `mockDb` is now just an in-memory skeleton (empty collections + a default academic calendar);
+  // every domain is overlaid from live Supabase state in the `api` useMemo below. No localStorage,
+  // no seed data, no persistence pipeline -- see src/data/skeleton.js.
+  const [mockDb, setDb] = useState(buildSkeleton);
+  // Flips true once the first core fetch (academic years) settles -- just so the very first paint
+  // shows a spinner instead of an empty dashboard. Every other domain streams in progressively
+  // afterwards exactly as it already did under network latency.
   const [ready, setReady] = useState(false);
-  const [loadError, setLoadError] = useState(null);
-  const lastWriteRef = useRef(0);
   const toast = useToast();
 
   // Academic years: first domain converted to real Supabase data (see project notes). Lives as
@@ -405,7 +404,17 @@ function DataProvider({ children }) {
     setAcademicYears(rows);
     return rows;
   }, [academicYearService]);
-  useEffect(() => { refetchAcademicYears().catch((e) => console.error("Failed to load academic years", e)); }, [refetchAcademicYears]);
+  useEffect(() => {
+    refetchAcademicYears()
+      .catch((e) => console.error("Failed to load academic years", e))
+      .finally(() => setReady(true));
+  }, [refetchAcademicYears]);
+
+  // One-time cleanup: the pre-Supabase build persisted the entire mock school DB (including demo
+  // login rows) under this key. Nothing reads it any more -- purge it from returning browsers.
+  useEffect(() => {
+    try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* storage unavailable */ }
+  }, []);
 
   // Subjects: second domain converted to real Supabase data. Still referenced by NAME (not id)
   // from every other still-mock table -- see subjectService.js's header comment.
@@ -538,6 +547,7 @@ function DataProvider({ children }) {
   const payrollService = useMemo(() => createPayrollService(), []);
   const [teacherAccountsRaw, setTeacherAccountsRaw] = useState([]);
   const [directorAccountsRaw, setDirectorAccountsRaw] = useState([]);
+  const [ownerAccountsRaw, setOwnerAccountsRaw] = useState([]);
   const [teacherAssignmentsRaw, setTeacherAssignmentsRaw] = useState([]);
   const [staffDirectoryRaw, setStaffDirectoryRaw] = useState([]);
   const [staffFullRaw, setStaffFullRaw] = useState([]);
@@ -552,6 +562,11 @@ function DataProvider({ children }) {
     setTeacherAccountsRaw(rows);
     return rows;
   }, [teacherService]);
+  const refetchOwnerAccounts = useCallback(async () => {
+    const rows = await staffService.listOwnerAccounts();
+    setOwnerAccountsRaw(rows);
+    return rows;
+  }, [staffService]);
   const refetchDirectorAccounts = useCallback(async () => {
     const rows = await staffService.listDirectorAccounts();
     setDirectorAccountsRaw(rows);
@@ -599,12 +614,13 @@ function DataProvider({ children }) {
   useEffect(() => {
     refetchTeacherAccounts().catch((e) => console.error("Failed to load teacher accounts", e));
     refetchDirectorAccounts().catch((e) => console.error("Failed to load director accounts", e));
+    refetchOwnerAccounts().catch((e) => console.error("Failed to load owner account", e));
     refetchTeacherAssignments().catch((e) => console.error("Failed to load teacher assignments", e));
     refetchStaff().catch((e) => console.error("Failed to load staff", e));
     refetchStaffAttendance().catch((e) => console.error("Failed to load staff attendance", e));
     refetchPayrollPayments().catch((e) => console.error("Failed to load payroll payments", e));
     refetchSalaryAdvances().catch((e) => console.error("Failed to load salary advances", e));
-  }, [refetchTeacherAccounts, refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances]);
+  }, [refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances]);
   // teacher_assignments.subject_id is a real FK -- resolved to the mock app's subject-NAME
   // convention here, same bridging pattern classSubjects (above) already established.
   const teacherAssignments = useMemo(() => {
@@ -1001,7 +1017,7 @@ function DataProvider({ children }) {
   allRefetchRef.current = [
     refetchAcademicYears, refetchSubjects, refetchClasses, refetchStudents, refetchEnrollments,
     refetchStudentDocuments, refetchParents, refetchParentLinks, refetchTeacherAccounts,
-    refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance,
+    refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance,
     refetchPayrollPayments, refetchSalaryAdvances, refetchTimetable, refetchClosures,
     refetchAttendance, refetchLeaveRequests, refetchBehavior, refetchHomework, refetchResults,
     refetchResultEvidence, refetchExamAnnouncements, refetchReportCards, refetchFees,
@@ -1052,114 +1068,6 @@ function DataProvider({ children }) {
     });
     return () => { sub?.subscription?.unsubscribe(); teardown(); Object.values(debouncers).forEach(clearTimeout); };
   }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        let loaded = await loadDB();
-        if (!loaded) {
-          loaded = buildSeed();
-          await saveDB(loaded);
-        } else {
-          const before = JSON.stringify(loaded);
-          loaded = migrateDB(loaded);
-          if (JSON.stringify(loaded) !== before) await saveDB(loaded);
-        }
-        if (mounted) { setDb(loaded); setReady(true); }
-      } catch (e) {
-        console.error("Failed to initialize school data", e);
-        if (mounted) {
-          // Fall back to an in-memory seed so the app is still usable even if storage is unavailable.
-          try {
-            const fallback = buildSeed();
-            setDb(fallback);
-            setReady(true);
-          } catch (e2) {
-            setLoadError(String(e2 && e2.message ? e2.message : e2));
-          }
-        }
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
-
-  // Poll for cross-tab changes (simulated realtime)
-  useEffect(() => {
-    if (!ready) return;
-    const iv = setInterval(async () => {
-      let remote = await loadDB();
-      if (remote) remote = migrateDB(remote);
-      if (remote && remote.updatedAt > lastWriteRef.current) {
-        setDb((cur) => (cur && remote.updatedAt <= cur.updatedAt ? cur : remote));
-      }
-    }, 2200);
-    return () => clearInterval(iv);
-  }, [ready]);
-
-  // Every mutator below receives a draft that's been freshened with the real Supabase-backed
-  // domains (academicYears, subjects, classes, classSubjects) before it runs -- without this, a
-  // mutator reading `d.academicYears`/`d.classes` would see whatever buildSeed/migrateDB produced
-  // once, frozen forever, since nothing writes those back into the mock db anymore. The refreshed
-  // values get persisted back into mockDb/localStorage via saveDB(next) below too, so the mock
-  // layer stays a faithful (if momentary) mirror instead of silently diverging.
-  const commit = useCallback((mutator) => {
-    setDb((cur) => {
-      const draft = structuredCloneLite(cur);
-      draft.academicYears = academicYears;
-      draft.subjects = subjects;
-      draft.teacherAssignments = teacherAssignments;
-      draft.classes = withClassTeacherIds(classesRaw, draft.teacherAssignments);
-      draft.classSubjects = classSubjects;
-      draft.students = studentsRaw;
-      draft.enrollments = enrollmentsRaw;
-      draft.studentDocuments = studentDocumentsRaw;
-      draft.staff = staffRaw;
-      draft.staffAttendance = staffAttendanceRaw;
-      draft.payrollPayments = payrollPaymentsRaw;
-      draft.salaryAdvances = salaryAdvancesRaw;
-      draft.timetableEntries = timetableEntries;
-      draft.timetableConfig = timetableConfig;
-      draft.substitutions = substitutionsRaw;
-      draft.schoolClosures = schoolClosuresRaw;
-      draft.attendance = attendanceRaw;
-      draft.periodLogs = periodLogsRaw;
-      draft.leaveRequests = leaveRequestsRaw;
-      draft.ownerLeaveLog = ownerLeaveLogRaw;
-      draft.behaviorRecords = behaviorRecordsRaw;
-      draft.homework = homework;
-      draft.results = results;
-      draft.resultAuditLog = resultAuditLog;
-      draft.resultEvidence = resultEvidence;
-      draft.examAnnouncements = examAnnouncements;
-      draft.reportCards = reportCards;
-      // Phase 6: communications are real Supabase state now -- overlay so any commit() mutator
-      // still reading d.notifications/d.messages/... sees live rows, not stale seed.
-      draft.notifications = notificationsRaw;
-      draft.announcements = announcementsRaw;
-      draft.messages = messagesRaw;
-      draft.conversations = conversationsRaw;
-      draft.activities = activitiesRaw;
-      draft.users = mergeRealAccountsIntoUsers(draft.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw);
-      const next = mutator(draft);
-      next.updatedAt = Date.now();
-      lastWriteRef.current = next.updatedAt;
-      saveDB(next);
-      return next;
-    });
-  }, [
-    academicYears, subjects, classesRaw, classSubjects, studentsRaw, enrollmentsRaw, studentDocumentsRaw,
-    parentsRaw, childIdsByParent, teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw,
-    salaryAdvancesRaw, teacherAccountsRaw, directorAccountsRaw,
-    timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw, homework,
-    attendanceRaw, periodLogsRaw, leaveRequestsRaw, ownerLeaveLogRaw, behaviorRecordsRaw,
-    results, resultAuditLog, resultEvidence, examAnnouncements, reportCards,
-    notificationsRaw, announcementsRaw, messagesRaw, conversationsRaw, activitiesRaw,
-  ]);
-
-  function structuredCloneLite(obj) {
-    return JSON.parse(JSON.stringify(obj));
-  }
 
 
   function closuresByDateMap(dbLike) {
@@ -1267,7 +1175,7 @@ function DataProvider({ children }) {
       conversations: conversationsRaw,
       activities: activitiesRaw,
       announcementReadStatsById,
-      users: mergeRealAccountsIntoUsers(mockDb.users, parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw),
+      users: mergeRealAccountsIntoUsers(parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw),
       academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
     };
 
@@ -2128,19 +2036,17 @@ function DataProvider({ children }) {
           if (patch.grade !== undefined || patch.section !== undefined || patch.headTeacherId !== undefined) {
             await classService.update(id, { grade: patch.grade, section: patch.section, headTeacherId: patch.headTeacherId });
           }
-          // homework.grade/section are denormalized onto the row (like students) — keep the real
-          // homework rows in sync with the renamed class before refetching.
-          if (gradeSectionChanged) await homeworkService.retagClass(id, nextGrade, nextSection);
-          await Promise.all([refetchClasses(), refetchTeacherAssignments(), refetchHomework()]);
-          commit((d) => {
-            if (gradeSectionChanged) {
-              // mirror the renamed grade/section onto the student rows in the mock overlay too
-              // (exam announcements aren't stored per-class — they're audience-scoped by grade/
-              // section at announce-time, so there's nothing to cascade there)
-              d.students.forEach((s) => { if (s.classId === id) { s.grade = nextGrade; s.section = nextSection; } });
+          // grade/section are denormalized onto homework AND student rows — cascade the rename to
+          // the real rows before refetching. (Exam announcements aren't stored per-class — they're
+          // audience-scoped by grade/section at announce-time — so there's nothing to cascade there.)
+          if (gradeSectionChanged) {
+            await homeworkService.retagClass(id, nextGrade, nextSection);
+            const enrolled = studentsRaw.filter((s) => s.classId === id);
+            for (const s of enrolled) {
+              await studentService.update(s.id, { grade: nextGrade, section: nextSection });
             }
-            return d;
-          });
+          }
+          await Promise.all([refetchClasses(), refetchTeacherAssignments(), refetchHomework(), refetchStudents()]);
           await logActivityFeed(`${nextGrade}${nextSection} was updated.`);
           return { ok: true };
         } catch (e) {
@@ -2198,16 +2104,10 @@ function DataProvider({ children }) {
         const oldName = subj.name;
         try {
           await subjectService.rename(id, trimmed);
+          // homework / results / teacher_assignments / class_subjects all reference the subject by
+          // its real subject_id and resolve the display name fresh from the subjects row, so a
+          // rename needs nothing beyond re-fetching subjects.
           await refetchSubjects();
-          commit((d) => {
-            // homework is real Supabase data keyed by subject_id — its name resolves fresh from the
-            // renamed subjects row, nothing to cascade here (same as classSubjects/teacherAssignments,
-            // though those still need their mock-overlay copies retagged for this same-tick commit).
-            d.teacherAssignments.forEach((ta) => { if (ta.subject === oldName) ta.subject = trimmed; });
-            d.classSubjects.forEach((cs) => { if (cs.subject === oldName) cs.subject = trimmed; });
-            d.users.forEach((u) => { if (u.role === ROLES.TEACHER && u.subject === oldName) u.subject = trimmed; });
-            return d;
-          });
           await logActivityFeed(`Subject "${oldName}" was renamed to "${trimmed}".`);
           return { ok: true };
         } catch (e) {
@@ -4386,22 +4286,21 @@ function DataProvider({ children }) {
         }
       },
 
+      // Was "reset the local mock DB to a fresh seed". There is no local DB any more -- the only
+      // sensible meaning now is "re-pull every domain from Supabase". The Admin "Reset demo data"
+      // control should be removed; this keeps it harmless until then.
       resetDemoData() {
-        const fresh = buildSeed();
-        fresh.updatedAt = Date.now();
-        lastWriteRef.current = fresh.updatedAt;
-        saveDB(fresh);
-        setDb(fresh);
+        Promise.allSettled(allRefetchRef.current.map((fn) => fn())).catch(() => {});
       },
     };
   }, [
-    mockDb, commit, academicYears, subjects, classesRaw, classSubjects,
+    mockDb, academicYears, subjects, classesRaw, classSubjects,
     studentsRaw, enrollmentsRaw, studentDocumentsRaw, studentService,
     refetchStudents, refetchEnrollments, refetchStudentDocuments, syncStudentEnrollment,
     parentsRaw, parentLinksRaw, childIdsByParent, parentService, accountService, refetchParents, refetchParentLinks,
     teacherAssignments, staffRaw, staffAttendanceRaw, payrollPaymentsRaw, salaryAdvancesRaw,
-    teacherAccountsRaw, directorAccountsRaw, teacherService, staffService, payrollService,
-    refetchTeacherAccounts, refetchDirectorAccounts, refetchTeacherAssignments, refetchStaff,
+    teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw, teacherService, staffService, payrollService,
+    refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff,
     refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances,
     timetableService, closureService, timetableEntries, timetableConfig, substitutionsRaw, schoolClosuresRaw,
     refetchTimetable, refetchClosures,
@@ -4433,20 +4332,7 @@ function DataProvider({ children }) {
     return () => clearInterval(iv);
   }, [ready, api]);
 
-  if (loadError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-        <div className="max-w-sm text-center">
-          <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-3"><CircleAlert className="text-red-600" size={22} /></div>
-          <p className="font-medium text-slate-700 mb-1">Unable to load Hiil Model School.</p>
-          <p className="text-xs text-slate-400 mb-4">{loadError}</p>
-          <button onClick={() => window.location.reload()} className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Reload</button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!ready || !mockDb) {
+  if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">

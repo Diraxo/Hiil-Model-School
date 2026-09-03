@@ -17,6 +17,7 @@
 // from anyone but Owner/Finance even if a row-level check is somehow satisfied; update() here just
 // forwards whatever patch it's given and lets Postgres reject what it must.
 import { supabase } from "../lib/supabaseClient";
+import { directoryContactsMap } from "./profileContacts";
 
 function mapStaff(row) {
   return {
@@ -44,7 +45,7 @@ function mapStaff(row) {
 // same reasoning teacherService.js keeps to TEACHER-only.
 function mapAccount(row) {
   return {
-    id: row.id, role: row.role, name: row.full_name, email: row.email, phone: row.phone || "",
+    id: row.id, role: row.role, name: row.full_name, email: row.email || "", phone: row.phone || "",
     photo: row.photo_url || null, status: row.status, mustChangePassword: !!row.must_change_password,
   };
 }
@@ -76,7 +77,22 @@ export function createStaffService() {
       if (error) throw error;
     },
     async listDirectorAccounts() {
-      const { data, error } = await supabase.from("profiles").select("*").in("role", ["ADMIN", "FINANCE"]).order("full_name");
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, role, full_name, photo_url, status, must_change_password")
+        .in("role", ["ADMIN", "FINANCE"])
+        .order("full_name");
+      if (error) throw error;
+      const contacts = await directoryContactsMap();
+      return (data || []).map((row) => mapAccount({ ...row, ...contacts.get(row.id) }));
+    },
+    // The single OWNER profile -- used only to give `db.users` an entry for the Owner so
+    // Owner-authored announcements / activity lines resolve a name. Not a management list.
+    async listOwnerAccounts() {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, role, full_name, photo_url, status")
+        .eq("role", "OWNER");
       if (error) throw error;
       return (data || []).map(mapAccount);
     },

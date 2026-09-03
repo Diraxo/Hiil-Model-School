@@ -13,12 +13,13 @@
 // here is expected to be called by an Owner/Educational Director session; Postgres itself rejects
 // anything else, this file doesn't re-implement that check client-side.
 import { supabase } from "../lib/supabaseClient";
+import { directoryContactsMap } from "./profileContacts";
 
 function mapParent(row) {
   return {
     id: row.id,
     name: row.full_name,
-    email: row.email,
+    email: row.email || "",
     phone: row.phone || "",
     photo: row.photo_url || null,
     status: row.status,
@@ -36,9 +37,14 @@ const UNIQUE_VIOLATION = "23505";
 export function createParentService() {
   return {
     async list() {
-      const { data, error } = await supabase.from("profiles").select("*").eq("role", "PARENT").order("full_name");
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, photo_url, status, must_change_password")
+        .eq("role", "PARENT")
+        .order("full_name");
       if (error) throw error;
-      return (data || []).map(mapParent);
+      const contacts = await directoryContactsMap();
+      return (data || []).map((row) => mapParent({ ...row, ...contacts.get(row.id) }));
     },
     async listLinks() {
       const { data, error } = await supabase.from("parent_students").select("*");

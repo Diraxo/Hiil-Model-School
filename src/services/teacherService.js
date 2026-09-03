@@ -16,12 +16,13 @@
 // also enforces UNIQUE(class_id, subject_id) at the DB level, so a class+subject slot can never be
 // double-assigned even if client-side conflict resolution is ever bypassed.
 import { supabase } from "../lib/supabaseClient";
+import { directoryContactsMap } from "./profileContacts";
 
 function mapTeacher(row) {
   return {
     id: row.id,
     name: row.full_name,
-    email: row.email,
+    email: row.email || "",
     phone: row.phone || "",
     photo: row.photo_url || null,
     status: row.status,
@@ -39,9 +40,14 @@ function mapAssignment(row) {
 export function createTeacherService() {
   return {
     async list() {
-      const { data, error } = await supabase.from("profiles").select("*").eq("role", "TEACHER").order("full_name");
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, photo_url, status, must_change_password, first_name, middle_name, last_name")
+        .eq("role", "TEACHER")
+        .order("full_name");
       if (error) throw error;
-      return (data || []).map(mapTeacher);
+      const contacts = await directoryContactsMap();
+      return (data || []).map((row) => mapTeacher({ ...row, ...contacts.get(row.id) }));
     },
     // name/phone/photo only -- email/role are school-controlled and never edited here (mirrors
     // AuthContext.updateOwnProfile's self-service scope). RLS's profiles_privilege_guard trigger
