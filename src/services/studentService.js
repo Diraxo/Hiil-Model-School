@@ -8,11 +8,20 @@
 // consumer that reads `student.parentIds` -- now real (see parentService.js / DataContext.jsx's
 // createParentAccount/connectChild/disconnectChild), populated as soon as a parent is linked.
 //
-// Photo/document files are stored as data-URI strings directly in the real `photo_url`/`file_url`
-// text columns rather than Supabase Storage -- a deliberate simplification (both columns are plain
-// `text`, nothing enforces an actual URL) to avoid standing up a storage bucket + path-scoped RLS
-// policies in this pass. Fine for the current file sizes; worth revisiting if uploads grow large.
+// Photo/document files live in private Supabase Storage: student photos in the `student-photos`
+// bucket (path `<student_id>/<file>`), student documents in `student-documents` (same path shape).
+// Postgres (`students.photo_url`, `student_documents.file_url`) stores ONLY the object path; the
+// bytes are never base64'd into the column. Object RLS (20260827010000) mirrors the students /
+// student_documents table policies. DataContext resolves the stored paths to short-lived signed
+// URLs on read, so every consumer still reads a plain `student.photo` / `document.fileDataUrl`
+// string. `student-documents` has no UPDATE policy by design — a replacement is delete-then-add.
 import { supabase } from "../lib/supabaseClient";
+import {
+  isStoragePath, uploadObject, removeObjects, validateImageFile, validateDocFile, inferFileKind,
+} from "../lib/storageMedia";
+
+const PHOTO_BUCKET = "student-photos";
+const DOC_BUCKET = "student-documents";
 
 function mapStudent(row, parentIdsByStudent) {
   return {
@@ -49,7 +58,11 @@ function studentPayload(fields) {
   if (fields.section !== undefined) p.section = fields.section || "";
   if (fields.classId !== undefined) p.class_id = fields.classId;
   if (fields.admissionDate !== undefined) p.admission_date = fields.admissionDate;
-  if (fields.photo !== undefined) p.photo_url = fields.photo || null;
+  // `photo` is handled separately (Storage upload) whenever it is a File / explicit null — see
+  // create()/update() below. A plain string here is an already-stored path passed straight through.
+  if (typeof fields.photo === "string" && isStoragePath(fields.photo)) {
+    p.photo_url = fields.photo;
+  }
   if (fields.status !== undefined) p.status = fields.status;
   if (fields.suspension !== undefined) p.suspension = fields.suspension;
   if (fields.emergencyContact !== undefined) p.emergency_contact = fields.emergencyContact || null;
@@ -79,7 +92,10 @@ function mapDocument(row) {
     studentId: row.student_id,
     category: row.category,
     title: row.title,
+    // Stored value is a `student-documents` object path (or a legacy data URI on un-migrated
+    // rows). DataContext swaps in a signed URL before this reaches a component.
     fileDataUrl: row.file_url,
+    storagePath: isStoragePath(row.file_url) ? row.file_url : null,
     fileType: row.file_type,
     fileName: row.file_name,
     academicYearId: row.academic_year_id,
@@ -124,18 +140,52 @@ export function createStudentService() {
       const payload = { ...studentPayload(fields), student_id: studentId, status: fields.status || "ACTIVE" };
       const { data, error } = await supabase.from("students").insert(payload).select().single();
       if (error) throw error;
-      return mapStudent(data, new Map());
+      let student = mapStudent(data, new Map());
+      // Photo upload needs the student id (bucket RLS keys on it), so it happens after insert.
+      if (fields.photo instanceof File) {
+        const invalid = validateImageFile(fields.photo);
+        if (invalid) throw new Error(invalid);
+        const path = await uploadObject(PHOTO_BUCKET, student.id, fields.photo);
+        const { data: withPhoto, error: upErr } = await supabase
+          .from("students").update({ photo_url: path }).eq("id", student.id).select().single();
+        if (upErr) { await removeObjects(PHOTO_BUCKET, path); throw upErr; }
+        student = mapStudent(withPhoto, new Map());
+      }
+      return student;
     },
     async update(id, fields) {
+      let photoPathToSet;
+      if (fields.photo instanceof File || fields.photo === null) {
+        const { data: cur } = await supabase.from("students").select("photo_url").eq("id", id).single();
+        const previous = cur?.photo_url || null;
+        if (fields.photo instanceof File) {
+          const invalid = validateImageFile(fields.photo);
+          if (invalid) throw new Error(invalid);
+          const path = await uploadObject(PHOTO_BUCKET, id, fields.photo);
+          photoPathToSet = path;
+          if (isStoragePath(previous) && previous !== path) await removeObjects(PHOTO_BUCKET, previous);
+        } else {
+          photoPathToSet = null;
+          if (isStoragePath(previous)) await removeObjects(PHOTO_BUCKET, previous);
+        }
+      }
       const payload = studentPayload(fields);
+      if (photoPathToSet !== undefined) payload.photo_url = photoPathToSet;
       const { data, error } = await supabase.from("students").update(payload).eq("id", id).select().single();
       if (error) throw error;
       return mapStudent(data, new Map());
     },
     async remove(id) {
-      // enrollments + student_documents cascade-delete in Postgres (both FK'd on delete cascade).
+      // enrollments + student_documents cascade-delete in Postgres (both FK'd on delete cascade);
+      // the Storage objects do not, so DataContext best-effort removes the student's photo +
+      // document objects around this call.
       const { error } = await supabase.from("students").delete().eq("id", id);
       if (error) throw error;
+    },
+    // Best-effort object cleanup for a hard-deleted student (photo + all documents).
+    async removeStorageObjects({ photoPaths = [], documentPaths = [] }) {
+      await removeObjects(PHOTO_BUCKET, photoPaths);
+      await removeObjects(DOC_BUCKET, documentPaths);
     },
     // Creates (or reuses) this student's enrollment row for `academicYearId`, updating its
     // grade/section/classId/status/suspension to match -- but only setting `enrollmentDate` at
@@ -160,15 +210,27 @@ export function createStudentService() {
       if (error) throw error;
       return mapEnrollment(data);
     },
-    async createDocument(studentId, { category, title, fileDataUrl, fileType, fileName }, academicYearId) {
-      const payload = { student_id: studentId, category, title, file_url: fileDataUrl, file_type: fileType, file_name: fileName, academic_year_id: academicYearId || null };
+    // `file` is the raw File from the picker. Bytes -> `student-documents/<student_id>/...`, then
+    // one metadata row holding the object path. A metadata-insert failure removes the just-
+    // uploaded object so a failed upload leaves nothing behind.
+    async createDocument(studentId, { category, title, file }, academicYearId) {
+      const invalid = validateDocFile(file);
+      if (invalid) throw new Error(invalid);
+      const path = await uploadObject(DOC_BUCKET, studentId, file);
+      const payload = {
+        student_id: studentId, category, title,
+        file_url: path, file_type: inferFileKind(file), file_name: file.name || "document",
+        academic_year_id: academicYearId || null,
+      };
       const { data, error } = await supabase.from("student_documents").insert(payload).select().single();
-      if (error) throw error;
+      if (error) { await removeObjects(DOC_BUCKET, path); throw error; }
       return mapDocument(data);
     },
     async deleteDocument(id) {
+      const { data: row } = await supabase.from("student_documents").select("file_url").eq("id", id).single();
       const { error } = await supabase.from("student_documents").delete().eq("id", id);
       if (error) throw error;
+      if (row?.file_url) await removeObjects(DOC_BUCKET, row.file_url);
     },
   };
 }

@@ -46,7 +46,7 @@ import {
   canEditStudent, canDeleteStudent, canSuspendStudent, canChangeStudentPhoto,
   canManageAcademicYears, canAddBehavior, canViewStudentPayments, canVoidPayment, canTakeAttendance, studentStatusNotice,
 } from "../../utils/studentPermissions";
-import { DocumentViewerModal, inferFileType } from "../../components/DocumentViewer";
+import { DocumentViewerModal } from "../../components/DocumentViewer";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 
@@ -405,12 +405,12 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
       {!isEdit && (
         <Field label="Student photo">
           <div className="flex items-center gap-3">
-            {form.photo && <img src={form.photo} alt="Student preview" className="w-12 h-12 rounded-full object-cover border border-slate-200 shrink-0" />}
+            {form.photoPreview && <img src={form.photoPreview} alt="Student preview" className="w-12 h-12 rounded-full object-cover border border-slate-200 shrink-0" />}
             <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300">
-              <Camera size={15} /> {form.photo ? "Change photo" : "Upload photo (optional)"}
+              <Camera size={15} /> {form.photoPreview ? "Change photo" : "Upload photo (optional)"}
               <input type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files[0]; if (!file) return;
-                const reader = new FileReader(); reader.onload = () => set("photo", reader.result); reader.readAsDataURL(file);
+                set("photo", file); set("photoPreview", URL.createObjectURL(file));
               }} />
             </label>
           </div>
@@ -423,7 +423,7 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
 function AddStudentModal({ open, onClose }) {
   const data = useData();
   const toast = useToast();
-  const empty = { firstName: "", middleName: "", lastName: "", gender: "", dob: "", grade: "", section: "", admissionDate: new Date().toISOString().slice(0, 10), emergencyContactName: "", emergencyContact: "", emergencyContactRelationship: "", usesBus: false, photo: null };
+  const empty = { firstName: "", middleName: "", lastName: "", gender: "", dob: "", grade: "", section: "", admissionDate: new Date().toISOString().slice(0, 10), emergencyContactName: "", emergencyContact: "", emergencyContactRelationship: "", usesBus: false, photo: null, photoPreview: null };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const [createdId, setCreatedId] = useState(null);
@@ -492,25 +492,27 @@ function AddStudentModal({ open, onClose }) {
   );
 }
 
-// Upload/replace/remove/preview — spec §6. Reuses the same FileReader→data-URL pattern as
-// AddStudentModal's photo field; saves immediately via updateStudent (no separate photo storage).
+// Upload/replace/remove/preview — spec §6. The picked File goes straight to the private
+// `student-photos` bucket via updateStudent; `pending` is undefined (no change), a File (replace),
+// or null (remove).
 function ChangePhotoModal({ open, onClose, student }) {
   const data = useData();
   const toast = useToast();
-  const [preview, setPreview] = useState(student?.photo || null);
+  const [pending, setPending] = useState(undefined);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const { busy, run } = useMutationGuard();
-  useEffect(() => { setPreview(student?.photo || null); }, [student?.id, open]);
+  useEffect(() => { setPending(undefined); setPreviewUrl(null); }, [student?.id, open]);
+  const preview = pending instanceof File ? previewUrl : (pending === null ? null : (student?.photo || null));
   function onFile(e) {
     const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setPreview(reader.result);
-    reader.readAsDataURL(file);
+    setPending(file); setPreviewUrl(URL.createObjectURL(file));
   }
   async function save() {
     await run(async () => {
-      const res = await data.updateStudent(student.id, { photo: preview });
+      if (pending === undefined) { onClose(); return; }
+      const res = await data.updateStudent(student.id, { photo: pending });
       if (!res.ok) { toast(res.message, "error"); return; }
-      toast(preview ? "Profile photo updated." : "Profile photo removed.", "success");
+      toast(pending ? "Profile photo updated." : "Profile photo removed.", "success");
       onClose();
     });
   }
@@ -524,7 +526,7 @@ function ChangePhotoModal({ open, onClose, student }) {
             <Camera size={15} /> {preview ? "Replace photo" : "Upload photo"}
             <input type="file" accept="image/*" className="hidden" onChange={onFile} />
           </label>
-          {preview && <button type="button" onClick={() => setPreview(null)} className="text-xs text-red-600 font-medium px-3 py-2 hover:bg-red-50 rounded-lg">Remove photo</button>}
+          {preview && <button type="button" onClick={() => { setPending(null); setPreviewUrl(null); }} className="text-xs text-red-600 font-medium px-3 py-2 hover:bg-red-50 rounded-lg">Remove photo</button>}
         </div>
         <div className="flex justify-end gap-2 w-full pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -568,24 +570,19 @@ const TAB_LABELS = { overview: "Overview", attendance: "Attendance", homework: "
 function UploadDocumentModal({ open, onClose, studentId }) {
   const data = useData();
   const toast = useToast();
-  const empty = { category: DOCUMENT_CATEGORIES[0], title: "", fileDataUrl: null, fileType: "image", fileName: "" };
+  const empty = { category: DOCUMENT_CATEGORIES[0], title: "", file: null, fileName: "" };
   const [form, setForm] = useState(empty);
   const { busy, run } = useMutationGuard();
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function onFile(e) {
     const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      setForm((f) => ({ ...f, fileDataUrl: dataUrl, fileType: inferFileType(dataUrl), fileName: file.name, title: f.title || file.name.replace(/\.[^.]+$/, "") }));
-    };
-    reader.readAsDataURL(file);
+    setForm((f) => ({ ...f, file, fileName: file.name, title: f.title || file.name.replace(/\.[^.]+$/, "") }));
   }
   async function submit() {
-    if (!form.fileDataUrl) { toast("Please choose a file to upload.", "error"); return; }
+    if (!form.file) { toast("Please choose a file to upload.", "error"); return; }
     if (!form.title.trim()) { toast("Please give the document a title.", "error"); return; }
     await run(async () => {
-      const res = await data.createStudentDocument(studentId, { category: form.category, title: form.title.trim(), fileDataUrl: form.fileDataUrl, fileType: form.fileType, fileName: form.fileName });
+      const res = await data.createStudentDocument(studentId, { category: form.category, title: form.title.trim(), file: form.file });
       if (!res.ok) { toast(res.message, "error"); return; }
       toast("Document uploaded.", "success");
       setForm(empty); onClose();
@@ -1673,7 +1670,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
   const data = useData();
   const toast = useToast();
   const isEdit = !!teacher;
-  const empty = { firstName: "", middleName: "", lastName: "", email: "", phone: "", classIds: [], subjects: [], password: "", photo: null, bankAccount: "" };
+  const empty = { firstName: "", middleName: "", lastName: "", email: "", phone: "", classIds: [], subjects: [], password: "", photo: null, photoPreview: null, bankAccount: "" };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const [reassignments, setReassignments] = useState(new Set()); // Set of "classId|subject" the director chose to move onto this teacher
@@ -1694,7 +1691,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
       const classIds = data.teacherClassIds(teacher.id);
       const subjects = data.teacherSubjects(teacher.id);
       const staffRec = data.db.staff.find((s) => s.userId === teacher.id);
-      setForm({ firstName: teacher.firstName || "", middleName: teacher.middleName || "", lastName: teacher.lastName || "", email: teacher.email, phone: teacher.phone || "", classIds, subjects, password: "", photo: teacher.photo || null, bankAccount: staffRec?.bankAccount || "" });
+      setForm({ firstName: teacher.firstName || "", middleName: teacher.middleName || "", lastName: teacher.lastName || "", email: teacher.email, phone: teacher.phone || "", classIds, subjects, password: "", photo: teacher.photo || null, photoPreview: null, bankAccount: staffRec?.bankAccount || "" });
     } else {
       setForm({ ...empty, password: generatePassword() });
     }
@@ -1705,9 +1702,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
     setErrors((e) => (e[k] ? { ...e, [k]: undefined } : e));
   }
   function uploadPhoto(file) {
-    const reader = new FileReader();
-    reader.onload = () => set("photo", reader.result);
-    reader.readAsDataURL(file);
+    setForm((f) => ({ ...f, photo: file, photoPreview: URL.createObjectURL(file) }));
   }
   function fieldCls(k) {
     return errors[k]
@@ -1873,12 +1868,12 @@ function TeacherFormModal({ open, onClose, teacher }) {
       <div>
         <Field label="Photo (optional)">
           <div className="flex items-center gap-3">
-            <Avatar name={fullName(form.firstName, form.middleName, form.lastName) || "?"} photo={form.photo} size={44} />
+            <Avatar name={fullName(form.firstName, form.middleName, form.lastName) || "?"} photo={form.photoPreview || (typeof form.photo === "string" ? form.photo : null)} size={44} />
             <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
-              <ImagePlus size={13} /> {form.photo ? "Replace photo" : "Add photo"}
+              <ImagePlus size={13} /> {(form.photoPreview || form.photo) ? "Replace photo" : "Add photo"}
               <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files[0] && uploadPhoto(e.target.files[0])} />
             </label>
-            {form.photo && <button type="button" onClick={() => set("photo", null)} className="text-xs text-red-500 font-medium">Remove</button>}
+            {(form.photoPreview || form.photo) && <button type="button" onClick={() => setForm((f) => ({ ...f, photo: null, photoPreview: null }))} className="text-xs text-red-500 font-medium">Remove</button>}
           </div>
         </Field>
         <div className="grid sm:grid-cols-3 gap-x-4">
@@ -4015,15 +4010,6 @@ function AnnounceExamModal({ open, onClose }) {
   );
 }
 
-function readFileAsDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
 function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   const data = useData();
   const auth = useAuth();
@@ -5544,7 +5530,8 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
   const auth = useAuth();
   const toast = useToast();
   const [message, setMessage] = useState("");
-  const [image, setImage] = useState(null);
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const { busy, run } = useMutationGuard();
 
   useEffect(() => {
@@ -5556,7 +5543,8 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
     } else {
       setMessage("Dear parent, this is a friendly reminder that your child's school fees are currently outstanding. Please arrange payment at your earliest convenience. Thank you for your support.");
     }
-    setImage(null);
+    setImageFile(null);
+    setImagePreview(null);
   }, [open, mode, student]);
 
   function submit() {
@@ -5566,10 +5554,10 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
     run(async () => {
       if (mode === "single") {
         const parentIds = data.parentsOfStudent(student.id);
-        await data.sendPaymentReminder({ parentIds, message, image, feeTypeName: null }, auth.currentUser.id);
+        await data.sendPaymentReminder({ parentIds, message, imageFile, feeTypeName: null }, auth.currentUser.id);
         toast("Reminder sent.", "success");
       } else {
-        await data.sendPaymentReminder({ parentIds: bulkParentIds, message, image, feeTypeName: null }, auth.currentUser.id);
+        await data.sendPaymentReminder({ parentIds: bulkParentIds, message, imageFile, feeTypeName: null }, auth.currentUser.id);
         toast(`Reminder sent to ${bulkParentIds.length} parent${bulkParentIds.length === 1 ? "" : "s"}.`, "success");
       }
       onClose();
@@ -5582,17 +5570,17 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
         {mode === "bulk" && <p className="text-xs text-slate-400 mb-3">This will notify {bulkCount} parent{bulkCount === 1 ? "" : "s"} whose children currently have an outstanding balance.</p>}
         <Field label="Message" required><textarea className={inputCls} rows={4} value={message} onChange={(e) => setMessage(e.target.value)} /></Field>
         <Field label="Attach an image (optional)">
-          {image ? (
+          {imagePreview ? (
             <div className="flex items-center gap-3">
-              <img src={image} alt="Attachment" className="w-16 h-16 rounded-lg object-cover border border-slate-200" />
-              <button type="button" onClick={() => setImage(null)} className="text-xs text-red-500 font-medium">Remove image</button>
+              <img src={imagePreview} alt="Attachment" className="w-16 h-16 rounded-lg object-cover border border-slate-200" />
+              <button type="button" onClick={() => { setImageFile(null); setImagePreview(null); }} className="text-xs text-red-500 font-medium">Remove image</button>
             </div>
           ) : (
             <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300 w-fit">
               <ImagePlus size={15} /> Upload payment details (e.g. account number / QR code)
               <input type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files[0]; if (!file) return;
-                const reader = new FileReader(); reader.onload = () => setImage(reader.result); reader.readAsDataURL(file);
+                setImageFile(file); setImagePreview(URL.createObjectURL(file));
               }} />
             </label>
           )}
@@ -6213,15 +6201,10 @@ function SettingsPage({ role }) {
 
   useEffect(() => { setName(auth.currentUser.name); setPhone(auth.currentUser.phone || ""); }, [auth.currentUser.id]);
 
-  function onPickPhoto(e) {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const res = await auth.updateOwnProfile({ photo: reader.result });
-      if (res.ok) toast("Profile photo updated.", "success");
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
+  async function onPickPhoto(e) {
+    const file = e.target.files[0]; e.target.value = ""; if (!file) return;
+    const res = await auth.updateOwnProfile({ photo: file });
+    toast(res.ok ? "Profile photo updated." : (res.message || "Couldn't update the photo."), res.ok ? "success" : "error");
   }
 
   async function removePhoto() {

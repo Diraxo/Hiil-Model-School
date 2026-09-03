@@ -38,26 +38,25 @@ function audienceLabel(audience) {
 }
 
 // One optional attachment — an image (with preview) or a PDF (shown as a filename chip) —
-// mutually exclusive, matching the announcement schema's single `attachment` field. Stored as a
-// data: URI for now (Phase 1 has no file storage yet); the `{ type, name, dataUrl }` shape is
-// deliberately what a later Supabase Storage/R2 swap would keep, just pointing `dataUrl` at a
-// real hosted URL instead of an inline data URI.
+// mutually exclusive, matching the announcement schema's single `attachment` field. While
+// composing, the attachment holds the raw `file` plus a local `previewUrl`; on save the bytes go
+// to the private `announcement-attachments` bucket and DataContext resolves the stored path back
+// to a signed URL exposed as `attachment.dataUrl`.
 function AnnouncementAttachmentField({ attachment, onChange }) {
   function pick(type) {
     return (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => onChange({ type, name: file.name, dataUrl: reader.result });
-      reader.readAsDataURL(file);
+      onChange({ type, name: file.name, file, previewUrl: URL.createObjectURL(file) });
     };
   }
+  const previewSrc = attachment && (attachment.previewUrl || attachment.dataUrl);
   return (
     <Field label="Attachment (optional)">
       {attachment ? (
         <div className="flex items-center gap-3">
           {attachment.type === "image" ? (
-            <img src={attachment.dataUrl} alt={attachment.name} className="w-16 h-16 rounded-lg object-cover border border-slate-200" />
+            <img src={previewSrc} alt={attachment.name} className="w-16 h-16 rounded-lg object-cover border border-slate-200" />
           ) : (
             <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
               <FileText size={14} /> {attachment.name}
@@ -84,8 +83,8 @@ function AnnouncementAttachmentField({ attachment, onChange }) {
 // Compact attachment indicator shown on the announcement card (small thumbnail or a filename chip).
 function AnnouncementAttachmentChip({ attachment }) {
   if (!attachment) return null;
-  if (attachment.type === "image") {
-    return <img src={attachment.dataUrl} alt={attachment.name} className="w-10 h-10 rounded-lg object-cover border border-slate-200" />;
+  if (attachment.type === "image" && (attachment.dataUrl || attachment.previewUrl)) {
+    return <img src={attachment.dataUrl || attachment.previewUrl} alt={attachment.name} className="w-10 h-10 rounded-lg object-cover border border-slate-200" />;
   }
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
@@ -111,8 +110,8 @@ function AnnouncementDetailModal({ announcement, onClose }) {
           <p><span className="font-medium text-slate-600">Published:</span> {fmtDate(announcement.createdAt)} at {fmtTime(announcement.createdAt)}</p>
         </div>
         <p className="text-sm text-slate-700 whitespace-pre-wrap">{announcement.message}</p>
-        {announcement.attachment?.type === "image" && (
-          <img src={announcement.attachment.dataUrl} alt={announcement.attachment.name} className="w-full rounded-lg border border-slate-200 max-h-96 object-contain bg-slate-50" />
+        {announcement.attachment?.type === "image" && (announcement.attachment.dataUrl || announcement.attachment.previewUrl) && (
+          <img src={announcement.attachment.dataUrl || announcement.attachment.previewUrl} alt={announcement.attachment.name} className="w-full rounded-lg border border-slate-200 max-h-96 object-contain bg-slate-50" />
         )}
         {announcement.attachment?.type === "pdf" && (
           <button

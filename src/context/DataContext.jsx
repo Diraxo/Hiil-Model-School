@@ -45,6 +45,8 @@ import { createReportCardService } from "../services/reportCardService";
 import { createFeeService } from "../services/feeService";
 import { createPaymentService } from "../services/paymentService";
 import { createExpenseService } from "../services/expenseService";
+import { createProfilePhotoService } from "../services/profilePhotoService";
+import { signPaths as signStoragePaths, isStoragePath, uploadObject as uploadStorageObject, validateImageFile } from "../lib/storageMedia";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
 import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, formatAcademicYearLabel } from "../utils/academicCalendar";
@@ -992,6 +994,69 @@ function DataProvider({ children }) {
     refetchActivities().catch((e) => console.error("Failed to load activity feed", e));
   }, [refetchNotifications, refetchAnnouncements, refetchMessages, refetchActivities]);
 
+  // ---------------------------------------------------------------------
+  // Storage media -> signed URLs. Every user-uploaded image/file (profile & student photos,
+  // student documents, announcement attachments) is stored in a private bucket with only the
+  // object PATH kept in Postgres. Here we batch-sign every path currently referenced across the
+  // loaded data into one `<bucket>|<path> -> signedUrl` map, refreshed whenever any of those
+  // domains refetches. `signMedia(bucket, value)` then swaps a stored path for its signed URL at
+  // the point the value is handed to the UI (legacy inline data-URIs pass straight through until
+  // the one-time backfill migrates them). Expense receipts + result evidence keep their own
+  // pre-existing signing (expenseService / resultEvidenceService) -- not folded in here.
+  const profilePhotoService = useMemo(() => createProfilePhotoService(), []);
+  const [mediaUrls, setMediaUrls] = useState(() => new Map());
+  const announcementAttachmentPaths = useMemo(
+    () => announcementsRaw.map((a) => a.attachment && a.attachment.path).filter(isStoragePath),
+    [announcementsRaw],
+  );
+  const profilePhotoPaths = useMemo(() => {
+    const all = [];
+    [...parentsRaw, ...teacherAccountsRaw, ...directorAccountsRaw, ...ownerAccountsRaw].forEach((u) => { if (u && u.photo) all.push(u.photo); });
+    staffRaw.forEach((s) => { if (s && s.photo) all.push(s.photo); });
+    return all.filter(isStoragePath);
+  }, [parentsRaw, teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw, staffRaw]);
+  const studentPhotoPaths = useMemo(
+    () => studentsRaw.map((s) => s.photo).filter(isStoragePath),
+    [studentsRaw],
+  );
+  const studentDocumentPaths = useMemo(
+    () => studentDocumentsRaw.map((d) => d.storagePath || d.fileDataUrl).filter(isStoragePath),
+    [studentDocumentsRaw],
+  );
+  const notificationImagePaths = useMemo(
+    () => notificationsRaw.map((n) => n.image).filter(isStoragePath),
+    [notificationsRaw],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [pp, sp, sd, aa, ni] = await Promise.all([
+          signStoragePaths("profile-photos", profilePhotoPaths),
+          signStoragePaths("student-photos", studentPhotoPaths),
+          signStoragePaths("student-documents", studentDocumentPaths),
+          signStoragePaths("announcement-attachments", announcementAttachmentPaths),
+          signStoragePaths("payment-reminder-attachments", notificationImagePaths),
+        ]);
+        if (cancelled) return;
+        const next = new Map();
+        pp.forEach((url, path) => next.set("profile-photos|" + path, url));
+        sp.forEach((url, path) => next.set("student-photos|" + path, url));
+        sd.forEach((url, path) => next.set("student-documents|" + path, url));
+        aa.forEach((url, path) => next.set("announcement-attachments|" + path, url));
+        ni.forEach((url, path) => next.set("payment-reminder-attachments|" + path, url));
+        setMediaUrls(next);
+      } catch (e) {
+        if (!cancelled) console.error("Failed to sign storage media URLs", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [profilePhotoPaths, studentPhotoPaths, studentDocumentPaths, announcementAttachmentPaths, notificationImagePaths]);
+  const signMedia = useCallback((bucket, value) => {
+    if (!isStoragePath(value)) return value || null;
+    return mediaUrls.get(bucket + "|" + value) || null;
+  }, [mediaUrls]);
+
   // Phase 6 fan-out helpers, shared by every domain mutator. Notification + activity rows are
   // NEVER written from the client -- these call the notify_* / log_activity SECURITY DEFINER
   // RPCs (migration 20260827000000), which resolve recipients + entitlement server-side and are
@@ -1133,10 +1198,16 @@ function DataProvider({ children }) {
       teacherAssignments,
       classes: withClassTeacherIds(classesRaw, teacherAssignments),
       classSubjects,
-      students: studentsRaw,
+      // Storage-path -> signed-URL resolution for every user-uploaded image/file, so each
+      // consumer keeps reading a plain `photo` / `fileDataUrl` / `attachment.dataUrl` string.
+      students: studentsRaw.map((s) => (isStoragePath(s.photo) ? { ...s, photo: signMedia("student-photos", s.photo), photoPath: s.photo } : s)),
       enrollments: enrollmentsRaw,
-      studentDocuments: studentDocumentsRaw,
-      staff: staffRaw,
+      studentDocuments: studentDocumentsRaw.map((d) => (
+        isStoragePath(d.storagePath || d.fileDataUrl)
+          ? { ...d, fileDataUrl: signMedia("student-documents", d.storagePath || d.fileDataUrl) }
+          : d
+      )),
+      staff: staffRaw.map((s) => (isStoragePath(s.photo) ? { ...s, photo: signMedia("profile-photos", s.photo), photoPath: s.photo } : s)),
       staffAttendance: staffAttendanceRaw,
       payrollPayments: payrollPaymentsRaw,
       salaryAdvances: salaryAdvancesRaw,
@@ -1169,13 +1240,20 @@ function DataProvider({ children }) {
       // Phase 6: communications -> real Supabase. RLS scopes notifications to the caller and
       // messages/conversations to the caller's threads, so account switching can't leak a prior
       // user's feed.
-      notifications: notificationsRaw,
-      announcements: announcementsRaw,
+      notifications: notificationsRaw.map((n) => (
+        isStoragePath(n.image) ? { ...n, image: signMedia("payment-reminder-attachments", n.image) } : n
+      )),
+      announcements: announcementsRaw.map((a) => (
+        a.attachment && isStoragePath(a.attachment.path)
+          ? { ...a, attachment: { ...a.attachment, dataUrl: signMedia("announcement-attachments", a.attachment.path) } }
+          : a
+      )),
       messages: messagesRaw,
       conversations: conversationsRaw,
       activities: activitiesRaw,
       announcementReadStatsById,
-      users: mergeRealAccountsIntoUsers(parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw),
+      users: mergeRealAccountsIntoUsers(parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw)
+        .map((u) => (isStoragePath(u.photo) ? { ...u, photo: signMedia("profile-photos", u.photo), photoPath: u.photo } : u)),
       academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
     };
 
@@ -1642,10 +1720,10 @@ function DataProvider({ children }) {
       // ---- Student documents (Report Cards / ID Copies / Other): real Supabase data too
       // (student_documents) -- uploadedBy is server-stamped from auth.uid() by a trigger, not
       // passed from the client.
-      async createStudentDocument(studentId, { category, title, fileDataUrl, fileType, fileName }) {
+      async createStudentDocument(studentId, { category, title, file }) {
         try {
           const year = currentAcademicYear(academicYears);
-          const doc = await studentService.createDocument(studentId, { category, title, fileDataUrl, fileType, fileName }, year ? year.id : null);
+          const doc = await studentService.createDocument(studentId, { category, title, file }, year ? year.id : null);
           await refetchStudentDocuments();
           const s = studentsRaw.find((x) => x.id === studentId);
           await logActivityFeed(`A document ("${doc.title}") was uploaded for ${s ? studentFullName(s) : "a student"}.`);
@@ -1680,6 +1758,12 @@ function DataProvider({ children }) {
           // result_evidence metadata rows cascade with the student, but the Storage objects don't
           // -- grab their keys first so we can best-effort delete them after.
           const orphanEvidencePaths = resultEvidenceRaw.filter((e) => e.studentId === id).map((e) => e.storagePath);
+          // Photo + document Storage objects don't cascade with the row -- collect their keys first.
+          const orphanPhotoPaths = isStoragePath(s.photo) ? [s.photo] : [];
+          const orphanDocPaths = studentDocumentsRaw
+            .filter((d) => d.studentId === id)
+            .map((d) => d.storagePath || d.fileDataUrl)
+            .filter(isStoragePath);
           await studentService.remove(id);
           // attendance.student_id is ON DELETE CASCADE (server-side); leave_requests.subject_id is
           // polymorphic with no FK, so student leave rows are deleted explicitly (RLS delete policy
@@ -1687,6 +1771,7 @@ function DataProvider({ children }) {
           await leaveService.deleteForSubject("STUDENT", id).catch((e) => console.error("Failed to clean up student leave requests", e));
           await Promise.all([refetchStudents(), refetchEnrollments(), refetchStudentDocuments(), refetchParentLinks(), refetchResults(), refetchResultEvidence(), refetchReportCards(), refetchFees(), refetchPayments(), refetchAttendance(), refetchLeaveRequests(), refetchBehavior()]);
           await resultEvidenceService.removeObjects(orphanEvidencePaths);
+          await studentService.removeStorageObjects({ photoPaths: orphanPhotoPaths, documentPaths: orphanDocPaths });
           // attendance / behavior_records / results / result_audit_log / result_evidence /
           // student_fee_obligations / notifications all cascade server-side on student/profile
           // delete -- the refetches above pick that up. NOTE: payment_allocations.obligation_id is
@@ -1852,11 +1937,22 @@ function DataProvider({ children }) {
           const teacherId = created.userId;
 
           try {
-            await staffService.create({
+            const createdStaff = await staffService.create({
               userId: teacherId, name, position: "Teacher", phone: (phone || "").trim(),
               employmentDate: new Date().toISOString().slice(0, 10), salary: salary != null ? salary : 4500,
-              bankAccount: bankAccount || null, photo: photo || null,
+              bankAccount: bankAccount || null, photo: null,
             });
+            // Photo upload needs the staff row to exist (object RLS checks it) -- do it now, and
+            // write the same path to both profiles.photo_url and staff.photo_url.
+            if (photo instanceof File) {
+              try {
+                const path = await staffService.uploadPhoto(teacherId, photo);
+                await teacherService.updateProfile(teacherId, { photo: path });
+                await staffService.update(createdStaff.id, { photo: path });
+              } catch (photoErr) {
+                console.error("Teacher created, but the photo failed to upload", photoErr);
+              }
+            }
           } catch (staffErr) {
             await Promise.all([refetchTeacherAccounts(), refetchStaff()]);
             await logActivityFeed(`Teacher ${name} was added, but their staff/payroll record failed to create: ${staffErr.message || "unknown error"}.`);
@@ -1894,10 +1990,17 @@ function DataProvider({ children }) {
         try {
           // bankAccount lives only on the staff/payroll record, not the login.
           const { bankAccount, ...userPatch } = patch;
+          // Resolve a File/null photo change to a stored `profile-photos` path ONCE (uploading the
+          // new object, deleting the old), then write that same string to profiles + staff.
+          let resolvedPhoto;
+          if (userPatch.photo !== undefined) {
+            const prev = teacherAccountsRaw.find((t) => t.id === id)?.photo || null;
+            resolvedPhoto = await profilePhotoService.applyChange(id, userPatch.photo, prev);
+          }
           const profilePatch = {};
           if (userPatch.name !== undefined) profilePatch.name = userPatch.name;
           if (userPatch.phone !== undefined) profilePatch.phone = userPatch.phone;
-          if (userPatch.photo !== undefined) profilePatch.photo = userPatch.photo;
+          if (resolvedPhoto !== undefined) profilePatch.photo = resolvedPhoto;
           if (Object.keys(profilePatch).length) await teacherService.updateProfile(id, profilePatch);
           // Keep the linked staff/payroll record's name/phone/photo/bank account in sync, same
           // invariant as updateOwnProfile.
@@ -1906,7 +2009,7 @@ function DataProvider({ children }) {
             const staffPatch = {};
             if (patch.name !== undefined) staffPatch.name = patch.name;
             if (patch.phone !== undefined) staffPatch.phone = patch.phone;
-            if (patch.photo !== undefined) staffPatch.photo = patch.photo;
+            if (resolvedPhoto !== undefined) staffPatch.photo = resolvedPhoto;
             if (bankAccount !== undefined) staffPatch.bankAccount = bankAccount;
             if (Object.keys(staffPatch).length) await staffService.update(staffRec.id, staffPatch);
           }
@@ -3192,13 +3295,22 @@ function DataProvider({ children }) {
       // Phase 6: notify_payment_reminder is the ONE notify_* RPC that takes a caller-supplied
       // recipient list -- Finance deliberately picks parents to remind, the body is Finance-authored
       // free text, and every id is still validated server-side to an ACTIVE PARENT profile.
-      async sendPaymentReminder({ parentIds, message, image, feeTypeName }, sentBy) {
+      async sendPaymentReminder({ parentIds, message, image, imageFile, feeTypeName }, sentBy) {
         try {
+          // The optional attachment is stored ONCE in the private `payment-reminder-attachments`
+          // bucket (folder = sender id); only the short object path is fanned out onto each
+          // parent's notification row.
+          let imagePath = typeof image === "string" && isStoragePath(image) ? image : null;
+          if (imageFile instanceof File) {
+            const invalid = validateImageFile(imageFile);
+            if (invalid) return { ok: false, message: invalid };
+            imagePath = await uploadStorageObject("payment-reminder-attachments", sentBy, imageFile);
+          }
           await dispatchNotify("notify_payment_reminder", {
             p_parent_ids: parentIds,
             p_message: message,
             p_fee_type_name: feeTypeName || null,
-            p_image: image || null,
+            p_image: imagePath,
           });
           await logActivityFeed(`A payment reminder was sent to ${parentIds.length} parent${parentIds.length === 1 ? "" : "s"}.`);
           return { ok: true };
@@ -3641,7 +3753,12 @@ function DataProvider({ children }) {
       // is left for checkScheduledAnnouncements to dispatch once its time arrives.
       async createAnnouncement(payload) {
         try {
-          const ann = await announcementService.create(payload);
+          // The composer passes the raw File under `attachment.file`; the bytes go to the private
+          // `announcement-attachments` bucket after the row exists (see announcementService).
+          const ann = await announcementService.create({
+            ...payload,
+            attachmentFile: payload.attachment && payload.attachment.file ? payload.attachment.file : null,
+          });
           const publishAt = payload.publishAt || null;
           const isDueNow = !publishAt || publishAt <= Date.now();
           if (isDueNow) {
@@ -3766,8 +3883,18 @@ function DataProvider({ children }) {
         try {
           const created = await staffService.create({
             name: data.name, position: data.position, employmentDate: data.employmentDate,
-            phone: data.phone, salary: data.salary, photo: data.photo, hasShifts: data.hasShifts, bankAccount: data.bankAccount,
+            phone: data.phone, salary: data.salary, photo: null, hasShifts: data.hasShifts, bankAccount: data.bankAccount,
           });
+          // Photo object folder is the new staff id (accountless staff) -- upload post-insert.
+          if (data.photo instanceof File) {
+            try {
+              const path = await staffService.uploadPhoto(created.id, data.photo);
+              await staffService.update(created.id, { photo: path });
+              created.photo = path;
+            } catch (photoErr) {
+              console.error("Staff created, but the photo failed to upload", photoErr);
+            }
+          }
           await refetchStaff();
           await logActivityFeed(`${created.name} was added to staff as ${created.position}.`);
           return created.id;
@@ -4319,6 +4446,7 @@ function DataProvider({ children }) {
     notificationsRaw, announcementsRaw, messagesRaw, conversationsRaw, activitiesRaw, announcementReadStatsById,
     refetchNotifications, refetchAnnouncements, refetchMessages, refetchActivities, sessionUserId,
     logActivityFeed, dispatchNotify,
+    profilePhotoService, signMedia,
   ]);
 
   // Leave completion and scheduled-announcement publishing are both date-boundary checks, not

@@ -81,26 +81,25 @@ start using it in new code.
 ## Phase 1 → Phase 4 roadmap
 
 - **Phase 1 (this delivery):** React + Vite frontend, local mock data,
-  Supabase/R2/Firebase-ready but not required to run.
+  Supabase/Firebase-ready but not required to run.
 - **Phase 2:** Connect Supabase — Auth, Postgres, Row Level Security,
   real users/data, Realtime, Edge Functions. Replace the bodies of the
-  files in `src/services/` (and `src/data/seed.js`'s `loadDB`/`saveDB`)
-  with real Supabase calls.
-- **Phase 3:** Connect Cloudflare R2 for file/image storage, replacing the
-  current Base64/local image handling. `.env.example` has a
-  `VITE_R2_PUBLIC_URL` placeholder for this — write credentials that can
-  create/delete objects must stay server-side (e.g. a Supabase Edge
-  Function issuing signed upload URLs), never in the Vite client bundle.
+  files in `src/services/` with real Supabase calls.
+- **Phase 3:** File/image storage — every user-uploaded image and file
+  (profile & student photos, student documents, announcement and
+  payment-reminder attachments, expense receipts, exam evidence) lives in
+  a **private Supabase Storage bucket**; Postgres stores only the object
+  path and the app reads short-lived signed URLs. No third-party object
+  store is used or required.
 - **Phase 4:** Connect Firebase Cloud Messaging for real push
   notifications, layered on top of the in-app notification system that
   already works today.
 
 ## Environment variables
 
-None are required to run Phase 1. `.env.example` lists the placeholders
-that later phases will use (Supabase, R2, Firebase) — copy it to `.env`
-when you start Phase 2, the app keeps working in demo mode as long as
-they're empty.
+`.env.example` lists the Supabase (required) and Firebase (optional, push
+notifications) variables — copy it to `.env` and fill in the Supabase URL
+and publishable key.
 
 ## A note on the persistence layer
 

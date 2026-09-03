@@ -28,6 +28,7 @@ export { createReportService } from "./reportService";
 export { createStaffService } from "./staffService";
 export { createPayrollService } from "./payrollService";
 export { createExpenseService } from "./expenseService";
+export { createProfilePhotoService } from "./profilePhotoService";
 export { createReportCardService } from "./reportCardService";
 export { createAuditLogService } from "./auditLogService";
 export { createAccountService } from "./accountService";

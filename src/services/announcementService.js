@@ -10,22 +10,36 @@
 // SECURITY DEFINER RPC that derives the audience server-side and is idempotent via
 // announcements.publish_notified.
 //
-// Attachment: the mock stores a { type, name, dataUrl } object inline. The real column is a
-// single `attachment_url text` -- we serialise that object into it as JSON (same pragmatic
-// choice as students.photo_url / expenses receipts before Storage wiring) and parse it back on
-// read, so src/components/announcements.jsx stays unchanged.
+// Attachment: one optional image or PDF. The bytes live in the private `announcement-attachments`
+// bucket (path `<announcement_id>/<file>`, object RLS mirrors announcements_select); the
+// `attachment_url text` column holds only `{ type, name, path }` JSON. DataContext resolves
+// `path` to a short-lived signed URL and exposes it as `attachment.dataUrl`, so
+// src/components/announcements.jsx stays unchanged. Legacy rows (`{ type, name, dataUrl }` with an
+// inline data URI, or a bare URL string) are still parsed for backward compatibility.
 import { supabase } from "../lib/supabaseClient";
+import {
+  isStoragePath, signPaths, uploadObject, removeObjects, validateDocFile, inferFileKind,
+} from "../lib/storageMedia";
+
+const BUCKET = "announcement-attachments";
 
 function parseAttachment(text) {
   if (!text) return null;
   try {
     const parsed = JSON.parse(text);
-    if (parsed && parsed.dataUrl) return parsed;
+    if (parsed && (parsed.path || parsed.dataUrl)) {
+      return { type: parsed.type || "pdf", name: parsed.name || "Attachment", path: parsed.path || null, dataUrl: parsed.dataUrl || null };
+    }
   } catch {
     // A bare URL string (not our JSON shape) -- surface it as a generic file chip.
-    return { type: "pdf", name: "Attachment", dataUrl: text };
+    return { type: "pdf", name: "Attachment", path: null, dataUrl: text };
   }
   return null;
+}
+
+function attachmentPathOf(text) {
+  const a = parseAttachment(text);
+  return a && isStoragePath(a.path) ? a.path : null;
 }
 
 function mapAnnouncement(row) {
@@ -58,13 +72,17 @@ export function createAnnouncementService() {
       return (data || []).map(mapAnnouncement);
     },
 
-    async create({ title, message, audience, priority, attachment, pinned, publishAt, expiresAt }) {
+    // `attachmentFile` (a raw File) is uploaded AFTER the row exists (bucket RLS keys on the
+    // announcement id). The row is inserted with no attachment; on a successful upload the column
+    // is set to `{type,name,path}` JSON. An upload failure removes the object and rethrows, but
+    // the announcement row itself stays (attachment-less) rather than being half-created.
+    async create({ title, message, audience, priority, attachmentFile, pinned, publishAt, expiresAt }) {
       const row = {
         title: (title || "").trim(),
         message: (message || "").trim() || null,
         audience: audience || { type: "ALL" },
         priority: priority || "Normal",
-        attachment_url: attachment ? JSON.stringify(attachment) : null,
+        attachment_url: null,
         pinned: !!pinned,
         publish_at: toIso(publishAt),
         expires_at: toIso(expiresAt),
@@ -75,7 +93,18 @@ export function createAnnouncementService() {
       };
       const { data, error } = await supabase.from("announcements").insert(row).select().single();
       if (error) throw error;
-      return mapAnnouncement(data);
+      let created = mapAnnouncement(data);
+      if (attachmentFile instanceof File) {
+        const invalid = validateDocFile(attachmentFile);
+        if (invalid) throw new Error(invalid);
+        const path = await uploadObject(BUCKET, created.id, attachmentFile);
+        const meta = { type: inferFileKind(attachmentFile), name: attachmentFile.name || "Attachment", path };
+        const { data: withAtt, error: attErr } = await supabase
+          .from("announcements").update({ attachment_url: JSON.stringify(meta) }).eq("id", created.id).select().single();
+        if (attErr) { await removeObjects(BUCKET, path); throw attErr; }
+        created = mapAnnouncement(withAtt);
+      }
+      return created;
     },
 
     async togglePinned(id, pinned) {
@@ -96,8 +125,14 @@ export function createAnnouncementService() {
     },
 
     async remove(id) {
+      const { data: cur } = await supabase.from("announcements").select("attachment_url").eq("id", id).single();
       const { error } = await supabase.from("announcements").delete().eq("id", id);
       if (error) throw error;
+      const path = attachmentPathOf(cur?.attachment_url);
+      if (path) await removeObjects(BUCKET, path);
+    },
+    async signedUrls(paths) {
+      return signPaths(BUCKET, paths);
     },
 
     // notify_announcement(p_announcement_id, p_title, p_message, p_navigation) -- idempotent,

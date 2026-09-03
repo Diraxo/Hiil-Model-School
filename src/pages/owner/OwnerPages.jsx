@@ -439,7 +439,7 @@ function StaffFormModal({ open, onClose, staff }) {
   const toast = useToast();
   const isEdit = !!staff;
   const positions = manageablePositions(auth.realUser, STAFF_POSITIONS);
-  const empty = { firstName: "", middleName: "", lastName: "", name: "", position: positions[positions.length - 1] || STAFF_POSITIONS[STAFF_POSITIONS.length - 1], phone: "", salary: 4500, employmentDate: new Date().toISOString().slice(0, 10), hasShifts: false, photo: null, bankAccount: "" };
+  const empty = { firstName: "", middleName: "", lastName: "", name: "", position: positions[positions.length - 1] || STAFF_POSITIONS[STAFF_POSITIONS.length - 1], phone: "", salary: 4500, employmentDate: new Date().toISOString().slice(0, 10), hasShifts: false, photo: null, photoPreview: null, bankAccount: "" };
   const [form, setForm] = useState(empty);
   const { busy, run } = useMutationGuard();
 
@@ -450,7 +450,7 @@ function StaffFormModal({ open, onClose, staff }) {
       setForm({
         firstName: parts[0] || "", middleName: parts.length > 2 ? parts.slice(1, -1).join(" ") : "", lastName: parts.length > 1 ? parts[parts.length - 1] : "",
         name: staff.name, position: staff.position, phone: staff.phone || "", salary: staff.salary, employmentDate: staff.employmentDate,
-        hasShifts: !!staff.hasShifts, photo: staff.photo || null, bankAccount: staff.bankAccount || "",
+        hasShifts: !!staff.hasShifts, photo: staff.photo || null, photoPreview: null, bankAccount: staff.bankAccount || "",
       });
     } else setForm(empty);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -463,9 +463,7 @@ function StaffFormModal({ open, onClose, staff }) {
   const canEditSalary = canSetSalary(auth.realUser);
 
   function uploadPhoto(file) {
-    const reader = new FileReader();
-    reader.onload = () => set("photo", reader.result);
-    reader.readAsDataURL(file);
+    setForm((f) => ({ ...f, photo: file, photoPreview: URL.createObjectURL(file) }));
   }
 
   async function submit() {
@@ -519,11 +517,12 @@ function StaffFormModal({ open, onClose, staff }) {
       )}
       <Field label="Photo (optional)">
         <div className="flex items-center gap-3">
-          {form.photo && <Avatar name={isOtherStaff ? fullName(form.firstName, form.middleName, form.lastName) : form.name} photo={form.photo} size={40} />}
+          {(form.photoPreview || typeof form.photo === "string") && <Avatar name={isOtherStaff ? fullName(form.firstName, form.middleName, form.lastName) : form.name} photo={form.photoPreview || form.photo} size={40} />}
           <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
-            <ImagePlus size={13} /> {form.photo ? "Replace photo" : "Add photo"}
+            <ImagePlus size={13} /> {(form.photoPreview || form.photo) ? "Replace photo" : "Add photo"}
             <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files[0] && uploadPhoto(e.target.files[0])} />
           </label>
+          {(form.photoPreview || form.photo) && <button type="button" onClick={() => setForm((f) => ({ ...f, photo: null, photoPreview: null }))} className="text-xs text-red-500 font-medium">Remove</button>}
         </div>
       </Field>
       <div className="flex justify-end gap-2 pt-3">

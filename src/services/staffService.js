@@ -18,6 +18,12 @@
 // forwards whatever patch it's given and lets Postgres reject what it must.
 import { supabase } from "../lib/supabaseClient";
 import { directoryContactsMap } from "./profileContacts";
+import { isStoragePath, uploadObject, removeObjects, validateImageFile } from "../lib/storageMedia";
+
+const PHOTO_BUCKET = "profile-photos";
+// A staff member's profile-photo object folder: their login id when they have an account
+// (keeps `profiles.photo_url` and `staff.photo_url` on the same object), else their staff id.
+const photoOwnerId = (row) => row.user_id || row.id;
 
 function mapStaff(row) {
   return {
@@ -76,6 +82,21 @@ export function createStaffService() {
       const { error } = await supabase.from("profiles").update({ status }).eq("id", profileId);
       if (error) throw error;
     },
+    // Keep a login-linked staff member's `profiles.photo_url` in sync with their `staff.photo_url`
+    // (both hold the same `profile-photos` object path). Mirrors setProfileStatus.
+    async setProfilePhoto(profileId, photoPath) {
+      const { error } = await supabase.from("profiles").update({ photo_url: photoPath || null }).eq("id", profileId);
+      if (error) throw error;
+    },
+    // Raw upload for the create-then-link flow (a new staff row's id only exists post-insert).
+    async uploadPhoto(ownerId, file) {
+      const invalid = validateImageFile(file);
+      if (invalid) throw new Error(invalid);
+      return uploadObject(PHOTO_BUCKET, ownerId, file);
+    },
+    async removePhotoObject(path) {
+      await removeObjects(PHOTO_BUCKET, path);
+    },
     async listDirectorAccounts() {
       const { data, error } = await supabase
         .from("profiles")
@@ -125,7 +146,9 @@ export function createStaffService() {
         salary: Number(payload.salary) || 0,
         has_shifts: !!payload.hasShifts,
         bank_account: payload.bankAccount || null,
-        photo_url: payload.photo || null,
+        // A File/null photo is handled by DataContext after insert (needs the new staff id);
+        // only an already-stored object path is written straight through here.
+        photo_url: (typeof payload.photo === "string" && isStoragePath(payload.photo)) ? payload.photo : null,
       };
       const { data, error } = await supabase.from("staff").insert(row).select().single();
       if (error) throw error;
@@ -137,7 +160,25 @@ export function createStaffService() {
       if (patch.position !== undefined) row.position = patch.position;
       if (patch.phone !== undefined) row.phone = patch.phone || null;
       if (patch.salary !== undefined) row.salary = Number(patch.salary) || 0;
-      if (patch.photo !== undefined) row.photo_url = patch.photo || null;
+      if (patch.photo instanceof File || patch.photo === null) {
+        const { data: cur } = await supabase
+          .from("staff").select("id, user_id, photo_url").eq("id", id).single();
+        const previous = cur?.photo_url || null;
+        let nextPath = null;
+        if (patch.photo instanceof File) {
+          const invalid = validateImageFile(patch.photo);
+          if (invalid) throw new Error(invalid);
+          nextPath = await uploadObject(PHOTO_BUCKET, photoOwnerId(cur || { id }), patch.photo);
+        }
+        if (isStoragePath(previous) && previous !== nextPath) await removeObjects(PHOTO_BUCKET, previous);
+        row.photo_url = nextPath;
+        if (cur?.user_id) {
+          await supabase.from("profiles").update({ photo_url: nextPath }).eq("id", cur.user_id);
+        }
+      } else if (typeof patch.photo === "string" && isStoragePath(patch.photo)) {
+        // Only a real object path is persisted; a signed URL handed back by the UI = "unchanged".
+        row.photo_url = patch.photo;
+      }
       if (patch.hasShifts !== undefined) row.has_shifts = !!patch.hasShifts;
       if (patch.bankAccount !== undefined) row.bank_account = patch.bankAccount || null;
       if (patch.status !== undefined) row.status = patch.status;
@@ -148,8 +189,10 @@ export function createStaffService() {
       return mapStaff(data);
     },
     async remove(id) {
+      const { data: cur } = await supabase.from("staff").select("photo_url").eq("id", id).single();
       const { error } = await supabase.from("staff").delete().eq("id", id);
       if (error) throw error;
+      if (cur?.photo_url) await removeObjects(PHOTO_BUCKET, cur.photo_url);
     },
     async listAttendance() {
       const { data, error } = await supabase.from("staff_attendance").select("*");

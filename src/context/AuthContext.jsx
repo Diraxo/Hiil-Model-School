@@ -3,6 +3,10 @@ import { supabase } from "../lib/supabaseClient";
 import { useData } from "../context/DataContext";
 import { ROLES, ROLE_LABEL } from "../utils/constants";
 import { usePresenceHeartbeat } from "../utils/presence";
+import { createProfilePhotoService } from "../services/profilePhotoService";
+import { isStoragePath, signPaths } from "../lib/storageMedia";
+
+const profilePhotoService = createProfilePhotoService();
 
 const AuthCtx = createContext(null);
 function useAuth() { return useContext(AuthCtx); }
@@ -21,9 +25,24 @@ function mapProfile(row) {
     email: row.email,
     role: row.role,
     phone: row.phone || "",
+    // `photoPath` is the raw `profile-photos` object key (or a legacy data URI); `photo` is what
+    // the UI renders and is filled with a short-lived signed URL by `resolveProfilePhoto`.
+    photoPath: row.photo_url || null,
     photo: row.photo_url || null,
     mustChangePassword: !!row.must_change_password,
   };
+}
+
+// Swap a stored `profile-photos` object path for a signed URL so `currentUser.photo` is directly
+// renderable. Legacy inline data URIs (pre-Storage) and nulls pass straight through.
+async function resolveProfilePhoto(mapped) {
+  if (!mapped || !isStoragePath(mapped.photoPath)) return mapped;
+  try {
+    const urls = await signPaths("profile-photos", [mapped.photoPath]);
+    return { ...mapped, photo: urls.get(mapped.photoPath) || null };
+  } catch {
+    return { ...mapped, photo: null };
+  }
 }
 
 function AuthProvider({ children }) {
@@ -51,7 +70,7 @@ function AuthProvider({ children }) {
     if (row.status !== "ACTIVE") {
       return { profile: null, message: row.status === "SUSPENDED" ? suspendedMessage : disabledMessage };
     }
-    return { profile: mapProfile(row), message: null };
+    return { profile: await resolveProfilePhoto(mapProfile(row)), message: null };
   }, []);
 
   useEffect(() => {
@@ -116,9 +135,10 @@ function AuthProvider({ children }) {
   }, [profile, data]);
 
   // Self-service profile edits (name/phone/photo) -- deliberately excludes email/role, which are
-  // school-controlled. `photo` stays a data URL directly in profiles.photo_url for now (Storage
-  // migration is a later phase); mirroring onto a linked `staff` row is deferred to the Staff
-  // domain conversion, which hasn't happened yet.
+  // school-controlled. A `photo` value is a File (new upload), null (remove), or an unchanged
+  // string; `profilePhotoService.applyChange` uploads/deletes the private `profile-photos` object
+  // and returns the path to persist. A Teacher editing their OWN photo here also updates the
+  // linked `staff.photo_url` below so the two never drift.
   const updateOwnProfile = useCallback(async (patch) => {
     if (!profile) return { ok: false, message: "Account not found." };
     const update = {};
@@ -128,14 +148,45 @@ function AuthProvider({ children }) {
       update.full_name = trimmed;
     }
     if (patch.phone !== undefined) update.phone = (patch.phone || "").trim();
-    if (patch.photo !== undefined) update.photo_url = patch.photo || null;
+
+    let newPhotoPath;
+    if (patch.photo !== undefined) {
+      try {
+        newPhotoPath = await profilePhotoService.applyChange(profile.id, patch.photo, profile.photoPath);
+      } catch (e) {
+        return { ok: false, message: e.message || "Couldn't upload that photo." };
+      }
+      update.photo_url = newPhotoPath;
+    }
+
     const { error } = await supabase.from("profiles").update(update).eq("id", profile.id);
-    if (error) return { ok: false, message: error.message || "Couldn't update your profile." };
+    if (error) {
+      // The new object is already uploaded; roll it back so a failed DB write leaves nothing behind.
+      if (patch.photo instanceof File && isStoragePath(newPhotoPath)) {
+        await profilePhotoService.rollback(newPhotoPath).catch(() => {});
+      }
+      return { ok: false, message: error.message || "Couldn't update your profile." };
+    }
+    // Keep a linked staff record's photo in step (Teacher editing their own photo).
+    if (update.photo_url !== undefined) {
+      await supabase.from("staff").update({ photo_url: update.photo_url || null }).eq("user_id", profile.id);
+    }
+
+    let signedPhoto = profile.photo;
+    if (update.photo_url !== undefined) {
+      signedPhoto = null;
+      if (isStoragePath(update.photo_url)) {
+        try {
+          const urls = await signPaths("profile-photos", [update.photo_url]);
+          signedPhoto = urls.get(update.photo_url) || null;
+        } catch { signedPhoto = null; }
+      }
+    }
     setProfile((p) => (p ? {
       ...p,
       ...(update.full_name !== undefined ? { name: update.full_name } : {}),
       ...(update.phone !== undefined ? { phone: update.phone } : {}),
-      ...(update.photo_url !== undefined ? { photo: update.photo_url } : {}),
+      ...(update.photo_url !== undefined ? { photo: signedPhoto, photoPath: update.photo_url } : {}),
     } : p));
     return { ok: true, message: "Profile updated." };
   }, [profile]);
