@@ -6131,7 +6131,7 @@ function ReportsPage() {
     if (!withTotals.length) return null;
     return Math.round(withTotals.reduce((a, t) => a + t.pct, 0) / withTotals.length);
   })();
-  const homeworkCompletion = 87; // configurable metric placeholder derived from mock engagement
+  const homeworkCompletion = 87; // TODO: placeholder — not yet wired to a real homework-completion metric
   const behaviorByType = BEHAVIOR_TYPES.map((t) => ({ label: t, value: db.behaviorRecords.filter((b) => b.type === t).length })).filter((x) => x.value > 0);
   const maxB = Math.max(...behaviorByType.map((b) => b.value), 1);
 
@@ -6181,10 +6181,8 @@ function ReportsPage() {
 }
 
 function SettingsPage({ role }) {
-  const data = useData();
   const auth = useAuth();
   const toast = useToast();
-  const [confirmReset, setConfirmReset] = useState(false);
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
@@ -6317,16 +6315,6 @@ function SettingsPage({ role }) {
         ))}
       </Card>
 
-      {role === ROLES.ADMIN && (
-        <Card className="p-5 border-amber-100">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1">Developer / Demo</h3>
-          <p className="text-xs text-slate-400 mb-3">Restore the original demo dataset. This cannot be undone.</p>
-          <GhostButton icon={RefreshCw} danger onClick={() => setConfirmReset(true)}>Reset Demo Data</GhostButton>
-        </Card>
-      )}
-      <ConfirmDialog open={confirmReset} onClose={() => setConfirmReset(false)} danger confirmLabel="Reset Data"
-        title="Reset demo data?" description="This restores all students, teachers, parents, homework, and records to the original demo state."
-        onConfirm={() => { data.resetDemoData(); toast("Demo data has been reset.", "info"); }} />
     </div>
   );
 }

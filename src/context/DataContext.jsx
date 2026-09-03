@@ -76,12 +76,11 @@ function resolveResultCal(d, academicYearId) {
   return (academicYearId && d.academicYears.find((y) => y.id === academicYearId)) || currentAcademicYear(d.academicYears);
 }
 
-// classes/class_subjects are real Supabase data (see classService) but teacherAssignments is
-// still mock -- teacher accounts aren't real Supabase Auth users yet, and teacher_assignments.
-// teacher_id is a real FK to profiles(id), so there's nothing valid to write there for now (see
-// classService.js's header). `subjectTeacherIds` ("which teachers teach this class") was a
-// denormalized array stored directly on the old mock class object; here it's recomputed fresh
-// from teacherAssignments every time so it can never drift, and every existing UI consumer
+// classes/class_subjects and teacher_assignments are all real Supabase data (see classService /
+// teacherService). teacher_assignments.teacher_id is a real FK to profiles(id); teacher accounts
+// are real Supabase Auth users, created through the manage-staff-account Edge Function.
+// `subjectTeacherIds` ("which teachers teach this class") is not stored -- it's recomputed fresh
+// from teacherAssignments every time so it can never drift, and every UI consumer
 // (`c.subjectTeacherIds.includes(...)`) keeps working unchanged.
 function withClassTeacherIds(classes, teacherAssignments) {
   return classes.map((c) => ({
@@ -90,13 +89,12 @@ function withClassTeacherIds(classes, teacherAssignments) {
   }));
 }
 
-// Parents: real Supabase data (see parentService). Every mock-era PARENT entry in `users` is
-// dropped and replaced with the real `profiles` rows -- there is no longer any code path that can
-// mutate a parent's identity or children outside of Supabase. `childIds` here is the same kind of
-// read-only, always-fresh derived sugar as `subjectTeacherIds` above: it's recomputed from the
-// real `parent_students` rows on every render, never stored or mutated directly, so it can't drift
-// from the source of truth the way the old mock `user.childIds` array could. The actual mutation
-// path is parentService.link/unlink (see DataContext's connectChild/disconnectChild).
+// Parents: Supabase-backed (see parentService). Parents in `users` are the real `profiles` rows;
+// there is no code path that can mutate a parent's identity or children outside of Supabase.
+// `childIds` here is the same kind of read-only, always-fresh derived sugar as `subjectTeacherIds`
+// above: it's recomputed from the `parent_students` rows on every render, never stored or mutated
+// directly, so it can't drift from the source of truth. The actual mutation path is
+// parentService.link/unlink (see DataContext's connectChild/disconnectChild).
 // Builds the flat `users` array every `db.users.find(...)` / `u.role === ROLES.X` consumer across
 // this file (and AuthContext's "View as" target list) reads. Every account is now a real
 // `profiles` row -- Owner, Educational Director, Finance Director, Teacher, Parent -- fetched
@@ -108,10 +106,11 @@ function mergeRealAccountsIntoUsers(parents, childIdsByParent, teacherAccounts, 
   return [...(ownerAccounts || []), ...(directorAccounts || []), ...realTeachers, ...realParents];
 }
 
-// Blocker 5: the one authoritative payroll calculation. Called with `db` (the committed state)
-// for every read-only display (staffSalarySummary, dashboards, payslips) and with `d` (the live
-// draft inside commit()) from recordPayrollPayment so the overpayment cap is checked against the
-// true state at commit time, not a value the UI may have computed before another payment landed.
+// Blocker 5: the payroll calculation used for every read-only display (staffSalarySummary,
+// dashboards, payslips), called with `db` (the last-fetched Supabase state). The authoritative
+// overpayment cap is enforced server-side by the record_payroll_payment RPC, which re-runs this
+// same month-status logic inside the insert transaction so concurrent payments can't jointly
+// exceed the remaining amount.
 //
 // Blocker 5A fix: a month's own PAID/PARTIAL/UNPAID status is derived ONLY from real
 // payrollPayments recorded against that specific month — never from silently netting the advance
@@ -175,8 +174,8 @@ function computeStaffPayrollSummary(dbLike, staffId) {
 // ---- Blocker 2: fee/payment academic-year schema (catalog → yearly schedule → installments →
 // obligations → payments/allocations — see the "Fee Ledger Schema" design doc). These are module-
 // level, parameterized by `dbLike` (never closing over the outer `db`), the same convention
-// `computeStaffPayrollSummary` above already uses, so they work identically whether called with
-// the committed `db` (read-only display) or the live draft `d` inside a commit() mutator.
+// `computeStaffPayrollSummary` above uses, so they can run against any snapshot of the
+// last-fetched Supabase state a caller passes in.
 function scheduleForFeeType(dbLike, feeTypeId, academicYearId) {
   return dbLike.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId) || null;
 }
@@ -386,9 +385,11 @@ function monthsBetweenInclusive(startStr, endStr) {
 }
 
 function DataProvider({ children }) {
-  // `mockDb` is now just an in-memory skeleton (empty collections + a default academic calendar);
-  // every domain is overlaid from live Supabase state in the `api` useMemo below. No localStorage,
-  // no seed data, no persistence pipeline -- see src/data/skeleton.js.
+  // `mockDb` (legacy name) is just an in-memory skeleton: empty collections + a default academic
+  // calendar, from src/data/skeleton.js. Every domain below is overlaid from live Supabase state
+  // in the `api` useMemo. There is no localStorage, no seed data and no persistence pipeline;
+  // `setDb` is never called -- the skeleton only gives the first render stable empty arrays to
+  // read before the initial fetches resolve.
   const [mockDb, setDb] = useState(buildSkeleton);
   // Flips true once the first core fetch (academic years) settles -- just so the very first paint
   // shows a spinner instead of an empty dashboard. Every other domain streams in progressively
@@ -396,9 +397,8 @@ function DataProvider({ children }) {
   const [ready, setReady] = useState(false);
   const toast = useToast();
 
-  // Academic years: first domain converted to real Supabase data (see project notes). Lives as
-  // its own state, independent of the mock `db`/commit()/localStorage pipeline below -- every
-  // other domain still reads/writes the mock db until it's converted in turn.
+  // Academic years: Supabase-backed (academicYearService). Each domain lives as its own state +
+  // refetch and is folded onto the read-only `db` object in the `api` useMemo below.
   const academicYearService = useMemo(() => createAcademicYearService(), []);
   const [academicYears, setAcademicYears] = useState([]);
   const refetchAcademicYears = useCallback(async () => {
@@ -412,14 +412,14 @@ function DataProvider({ children }) {
       .finally(() => setReady(true));
   }, [refetchAcademicYears]);
 
-  // One-time cleanup: the pre-Supabase build persisted the entire mock school DB (including demo
-  // login rows) under this key. Nothing reads it any more -- purge it from returning browsers.
+  // One-time cleanup: the pre-Supabase build persisted its entire in-browser demo DB (including
+  // demo login rows) under this key. Nothing reads it any more -- purge it from returning browsers.
   useEffect(() => {
     try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* storage unavailable */ }
   }, []);
 
-  // Subjects: second domain converted to real Supabase data. Still referenced by NAME (not id)
-  // from every other still-mock table -- see subjectService.js's header comment.
+  // Subjects: Supabase-backed. Several read-side shapes still expose a subject by NAME (not id)
+  // -- see subjectService.js's header comment.
   const subjectService = useMemo(() => createSubjectService(), []);
   const [subjects, setSubjects] = useState([]);
   const refetchSubjects = useCallback(async () => {
@@ -429,12 +429,11 @@ function DataProvider({ children }) {
   }, [subjectService]);
   useEffect(() => { refetchSubjects().catch((e) => console.error("Failed to load subjects", e)); }, [refetchSubjects]);
 
-  // Classes + curriculum: third domain converted to real Supabase data. `classesRaw`/
-  // `classSubjectsRaw` are the real rows (classId/subjectId); `classSubjects` below resolves each
-  // subjectId to the mock app's subject-NAME convention so every still-mock consumer
-  // (teacherAssignments, homework, results, requiredSubjectsForClass, ...) keeps reading the same
-  // shape it always has. See classService.js and withClassTeacherIds above for the rest of the
-  // bridging story.
+  // Classes + curriculum: Supabase-backed. `classesRaw`/`classSubjectsRaw` are the real rows
+  // (classId/subjectId); `classSubjects` below resolves each subjectId to a subject NAME so every
+  // name-keyed consumer (teacherAssignments, homework, results, requiredSubjectsForClass, ...)
+  // keeps reading the same shape. See classService.js and withClassTeacherIds above for the rest
+  // of the bridging story.
   const classService = useMemo(() => createClassService(), []);
   const [classesRaw, setClassesRaw] = useState([]);
   const [classSubjectsRaw, setClassSubjectsRaw] = useState([]);
@@ -450,10 +449,10 @@ function DataProvider({ children }) {
     return classSubjectsRaw.map((cs) => ({ id: cs.id, classId: cs.classId, subject: nameById.get(cs.subjectId) || "" }));
   }, [classSubjectsRaw, subjects]);
 
-  // Students + enrollments + student_documents: fourth domain converted to real Supabase data.
-  // Every other still-mock table that references a student by id (attendance, homework, results,
-  // behaviorRecords, studentFeeObligations, leaveRequests, ...) keeps reading
-  // `db.students`/`db.enrollments` unchanged -- see the `db` shadow in the `api` useMemo below and
+  // Students + enrollments + student_documents: Supabase-backed. Every other table that references
+  // a student by id (attendance, homework, results, behaviorRecords, studentFeeObligations,
+  // leaveRequests, ...) keeps reading `db.students`/`db.enrollments` unchanged -- see the `db`
+  // object built in the `api` useMemo below and
   // studentService.js's header for the file-storage caveat. `student.parentIds` is real too (joined
   // from `parent_students` — see studentService.js's mapStudent), and `users.childIds` below is its
   // real mirror on the parent side.
@@ -500,7 +499,7 @@ function DataProvider({ children }) {
   // creates the actual Supabase Auth user + profiles row (see accountService.js / the
   // manage-staff-account Edge Function); `parentService` only ever reads/writes `parent_students`
   // links against an already-real parent/student pair. See `mergeParentsIntoUsers` above for how
-  // this gets bridged into the still-mock `db.users`/`childIds` shape every existing consumer reads.
+  // this gets bridged into the `db.users`/`childIds` shape every existing consumer reads.
   const parentService = useMemo(() => createParentService(), []);
   const accountService = useMemo(() => createAccountService(), []);
   const [parentsRaw, setParentsRaw] = useState([]);
@@ -623,8 +622,8 @@ function DataProvider({ children }) {
     refetchPayrollPayments().catch((e) => console.error("Failed to load payroll payments", e));
     refetchSalaryAdvances().catch((e) => console.error("Failed to load salary advances", e));
   }, [refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances]);
-  // teacher_assignments.subject_id is a real FK -- resolved to the mock app's subject-NAME
-  // convention here, same bridging pattern classSubjects (above) already established.
+  // teacher_assignments.subject_id is a real FK -- resolved to a subject NAME here, same bridging
+  // pattern classSubjects (above) uses.
   const teacherAssignments = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return teacherAssignmentsRaw.map((ta) => ({ id: ta.id, teacherId: ta.teacherId, subject: nameById.get(ta.subjectId) || "", classId: ta.classId }));
@@ -648,12 +647,11 @@ function DataProvider({ children }) {
     return [...byId.values()];
   }, [salaryAdvancesFullRaw, mySalaryAdvancesRaw]);
 
-  // Timetable + school closures: Phase 2 checkpoint 1. Real Supabase data (timetable_entries,
-  // timetable_config singleton, substitutions, school_closures) -- same independent-state pattern
-  // every earlier converted domain uses. `timetableEntries` below resolves the real subject_id to
-  // the mock app's subject-NAME convention (like classSubjects/teacherAssignments) so every
-  // existing `entry.subject` consumer keeps working unchanged. period_logs stays mock until
-  // checkpoint 2 (student/period attendance).
+  // Timetable + school closures: Supabase-backed (timetable_entries, timetable_config singleton,
+  // substitutions, school_closures) -- same independent-state pattern as every domain.
+  // `timetableEntries` below resolves the real subject_id to a subject NAME (like
+  // classSubjects/teacherAssignments) so every `entry.subject` consumer keeps working unchanged.
+  // period_logs is a separate domain, in attendanceService.js.
   const timetableService = useMemo(() => createTimetableService(), []);
   const closureService = useMemo(() => createClosureService(), []);
   const [timetableEntriesRaw, setTimetableEntriesRaw] = useState([]);
@@ -728,9 +726,9 @@ function DataProvider({ children }) {
     refetchLeaveRequests().catch((e) => console.error("Failed to load leave requests", e));
   }, [refetchAttendance, refetchLeaveRequests]);
 
-  // Student behavior / discipline: Phase 5 CP2. Real Supabase (behavior_records). RLS: read =
-  // Owner/ED + a Teacher for a class they teach/head + a Parent for their own child (Finance
-  // never); write = Owner + Educational Director only. Notifications stay on the mock bridge.
+  // Student behavior / discipline: Supabase-backed (behavior_records). RLS: read = Owner/ED + a
+  // Teacher for a class they teach/head + a Parent for their own child (Finance never); write =
+  // Owner + Educational Director only. Parent notification via notify_behavior_record.
   const behaviorService = useMemo(() => createBehaviorService(), []);
   const [behaviorRecordsRaw, setBehaviorRecordsRaw] = useState([]);
   const refetchBehavior = useCallback(async () => {
@@ -740,11 +738,10 @@ function DataProvider({ children }) {
   }, [behaviorService]);
   useEffect(() => { refetchBehavior().catch((e) => console.error("Failed to load behavior records", e)); }, [refetchBehavior]);
 
-  // Homework: Phase 3 checkpoint 1. Real Supabase data (`homework` table) -- same independent-state
-  // pattern every earlier converted domain uses. `homework` below resolves the real subject_id to
-  // the mock app's subject-NAME convention (like classSubjects/teacherAssignments/timetableEntries)
-  // so every existing `h.subject` consumer keeps working unchanged. Results (CP2) + result evidence
-  // (CP3) are real Supabase now; report cards stay mock until checkpoint 4.
+  // Homework: Supabase-backed (`homework` table) -- same independent-state pattern as every
+  // domain. `homework` below resolves the real subject_id to a subject NAME (like classSubjects/
+  // teacherAssignments/timetableEntries) so every `h.subject` consumer keeps working unchanged.
+  // Parent notification via notify_homework.
   const homeworkService = useMemo(() => createHomeworkService(), []);
   const [homeworkRaw, setHomeworkRaw] = useState([]);
   const refetchHomework = useCallback(async () => {
@@ -758,14 +755,14 @@ function DataProvider({ children }) {
     return homeworkRaw.map((h) => ({ ...h, subject: nameById.get(h.subjectId) || "" }));
   }, [homeworkRaw, subjects]);
 
-  // Results / Exams: Phase 3 checkpoint 2. Real Supabase data (`results` + `result_components` +
-  // `result_audit_log`, and `exam_announcements`) -- same independent-state pattern every earlier
-  // converted domain uses. `results` below rebuilds the mock record shape on top of the flat rows
-  // this returns: the real `subject_id` resolves to the mock app's subject-NAME convention (like
-  // homework/classSubjects), and `componentRows` folds back into the `{ midterm1: {score,max,...},
-  // ... }` object every resultTotals/resultsEngine consumer expects. result_evidence is real
-  // Supabase as of CP3 (see below); report_cards are real Supabase as of CP4 (see reportCards
-  // below). Notifications stay on the mock bridge (locked Phase 2 decision).
+  // Results / Exams: Supabase-backed (`results` + `result_components` + `result_audit_log`, and
+  // `exam_announcements`) -- same independent-state pattern as every domain. `results` below
+  // rebuilds the nested record shape on top of the flat rows this returns: the real `subject_id`
+  // resolves to a subject NAME (like homework/classSubjects), and `componentRows` folds back into
+  // the `{ midterm1: {score,max,...}, ... }` object every resultTotals/resultsEngine consumer
+  // expects. result_evidence and report_cards are Supabase-backed too (see below). Parent
+  // notifications via notify_results_published / notify_exam_announcement /
+  // notify_report_card_published.
   const resultService = useMemo(() => createResultService(), []);
   const resultEvidenceService = useMemo(() => createResultEvidenceService(), []);
   const examService = useMemo(() => createExamService(), []);
@@ -781,11 +778,11 @@ function DataProvider({ children }) {
     return recs;
   }, [resultService]);
 
-  // Phase 3 checkpoint 4: report cards are real Supabase now (`report_cards` table). The row only
-  // tracks the per-student+class+year lifecycle (status + promotion decision + who/when); every
-  // score/subject/total on the printed card is still DERIVED from the real `results` data (CP2)
-  // via the resultsEngine helpers below -- so `db.reportCards` keeps exactly the mock shape and no
-  // consumer (AdminPages ReportCardsPage, ParentPages, ReportCard.jsx) changes.
+  // Report cards: Supabase-backed (`report_cards` table). The row only tracks the
+  // per-student+class+year lifecycle (status + promotion decision + who/when); every
+  // score/subject/total on the printed card is DERIVED from the `results` data via the
+  // resultsEngine helpers below -- so `db.reportCards` keeps the shape every consumer
+  // (AdminPages ReportCardsPage, ParentPages, ReportCard.jsx) already expects.
   const refetchReportCards = useCallback(async () => {
     const rows = await reportCardService.list();
     setReportCardsRaw(rows);
@@ -845,7 +842,7 @@ function DataProvider({ children }) {
     }));
   }, [resultAuditRaw, subjects]);
   const examAnnouncements = useMemo(() => examAnnouncementsRaw.map((a) => ({ ...a })), [examAnnouncementsRaw]);
-  // Report cards are already mapped to the mock `db.reportCards` shape by reportCardService.list().
+  // Report cards are already mapped to the `db.reportCards` shape by reportCardService.list().
   const reportCards = useMemo(() => reportCardsRaw.map((rc) => ({ ...rc })), [reportCardsRaw]);
   // Fold the signed-URL map onto the metadata rows so `resultEvidenceFor` stays synchronous.
   // `fileDataUrl` is a short-lived signed URL (re-minted on every refetch), or null if the current
@@ -856,16 +853,15 @@ function DataProvider({ children }) {
     [resultEvidenceRaw, resultEvidenceUrls],
   );
 
-  // Fees / payments / expenses: Phase 4. Real Supabase data (fee_types -> fee_schedules ->
-  // fee_installments -> student_fee_obligations -> fee_obligation_adjustments; payments +
-  // payment_allocations + payment_methods; expenses + expense_items + the private
-  // `expense-receipts` bucket). Same shadow pattern -- every list is mapped into the mock `db`
-  // shape in the `api` useMemo below, so the ~15 pure fee helpers (scheduleForFeeType /
-  // feeRowsForStudentIn / netOwedForObligation / describeAllocation / paymentsForStudents /
-  // familyGroups / ...) and every read-path consumer keep working unchanged. Only the mutators
-  // change: each now awaits its Supabase write(s)/RPC, refetches, then commit()s the leftover
-  // mock activity/notification fan-out (that domain hasn't converted). The student fee cycle is
-  // MONTHLY -- installments are generated from academic_years.year_start/year_end by
+  // Fees / payments / expenses: Supabase-backed (fee_types -> fee_schedules -> fee_installments ->
+  // student_fee_obligations -> fee_obligation_adjustments; payments + payment_allocations +
+  // payment_methods; expenses + expense_items + the private `expense-receipts` bucket). Every list
+  // is folded into the `db` shape in the `api` useMemo below, so the ~15 pure fee helpers
+  // (scheduleForFeeType / feeRowsForStudentIn / netOwedForObligation / describeAllocation /
+  // paymentsForStudents / familyGroups / ...) and every read-path consumer keep working unchanged.
+  // Each mutator awaits its Supabase write(s)/RPC, refetches, then fans out the activity line
+  // (log_activity RPC) and any notification (notify_* RPC). The student fee cycle is MONTHLY --
+  // installments are generated from academic_years.year_start/year_end by
   // generate_monthly_fee_installments (never quarterly, never browser-clock math).
   const feeService = useMemo(() => createFeeService(), []);
   const paymentService = useMemo(() => createPaymentService(), []);
@@ -933,16 +929,13 @@ function DataProvider({ children }) {
   );
 
   // ---------------------------------------------------------------------
-  // Phase 6: communications -> real Supabase. notifications / announcements /
-  // messages / conversations / activities each become their own independent
-  // Supabase-backed state (same shadow pattern as every earlier domain: the
-  // `api` db object and the commit() draft below overlay these onto the mock
-  // `db.*` shape, so every existing consumer keeps working unchanged).
+  // Communications: notifications / announcements / messages / conversations / activities are each
+  // their own independent Supabase-backed state, folded onto the `db.*` shape by the `api` useMemo
+  // below so every consumer keeps working unchanged.
   //
-  // Notification + activity rows are NEVER written from the client -- every
-  // fan-out goes through a notify_* / log_activity SECURITY DEFINER RPC
-  // (migration 20260827000000) that resolves recipients + entitlement
-  // server-side and is idempotent via guard columns.
+  // Notification + activity rows are NEVER written from the client -- every fan-out goes through a
+  // notify_* / log_activity SECURITY DEFINER RPC (migration 20260827000000) that resolves
+  // recipients + entitlement server-side and is idempotent via guard columns.
   //
   // Realtime: one RLS-scoped channel per signed-in user. Torn down + rebuilt
   // on account switch, torn down on logout. On any auth change every domain is
@@ -1187,12 +1180,11 @@ function DataProvider({ children }) {
   /* ---------- derived lookups ---------- */
   const api = useMemo(() => {
     if (!mockDb) return null;
-    // Shadows the mock `db` state for the rest of this function: academicYears/subjects/classes/
-    // classSubjects now come from Supabase (see refetch* above) instead of the seeded/localStorage
-    // arrays. Every read below (`db.academicYears...`, `db.classes...`) picks this up automatically
-    // since it's one closure. academicCalendar is re-derived from the real data too (rather than
-    // trusting mockDb's stale seeded copy), since classifyAttendanceDate/etc. read it directly
-    // instead of academicYears.
+    // Builds the read-only `db` object for the rest of this function: every collection comes from
+    // its own Supabase-backed state (see refetch* above), overlaid on the empty skeleton. Every
+    // read below (`db.academicYears...`, `db.classes...`) picks this up automatically since it's
+    // one closure. academicCalendar is derived from the live academic year, since
+    // classifyAttendanceDate/etc. read it directly.
     const db = {
       ...mockDb, academicYears, subjects,
       teacherAssignments,
@@ -1536,10 +1528,10 @@ function DataProvider({ children }) {
         await feeService.materializeForStudent(student.id, academicYearId, anchorDate || null, reason);
       },
 
-      // ---- Students + enrollments: real Supabase data (see studentService.js). Fee-obligation
-      // materialization/activities/notifications stay on the mock commit() pipeline below since
-      // those domains haven't converted yet -- each mutator awaits its Supabase write(s), refetches
-      // students/enrollments, then commits just the leftover mock side effects.
+      // ---- Students + enrollments: Supabase-backed (see studentService.js). Each mutator awaits
+      // its Supabase write(s), refetches students/enrollments, then fans out the side effects --
+      // fee-obligation materialization via materialize_obligations_for_student, the activity line
+      // via log_activity, notifications via notify_* RPCs.
       async createStudent(fields) {
         try {
           const year = currentAcademicYear(academicYears);
@@ -1613,8 +1605,8 @@ function DataProvider({ children }) {
         }
       },
 
-      // ---- Academic Years: real Supabase data (see academicYearService). Only the activity-log
-      // side effect still goes through commit()/the mock db -- `activities` hasn't converted yet.
+      // ---- Academic Years: Supabase-backed (see academicYearService). The activity-log side
+      // effect goes through the log_activity RPC (logActivityFeed).
       async createAcademicYear(fields, createdBy) {
         try {
           const base = defaultAcademicCalendar(fields.yearStart ? new Date(fields.yearStart) : undefined);
@@ -1746,10 +1738,10 @@ function DataProvider({ children }) {
 
       // Permanently removes a student (enrollments + student_documents cascade-delete in Postgres,
       // and so does every parent_students row FK'd to them — see parent_students' `on delete
-      // cascade` — so no separate app-level unlink step is needed) and every still-mock record
-      // that only makes sense in relation to them (attendance, behavior, results/audit, fee
-      // obligations, leave requests). Homework is assigned per-class, not per-student, so it's
-      // untouched. Irreversible — the UI requires a serious confirmation before calling this.
+      // cascade` — so no separate app-level unlink step is needed) and every record that only
+      // makes sense in relation to them (attendance, behavior, results/audit, fee obligations,
+      // leave requests). Homework is assigned per-class, not per-student, so it's untouched.
+      // Irreversible — the UI requires a serious confirmation before calling this.
       async deleteStudent(id) {
         try {
           const s = studentsRaw.find((x) => x.id === id);
@@ -1789,14 +1781,14 @@ function DataProvider({ children }) {
       // head_teacher_id they held is server-side SET NULL, same for the FK). The linked staff/
       // payroll/attendance row is deleted explicitly first (real staff.id, cascades
       // payroll_payments/salary_advances/staff_attendance via THEIR FKs) -- same purge-everything
-      // semantics the mock always had, just performed as real deletes instead of draft mutation.
+      // semantics as before, performed as real Postgres deletes.
       // Homework/results/behavior they authored stay as historical records -- deleting a teacher
       // shouldn't erase a student's academic history. homework.teacher_id is ON DELETE SET NULL
       // (migration 20260901020000): the profile FK clears server-side while the row and its
       // teacher_name snapshot survive; results/behavior are untouched here and in the schema.
-      // Timetable entries are real now (deleted explicitly below, ahead of the profile, since the
-      // FK is ON DELETE RESTRICT); substitutions cascade server-side. Notifications and staff leave
-      // requests are still mock-only domains, cleaned up here exactly as before.
+      // Timetable entries are deleted explicitly below, ahead of the profile, since the FK is
+      // ON DELETE RESTRICT; substitutions cascade server-side. notifications.user_id is ON DELETE
+      // CASCADE on the profile; staff leave_requests are deleted explicitly (leaveService).
       async deleteTeacher(userId) {
         try {
           const u = db.users.find((x) => x.id === userId);
@@ -1804,7 +1796,7 @@ function DataProvider({ children }) {
           const staffRec = db.staff.find((s) => s.userId === userId);
           // timetable_entries.teacher_id is ON DELETE RESTRICT, so the teacher's own periods must
           // be cleared before the profile is removed (substitutions cascade via their own FKs).
-          // Same purge-everything semantics the mock always had.
+          // Same purge-everything semantics as before.
           await timetableService.deleteEntriesByTeacher(userId);
           if (staffRec) await staffService.remove(staffRec.id);
           if (staffRec) await leaveService.deleteForSubject("STAFF", staffRec.id).catch((e) => console.error("Failed to clean up staff leave requests", e));
@@ -2068,15 +2060,13 @@ function DataProvider({ children }) {
         }
       },
 
-      // ---- Classes + curriculum: real Supabase data (see classService). teacherAssignments stays
-      // mock for now (its teacher_id is a real profiles FK -- no Teacher has a real Supabase Auth
-      // account yet). `data.subjects`, if given, is the class's full curriculum (subject name
-      // strings), applied as individual class_subjects inserts after the class row itself exists.
+      // ---- Classes + curriculum: Supabase-backed (see classService). `data.subjects`, if given,
+      // is the class's full curriculum (subject name strings), applied as individual class_subjects
+      // inserts after the class row itself exists.
       //
-      // `headTeacherId` is a real FK to profiles(id) too -- since no Teacher has a real profile
-      // yet, any non-empty selection is guaranteed to fail with a Postgres FK violation. Rather
-      // than silently drop it, the error is caught below and turned into a clear message instead
-      // of a raw constraint name.
+      // `headTeacherId` is a real FK to profiles(id). A valid teacher profile id is accepted; an
+      // id with no matching profiles row fails with a Postgres FK violation, which is caught below
+      // and turned into a clear message instead of a raw constraint name.
       async createClass(data) {
         const grade = data.grade, section = data.section || "";
         try {
@@ -2093,7 +2083,7 @@ function DataProvider({ children }) {
         } catch (e) {
           console.error("Failed to create class", e);
           const message = /head_teacher/.test(e.message || "")
-            ? "Head teacher assignment isn't available yet — teacher accounts haven't moved to Supabase. Leave it unassigned for now."
+            ? "The selected head teacher couldn't be assigned — that teacher account is no longer valid. Pick a different teacher or leave it unassigned."
             : (e.message || "Couldn't create the class.");
           return { ok: false, message };
         }
@@ -2101,9 +2091,8 @@ function DataProvider({ children }) {
 
       // `patch.subjects`, if given, full-replaces the class's curriculum (diffed against its
       // current classSubjects). Removing a subject the class no longer teaches is blocked if
-      // students already have recorded results for it. Any teacherAssignment (still mock) for a
-      // removed subject is cleaned up in the same commit as the student/homework grade-section
-      // cascade below.
+      // students already have recorded results for it. Any teacher_assignments row for a removed
+      // subject is cleaned up alongside the student/homework grade-section cascade below.
       async updateClass(id, patch) {
         const cls = classesRaw.find((c) => c.id === id);
         if (!cls) return { ok: false, message: "Class not found." };
@@ -2127,7 +2116,7 @@ function DataProvider({ children }) {
             if (subj) {
               await classService.removeCurriculumSubject(id, subj.id);
               // A subject no longer taught in this class can't keep a teacher assigned to it here
-              // either -- real teacher_assignments row, same cascade the mock draft used to do.
+              // either -- delete the matching teacher_assignments row.
               await teacherService.unassignPair(id, subj.id);
             }
           }
@@ -2155,7 +2144,7 @@ function DataProvider({ children }) {
         } catch (e) {
           console.error("Failed to update class", e);
           const message = /head_teacher/.test(e.message || "")
-            ? "Head teacher assignment isn't available yet — teacher accounts haven't moved to Supabase. Leave it unassigned for now."
+            ? "The selected head teacher couldn't be assigned — that teacher account is no longer valid. Pick a different teacher or leave it unassigned."
             : (e.message || "Couldn't update the class.");
           return { ok: false, message };
         }
@@ -2182,10 +2171,9 @@ function DataProvider({ children }) {
         }
       },
 
-      // ---- Subjects: real Supabase data (see subjectService). Still-mock tables that reference a
-      // subject by NAME (homework, teacherAssignments, classSubjects, users.subject, results) still
-      // get their cascade-rename via commit() here, same as before -- only the subjects row itself
-      // now lives in Postgres.
+      // ---- Subjects: Supabase-backed (see subjectService). homework / results / teacher_assignments
+      // / class_subjects all store the real subject_id and resolve the display name fresh from the
+      // subjects row, so a rename only needs a subjects refetch -- there is no cross-table cascade.
       async createSubject(name) {
         try {
           await subjectService.create(name);
@@ -2241,11 +2229,11 @@ function DataProvider({ children }) {
       },
 
       // Creates a real Supabase Auth account + profiles row (role PARENT) via the
-      // manage-staff-account Edge Function, then links each resolved child through a real
-      // `parent_students` insert -- there is no local/mock fallback: if the Edge Function isn't
-      // deployed or the caller isn't Owner/Educational Director, this fails with a clear message
-      // instead of silently creating fake state. Mirrors createParentAccount's original rule that
-      // a student already linked to ANY parent can't be claimed again by a brand-new account
+      // manage-staff-account Edge Function, then links each resolved child through a
+      // `parent_students` insert -- there is no fallback: if the Edge Function isn't deployed or
+      // the caller isn't Owner/Educational Director, this fails with a clear message instead of
+      // creating partial state. Enforces the rule that a student already linked to ANY parent
+      // can't be claimed again by a brand-new account
       // (manually connecting an additional parent to an already-linked student is `connectChild`,
       // a deliberate admin action, not this one).
       async createParentAccount({ name, email, password, phone, children }) {
@@ -2349,9 +2337,8 @@ function DataProvider({ children }) {
       // teacher could publish homework on any date, including after the academic year had ended.
       // Real Supabase (`homework` table). The two client-side gates below are kept purely for a
       // friendly message — RLS's homework_insert enforces the same rules server-side
-      // (teacher_id = auth.uid(), teaches_class_subject, teacher_academic_action_ok). Activities +
-      // parent notifications stay on the mock bridge (locked Phase 2 decision — notify_homework
-      // exists but isn't wired until the Notifications phase).
+      // (teacher_id = auth.uid(), teaches_class_subject, teacher_academic_action_ok). The activity
+      // line goes through log_activity and the parent notification through notify_homework.
       async createHomework(data) {
         const today = todayKeyStr();
         const calendar = classifySchoolDay(today);
@@ -2505,12 +2492,10 @@ function DataProvider({ children }) {
       // (a driver's morning school run vs. afternoon run — see staff.hasShifts). Every non-shift
       // staff member's records are all "FULL_DAY", so this is a no-op for the common case.
       //
-      // Real-data replacement for the old draft-mutating upsert: writes one real staff_attendance
-      // row (staffService, real table) and reports whether a notification is owed -- same
-      // "did this actually change" guard as before (see Section 8 audit's dedup-notify fix), just
-      // computed against `db` (the last-fetched real data) instead of a commit() draft, since a
-      // commit() mutator can't await. Callers (saveStaffAttendance / decideLeaveRequest) are
-      // responsible for refetching staffAttendance and committing notifications/activity afterward.
+      // Writes one staff_attendance row (staffService) and reports whether a notification is owed
+      // -- the "did this actually change" guard (see Section 8 audit's dedup-notify fix) is
+      // computed against `db` (the last-fetched data). Callers (saveStaffAttendance /
+      // decideLeaveRequest) refetch staffAttendance and fan out notifications/activity afterward.
       async _writeStaffAttendance({ staffId, date, period, status, arrivalTime, note, markedBy, leaveRequestId }) {
         const finalPeriod = period || "FULL_DAY";
         const finalArrivalTime = status === "Late" ? (arrivalTime || "") : null;
@@ -2564,9 +2549,9 @@ function DataProvider({ children }) {
         return db.leaveRequests.filter((r) => r.kind === kind && r.approvalStatus === "PENDING").sort((a, b) => a.createdAt - b.createdAt);
       },
 
-      // Real Supabase (leave_requests). RLS: requested_by must equal the caller AND the caller must
-      // be entitled to request leave for that subject (parent-of-child / self / administrative
-      // remit). Notifications to the deciders stay on the mock bridge.
+      // Supabase-backed (leave_requests). RLS: requested_by must equal the caller AND the caller
+      // must be entitled to request leave for that subject (parent-of-child / self / administrative
+      // remit). The deciders are notified via notify_leave_submitted.
       async createLeaveRequest({ kind, subjectId, requestedBy, status, fromDate, toDate, note }) {
         try {
           const created = await leaveService.create({ kind, subjectId, requestedBy, status, fromDate, toDate, note });
@@ -2594,7 +2579,7 @@ function DataProvider({ children }) {
       // an APPROVED request to every eligible school day's attendance (STUDENT) / staff_attendance
       // (STAFF), skipping weekends, closures and out-of-semester dates — one caller/role check
       // (can_decide_leave), one PENDING guard (idempotent no-op otherwise). Afterwards we refetch
-      // the real rows and fan out the decision notification on the mock bridge.
+      // the rows and fan out the decision notification via notify_leave_decided.
       async decideLeaveRequest(id, approvalStatus, decidedBy, reason) {
         const req = db.leaveRequests.find((r) => r.id === id);
         if (!req || req.approvalStatus !== "PENDING") return { ok: true };
@@ -2648,18 +2633,14 @@ function DataProvider({ children }) {
       // Owner/Educational Director know too — a `completionNotified` flag guarantees this fires
       // exactly once per request no matter how many times this runs (see the polling effect below).
       async checkLeaveCompletions() {
-        // Pre-check against the read-only `db` closure before touching `commit` — commit()
-        // unconditionally bumps `updatedAt` and replaces `db`, which recreates this whole `api`
-        // object, which re-arms the polling effect that calls this very method (DataContext's
-        // `useEffect([ready, api])`). Calling commit() here with nothing to actually notify was
-        // a real infinite render loop (visible as "Maximum update depth exceeded" every ~60s,
-        // or immediately since this also runs once on mount) — this early return is the fix. The
-        // `completion_notified` flag is now flipped in Supabase (leave_requests is real as of CP1),
-        // so the guard stops firing once the refetch lands.
+        // Bail out early when there's nothing due: this runs on mount and every ~60s (see the
+        // scheduler effect near the bottom), and doing any work here bumps state that re-arms that
+        // effect. The `completion_notified` flag lives in Supabase (leave_requests), so once the
+        // notify RPC flips it and the refetch lands, matching rows stop showing up here.
         const todayKey = todayKeyStr();
         const due = db.leaveRequests.filter((r) => r.approvalStatus === "APPROVED" && !r.completionNotified && r.toDate < todayKey);
         if (due.length === 0) return;
-        // Phase 6: notify_leave_completed sends the requester + the leave-admins their "leave
+        // notify_leave_completed sends the requester + the leave-admins their "leave
         // ended" note AND flips leave_requests.completion_notified itself (state-guarded +
         // idempotent, safe for any authenticated poll -- see migration 20260827000000). Don't
         // pre-mark: that would make the RPC a no-op.
@@ -2682,10 +2663,10 @@ function DataProvider({ children }) {
       },
 
       // The Owner sits above everyone else, so their own leave has no approver and — since the
-      // Owner deliberately has no `staff` row (see seed.js) — no staff-attendance record to flip.
-      // This just logs it and lets the Educational Director know, for transparency.
-      // Real Supabase (owner_leave_log). RLS: insert = is_owner(); read = Owner + Educational
-      // Director. Notification to the Educational Director stays on the mock bridge.
+      // Owner has no `staff` row — no staff-attendance record to flip. This just logs it and lets
+      // the Educational Director know, for transparency.
+      // Supabase-backed (owner_leave_log). RLS: insert = is_owner(); read = Owner + Educational
+      // Director. The Educational Directors are notified via notify_owner_leave.
       async logOwnerLeave({ status, fromDate, toDate, note }, ownerUserId) {
         try {
           const row = await leaveService.logOwnerLeave({ status, fromDate, toDate, note });
@@ -2822,11 +2803,8 @@ function DataProvider({ children }) {
 
       // Only changes which dates are considered available for attendance — never touches any
       // attendance record already saved, no matter how the semester/break dates move. Writes
-      // through to the real academic_years row (see academicYearService) -- this used to write
-      // into the mock db.academicYears array, which is dead now that academicYears is real
-      // Supabase data (see the `commit()` overlay above): that write was invisible the moment it
-      // happened, since every read of db.academicYears/db.academicCalendar always came from the
-      // real (unchanged) Supabase state instead.
+      // through to the academic_years row (see academicYearService), then refetches so
+      // db.academicYears/db.academicCalendar pick up the new dates.
       async saveAcademicCalendar(fields, updatedBy) {
         const cal = db.academicCalendar;
         if (!cal || !cal.id) return { ok: false, message: "No academic year found to update." };
@@ -3059,8 +3037,9 @@ function DataProvider({ children }) {
         });
       },
 
-      // Real Supabase (timetable_config singleton, id = true). RLS: update = is_owner_or_admin().
-      // Every validation the mock enforced runs here first against the freshly-overlaid db.
+      // Supabase-backed (timetable_config singleton, id = true). RLS: update = is_owner_or_admin().
+      // All the client-side validation runs here first against the last-fetched db, for a friendly
+      // message.
       async updateTimetableConfig(patch, actorId) {
         const candidate = { ...db.timetableConfig, ...patch };
         const periodsCount = Number(candidate.periodsCount);
@@ -3106,10 +3085,10 @@ function DataProvider({ children }) {
         }
       },
 
-      // ---- Fee catalog (fee_types) — real Supabase. Never carries pricing or per-year state:
+      // ---- Fee catalog (fee_types) — Supabase-backed. Never carries pricing or per-year state:
       // name/category/description/default* only; default* fields are template-only, prefill a new
       // schedule at rollout time, and are never read by any balance calculation. Each mutator
-      // awaits its write, refetches, then commit()s the leftover mock activity line.
+      // awaits its write, refetches, then logs the activity line via log_activity.
       async createFeeType(data) {
         try {
           const ft = await feeService.createFeeType(data);
@@ -3371,8 +3350,8 @@ function DataProvider({ children }) {
       // friendly message; RLS's can_edit_result_component / results_insert enforce the LOCKED +
       // teacher-ownership + teacher_academic_action_ok rules server-side (the calendar auto-lock
       // has no RLS equivalent, same as homework). The score/share write goes to result_components,
-      // the audit entry to result_audit_log (actor stamped server-side by trigger); only the
-      // activities line stays on the mock bridge.
+      // the audit entry to result_audit_log (actor stamped server-side by trigger); the activity
+      // line goes through log_activity.
       async saveResultComponent({ studentId, classId, subject, semester, component, score, sharedWithParents, reason }, actorId /* actorRole unused: server stamps the audit actor */) {
         if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
           return { ok: false, message: "Invalid semester or assessment component." };
@@ -3417,7 +3396,8 @@ function DataProvider({ children }) {
       // ONE batched notification per parent — not one per score, per component, or per student
       // save. Re-publishing an already-PUBLISHED student is a safe no-op (the DB update only
       // touches rows still in DRAFT). publish_status transitions are Owner/Educational Director
-      // only (RLS results_update); notifications stay on the mock bridge.
+      // only (RLS results_update); the batched parent notification goes through
+      // notify_results_published.
       async publishResults(classId, subject, semester, studentIds, actorId, actorRole) {
         const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
         const subjectId = db.subjects.find((s) => s.name === subject)?.id || null;
@@ -3660,9 +3640,9 @@ function DataProvider({ children }) {
         }
       },
 
-      // Real Supabase (`exam_announcements`). Creation is Owner/Educational Director only (RLS
-      // exam_announcements_insert). The parent + head-teacher notification fan-out stays on the
-      // mock bridge (locked Phase 2 decision — notify_exam_announcement exists but isn't wired).
+      // Supabase-backed (`exam_announcements`). Creation is Owner/Educational Director only (RLS
+      // exam_announcements_insert). The parent + head-teacher notification fan-out goes through
+      // notify_exam_announcement.
       async announceExam({ title, audience, date, message, priority }, authorId) {
         let created;
         try {
@@ -3688,8 +3668,8 @@ function DataProvider({ children }) {
         return { ok: true };
       },
 
-      // Real Supabase (behavior_records). RLS: insert = is_owner_or_admin() (canAddBehavior).
-      // Notification to the parent stays on the mock bridge.
+      // Supabase-backed (behavior_records). RLS: insert = is_owner_or_admin() (canAddBehavior).
+      // The parent notification goes through notify_behavior_record (only when parent_notified).
       async createBehaviorRecord(payload) {
         try {
           const created = await behaviorService.create(payload);
@@ -4320,10 +4300,11 @@ function DataProvider({ children }) {
         const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
         return db.reportCards.find((rc) => rc.studentId === studentId && rc.classId === classId && (!rc.academicYearId || rc.academicYearId === yearId)) || null;
       },
-      // CP4: real Supabase (`report_cards` table). RLS restricts insert/update to Owner +
-      // Educational Director; the S2-readiness check below is a client-side gate for a friendlier
-      // message (the card is DERIVED from real results, so an incomplete card would just print
-      // blanks -- readiness stops that early). Notifications stay on the mock bridge.
+      // Supabase-backed (`report_cards` table). RLS restricts insert/update to Owner + Educational
+      // Director; the S2-readiness check below is a client-side gate for a friendlier message (the
+      // card is DERIVED from results, so an incomplete card would just print blanks -- readiness
+      // stops that early). The parent notification (on publish) goes through
+      // notify_report_card_published.
       async generateReportCard(studentId, classId, generatedBy, academicYearId) {
         const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
         const student = db.students.find((s) => s.id === studentId);
@@ -4411,13 +4392,6 @@ function DataProvider({ children }) {
           console.error("Failed to reopen report card", e);
           return { ok: false, message: reportCardRlsMessage(e) };
         }
-      },
-
-      // Was "reset the local mock DB to a fresh seed". There is no local DB any more -- the only
-      // sensible meaning now is "re-pull every domain from Supabase". The Admin "Reset demo data"
-      // control should be removed; this keeps it harmless until then.
-      resetDemoData() {
-        Promise.allSettled(allRefetchRef.current.map((fn) => fn())).catch(() => {});
       },
     };
   }, [

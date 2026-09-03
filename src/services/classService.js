@@ -1,15 +1,14 @@
-// Real Supabase-backed classes + curriculum (class_subjects) service. Classes are still
-// referenced by grade/section/headTeacherId exactly like the mock app; curriculum rows come back
-// as {classId, subjectId} (the real class_subjects shape) -- DataContext.jsx resolves subjectId to
-// a subject NAME on top of this (see its `classSubjects` useMemo) so every still-mock consumer
-// that reads a subject by name (teacherAssignments, homework, results, ...) keeps working
-// unchanged, same bridging pattern subjectService.js already established.
+// Supabase-backed classes + curriculum (class_subjects) service. Classes are referenced by
+// grade/section/headTeacherId; curriculum rows come back as {classId, subjectId} (the real
+// class_subjects shape) -- DataContext.jsx resolves subjectId to a subject NAME on top of this
+// (see its `classSubjects` useMemo) so every consumer that reads a subject by name
+// (teacherAssignments, homework, results, ...) keeps working unchanged, same bridging pattern
+// subjectService.js uses.
 //
-// `classes.head_teacher_id` is a real FK to `profiles(id)` -- but Teacher accounts aren't real
-// Supabase Auth users yet (see project notes), so there is no valid profiles row to point it at.
-// Rather than silently drop a head-teacher selection, create()/update() below just let Postgres's
-// FK constraint reject it; DataContext.jsx turns that into a clear user-facing message instead of
-// pretending the assignment succeeded.
+// `classes.head_teacher_id` is a real FK to `profiles(id)`. If a caller passes an id with no
+// matching profiles row, create()/update() below let Postgres's FK constraint reject it;
+// DataContext.jsx turns that into a clear user-facing message instead of pretending the
+// assignment succeeded.
 import { supabase } from "../lib/supabaseClient";
 
 function mapClass(row) {

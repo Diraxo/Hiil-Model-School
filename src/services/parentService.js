@@ -1,6 +1,7 @@
-// Real Supabase-backed parents + parent_students service (see studentService.js / classService.js
+// Supabase-backed parents + parent_students service (see studentService.js / classService.js
 // for the same pattern). A "parent" is simply a `profiles` row with role = 'PARENT'; the
-// parent<->student relationship lives entirely in `parent_students`, never in a mock array field.
+// parent<->student relationship lives entirely in the `parent_students` table, never in a
+// denormalized array field.
 //
 // Creating the actual Supabase Auth account + profiles row happens through accountService.js (the
 // manage-staff-account Edge Function) -- this file only ever touches `profiles` (read) and

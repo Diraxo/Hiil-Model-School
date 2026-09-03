@@ -1,9 +1,8 @@
-// Phase 3 checkpoint 3 (Result Evidence / Exam Evidence): real Supabase-backed evidence service.
-// Same pattern every earlier converted domain uses -- this file only ever talks to the
-// `result_evidence` table and the private `result-evidence` Storage bucket; DataContext.jsx owns
-// the read-side state + refetch (metadata rows AND a path->signed-URL map) and wraps every write
-// in an async api.* method that writes through here, refetches, then commit()s the leftover
-// activity/audit side-effects.
+// Supabase-backed result-evidence (exam-evidence) service. Same pattern as every other domain --
+// this file only ever talks to the `result_evidence` table and the private `result-evidence`
+// Storage bucket; DataContext.jsx owns the read-side state + refetch (metadata rows AND a
+// path->signed-URL map) and wraps every write in an async api.* method that writes through here,
+// refetches, then writes the result_audit_log entry and the activity line (log_activity RPC).
 //
 // Security model (defence in depth, RLS is the real boundary):
 //   - result_evidence RLS (20260825190000_rls_policies.sql L826-849, refined by

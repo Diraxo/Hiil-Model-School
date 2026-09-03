@@ -1,11 +1,11 @@
-// Phase 4 (Fees / Payments / Expenses): real Supabase-backed fee-catalog service.
+// Supabase-backed fee-catalog service (Fees / Payments / Expenses).
 //
 // Owns only the "what fees exist and what does each student owe" side of finance:
 //   fee_types  -> fee_schedules (per academic year) -> fee_installments (monthly)
 //   -> student_fee_obligations -> fee_obligation_adjustments
 //
 // Payments/allocations/methods live in paymentService.js; expenses in expenseService.js.
-// DataContext.jsx owns the read-side state + refetch and shadows every list into the mock
+// DataContext.jsx owns the read-side state + refetch and folds every list into the in-memory
 // `db` shape so the ~15 pure fee helpers (scheduleForFeeType / feeRowsForStudentIn /
 // netOwedForObligation / describeAllocation / ...) keep working unchanged.
 //

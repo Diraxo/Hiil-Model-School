@@ -1,8 +1,8 @@
 // Structured audit trail for Results (Student → Subject → Semester → Assessment Component).
-// Kept as a parallel log (db.resultAuditLog) rather than folded into the shared `activities`
-// feed — see src/data/seed.js and DataContext.jsx's result mutators for why: `activities` is a
-// global, Owner-only, free-text feed with consumers that regex/slice `.text` directly, and the
-// audience for this trail is different (visible, masked, to Teachers; invisible to Parents).
+// Kept as a parallel log (db.resultAuditLog, from the result_audit_log table) rather than folded
+// into the shared `activities` feed — see DataContext.jsx's result mutators for why: `activities`
+// is a global, staff-only, free-text feed with consumers that regex/slice `.text` directly, and
+// the audience for this trail is different (visible, masked, to Teachers; invisible to Parents).
 import { ROLES } from "./constants";
 
 const RESULT_AUDIT_ACTIONS = [

@@ -1,4 +1,6 @@
-// Phase 1: thin pass-through to DataContext. Phase 2: swap for Supabase.
+// Thin adapter over DataContext: reads come from the already-materialized `db.results`
+// (populated from Supabase via resultService), writes delegate to DataContext's RPC-backed
+// mutators. (See resultService.js for the actual Supabase queries.)
 export function createResultsService(data) {
   return {
     list: () => data.db.results,

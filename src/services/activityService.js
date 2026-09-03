@@ -1,14 +1,14 @@
-// Phase 6: real Supabase-backed global activity feed (activities).
+// Supabase-backed global activity feed (activities).
 //
 // RLS: activities_select = any authenticated ACTIVE account with a role (so every staff
-// dashboard reads it; a Parent session gets an empty list, which matches the mock -- the feed
-// widget is only rendered on Owner/Educational-Director/Finance/Teacher dashboards).
+// dashboard reads it; a Parent session gets an empty list -- the feed widget is only rendered on
+// Owner/Educational-Director/Finance/Teacher dashboards anyway).
 //
 // The table has NO client INSERT (no policy + grant revoked in 20260903010000). log_activity()
 // is the only write path -- SECURITY DEFINER, gated to staff, `text` is descriptive display copy
 // built in the JS layer immediately after an already-RLS-gated domain write.
 //
-// Mock shape preserved: { id, text, navigation, createdAt }.
+// Rows are returned in the shape consumers expect: { id, text, navigation, createdAt }.
 import { supabase } from "../lib/supabaseClient";
 
 const DEFAULT_LIMIT = 80;

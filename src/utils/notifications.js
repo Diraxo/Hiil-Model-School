@@ -1,9 +1,8 @@
 // Maps a notification to the sidebar nav key its unread badge belongs to, and that a visit to
-// that page should clear. Most runtime-created notifications already carry an explicit
-// `navigation.page` (see the notification creation sites in DataContext) that matches a nav key
-// directly; the seeded demo notifications (src/data/seed.js) predate that convention and carry no
-// `navigation` at all, so this also falls back to `type` for every type whose destination is
-// unambiguous. ATTENDANCE is deliberately left unmapped: a parent's is always navigation-tagged
+// that page should clear. Most notifications carry an explicit `navigation.page` (set by the
+// notify_* RPCs / DataContext) that matches a nav key directly; for any row that has no
+// `navigation`, this falls back to `type` for every type whose destination is unambiguous.
+// ATTENDANCE is deliberately left unmapped: a parent's is always navigation-tagged
 // already, while a staff member's own "your attendance was recorded" notification (no navigation)
 // has no matching nav page — Teacher's "Attendance" page is for taking students' attendance, not
 // reading their own — so it's left to show only in the general Notifications count.

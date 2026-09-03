@@ -1,4 +1,4 @@
-// Phase 4 (Fees / Payments / Expenses): real Supabase-backed expense service.
+// Supabase-backed expense service (Fees / Payments / Expenses).
 //
 // expenses.total_amount is derived by the recalc_expense_total() trigger from expense_items --
 // the client never sends a total. Header + all line items are written in ONE transaction via

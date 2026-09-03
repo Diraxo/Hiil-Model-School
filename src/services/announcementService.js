@@ -1,4 +1,4 @@
-// Phase 6: real Supabase-backed announcements.
+// Supabase-backed announcements.
 //
 // RLS is the boundary (announcements_select in migration 20260825190000): Owner/Educational
 // Director see every row; an author always sees their own (even scheduled/expired); everyone

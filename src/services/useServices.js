@@ -12,9 +12,8 @@ import {
 
 // Optional convenience hook: `const services = useServices();` gives you
 // `services.students.create(...)`, `services.payments.record(...)`, etc.
-// Existing pages call `useData()` directly (unchanged, to keep this pass
-// low-risk); new work can use this instead, and it's the natural place to
-// start once Phase 2 swaps individual services for Supabase-backed ones.
+// Most pages call `useData()` directly; new work can use this bundle instead.
+// Every service here is Supabase-backed (see src/services/index.js).
 export function useServices() {
   const data = useData();
   return useMemo(() => {

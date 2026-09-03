@@ -1,16 +1,13 @@
-// Phase 3 checkpoint 4 (Report Cards): real Supabase-backed report-card service. Same pattern
-// every earlier converted domain uses (see resultService.js / homeworkService.js): this file only
-// ever talks to the `report_cards` table. DataContext.jsx owns the read-side state + refetch and
-// wraps every write in an async api.* method that writes through here, refetches, then commit()s
-// only the leftover mock side-effects (activities + the parent "report card published"
-// notification -- notifications stay on the mock bridge per the locked Phase 2 decision, even
-// though notify_report_card_published() already exists on the remote).
+// Supabase-backed report-card service. Same pattern as every other domain (see resultService.js /
+// homeworkService.js): this file only ever talks to the `report_cards` table. DataContext.jsx owns
+// the read-side state + refetch and wraps every write in an async api.* method that writes through
+// here, refetches, then fans out the activity line (log_activity RPC) and, on publish, the parent
+// notification (notify_report_card_published).
 //
 // The report card itself is DERIVED, not stored: every subject / component score / total shown on
-// the printed card comes from the already-real `results` + `result_components` data (CP2) via
-// DataContext's resultsEngine helpers. This table only tracks the per-student+class+year
-// lifecycle row (status + promotion decision + who generated/published/locked it and when) --
-// exactly the mock `db.reportCards` shape, so no consumer changes.
+// the printed card comes from the `results` + `result_components` data via DataContext's
+// resultsEngine helpers. This table only tracks the per-student+class+year lifecycle row
+// (status + promotion decision + who generated/published/locked it and when).
 //
 // RLS is the real security boundary (supabase/migrations/20260825190000_rls_policies.sql
 // L903-917):

@@ -7,9 +7,9 @@
 // the target permission matrix is subject-level ("a teacher cannot touch another teacher's
 // subject"), which only teacherAssignments encodes.
 //
-// The mock DataContext layer does not call these itself — nothing else in it enforces
-// permissions server-side either, that's Phase 2/Supabase RLS's job. Phase 1's UI calls these
-// before rendering inputs/buttons.
+// These are client-side helpers that decide which inputs/buttons to render. The real enforcement
+// is Supabase RLS (see supabase/migrations/20260825190000_rls_policies.sql and the per-domain
+// service headers); these checks just keep the UI honest and give a friendly message.
 import { ROLES } from "./constants";
 import { classifySemesterResultLock } from "./academicCalendar";
 

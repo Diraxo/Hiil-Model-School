@@ -1,12 +1,12 @@
-// Phase 5 (CP1): real Supabase-backed student attendance + per-period journal/attendance.
+// Supabase-backed student attendance + per-period journal/attendance.
 //
 // Two tables live here:
 //   * attendance         — daily, class-level student attendance (unique per student+date)
 //   * period_logs         — per-timetable-period-per-day journal, optionally carrying a jsonb
 //                           snapshot of that period's per-student attendance
 //
-// Bridging: rows come back in the mock app's camelCase shape so every still-mock consumer
-// (dashboards, registers, parent views) keeps reading `a.studentId` / `log.attendance` unchanged.
+// Bridging: rows come back in camelCase so every consumer (dashboards, registers, parent views)
+// keeps reading `a.studentId` / `log.attendance` unchanged.
 //
 // RLS is the real security boundary:
 //   * attendance write  = is_owner_or_admin(), or a Teacher who heads the class AND is not
@@ -16,9 +16,9 @@
 //                         timetable's own teacher) gated by teacher_academic_action_ok
 // This service forwards writes and lets Postgres reject what it must; DataContext turns the
 // error into a user-facing message. Calendar/date gating (before school start, break, future
-// dates, closures) is enforced client-side in DataContext via classifyAttendanceDate — the same
-// rule the mock app always applied — and re-stated server-side by the attendance_date_guard
-// trigger added in the CP1 migration.
+// dates, closures) is enforced client-side in DataContext via classifyAttendanceDate for a
+// friendly message, and re-stated server-side by the attendance_date_guard trigger (migration
+// 20260903000000).
 import { supabase } from "../lib/supabaseClient";
 
 function mapAttendance(row) {
@@ -106,8 +106,7 @@ export function createAttendanceService() {
     },
 
     // Saving per-period attendance also marks the period done — a period with attendance recorded
-    // is definitionally a period that happened, so the two never drift apart (same invariant the
-    // mock savePeriodAttendance kept).
+    // is definitionally a period that happened, so the two never drift apart.
     async savePeriodAttendance({ timetableEntryId, date, records, markedBy }) {
       const nowIso = new Date().toISOString();
       const row = {

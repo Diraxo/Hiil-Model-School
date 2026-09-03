@@ -886,10 +886,11 @@ function RecordPayrollModal({ staff, month, onClose }) {
   const [error, setError] = useState("");
   const { busy, run } = useMutationGuard();
   React.useEffect(() => {
-    // Keyed on staff?.id, not the `staff` object itself — commit() clones `db` on every call,
-    // including a rejected payment, so `staff` gets a new (identical) reference on every attempt.
-    // Depending on the object would wipe the just-shown overpayment error and the user's typed
-    // amount the instant recordPayrollPayment rejected it, before they ever saw why.
+    // Keyed on staff?.id, not the `staff` object itself — the `db` object (and everything read
+    // off it) is rebuilt on every refetch, including the one after a rejected payment, so `staff`
+    // gets a new (identical) reference on every attempt. Depending on the object would wipe the
+    // just-shown overpayment error and the user's typed amount the instant recordPayrollPayment
+    // rejected it, before they ever saw why.
     if (month) { setForm(emptyForm(month)); setError(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, staff?.id]);

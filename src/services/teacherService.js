@@ -7,8 +7,8 @@
 //
 // teacher_assignments.subject_id is a real FK to subjects(id) (not a name string) -- DataContext.jsx
 // resolves subjectId -> a subject NAME on top of the raw rows this returns (same bridging pattern
-// classService.js already established for class_subjects), so every still-mock consumer that reads
-// an assignment's `.subject` as a name keeps working unchanged.
+// classService.js uses for class_subjects), so every consumer that reads an assignment's
+// `.subject` as a name keeps working unchanged.
 //
 // RLS note (see supabase/migrations/20260825190000_rls_policies.sql): teacher_assignments INSERT/
 // UPDATE/DELETE is restricted to is_owner_or_admin() (Owner or Educational Director) -- Postgres

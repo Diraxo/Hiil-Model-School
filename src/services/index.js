@@ -1,8 +1,8 @@
-// Barrel export for all Phase-1 mock services. Each one wraps the same
-// DataContext instance so there's a single source of truth, but gives
-// Phase 2 a clean per-domain seam to swap in Supabase-backed versions
-// (e.g. replace createStudentService's internals with real queries and
-// every page that imports `services` keeps working unchanged).
+// Barrel export for the per-domain data services. Every service in this folder is
+// Supabase-backed: it talks to Postgres (RLS-enforced), the SECURITY DEFINER RPCs,
+// Storage, and Realtime through the shared client in src/lib/supabaseClient.js.
+// DataContext owns the read-side state + refetch for each domain; pages import these
+// through `useServices()` / `useData()` and never touch the client directly.
 export { createStudentService } from "./studentService";
 export { createTeacherService } from "./teacherService";
 export { createParentService } from "./parentService";

@@ -1,12 +1,12 @@
-// Phase 5 (CP1): real Supabase-backed leave / permission requests + the Owner leave log.
+// Supabase-backed leave / permission requests + the Owner leave log.
 //
 // leave_requests.subject_id is polymorphic (students.id when kind = 'STUDENT', staff.id when
 // kind = 'STAFF') and deliberately has no FK — see the timetable_attendance_leave migration.
 //
-// Bridging: rows come back in the mock app's shape. Note the two name changes the DB schema
-// makes vs. the mock object:
-//   mock `status`         -> db `reason`          (the leave TYPE: Sick / Permission / Excused)
-//   mock `approvalStatus` -> db `approval_status` (the DECISION: PENDING / APPROVED / REJECTED)
+// Bridging: rows come back in the app's camelCase shape. Note the two field names that differ
+// from the DB columns:
+//   app `status`         -> db `reason`          (the leave TYPE: Sick / Permission / Excused)
+//   app `approvalStatus` -> db `approval_status` (the DECISION: PENDING / APPROVED / REJECTED)
 //
 // RLS is the real boundary:
 //   * select : the requester, or anyone who can_decide_leave(kind, subject)
@@ -24,7 +24,7 @@ function mapLeaveRequest(row) {
     kind: row.kind,
     subjectId: row.subject_id,
     requestedBy: row.requested_by,
-    status: row.reason, // leave TYPE — mock field name
+    status: row.reason, // leave TYPE — app field name for db column `reason`
     fromDate: row.from_date,
     toDate: row.to_date,
     note: row.note || "",

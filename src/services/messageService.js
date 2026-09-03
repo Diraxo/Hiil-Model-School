@@ -1,4 +1,4 @@
-// Phase 6: real Supabase-backed 1:1 messaging (conversations + messages).
+// Supabase-backed 1:1 messaging (conversations + messages).
 //
 // RLS is the boundary (migration 20260825190000):
 //   * conversations_select : auth.uid() in (participant_1_id, participant_2_id)
@@ -12,7 +12,7 @@
 // The recipient notification is done by notify_message (SECURITY DEFINER, idempotent per
 // message id, recipient derived server-side).
 //
-// Mock shapes preserved: conversation -> { id, participantIds: [p1, p2] };
+// Rows are returned in the shape consumers expect: conversation -> { id, participantIds: [p1, p2] };
 // message -> { id, conversationId, senderId, text, read, createdAt }.
 import { supabase } from "../lib/supabaseClient";
 

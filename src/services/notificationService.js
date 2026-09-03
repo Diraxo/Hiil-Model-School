@@ -1,4 +1,4 @@
-// Phase 6: real Supabase-backed notifications.
+// Supabase-backed notifications.
 //
 // Rows are RLS-scoped to the caller (notifications_select = user_id = auth.uid()), so `list()`
 // only ever returns the current session's own notifications -- account switching can never leak
@@ -9,7 +9,7 @@
 // This service only READS them and flips the `read` flag (the one field notifications_update +
 // the enforce_notification_update_guard trigger allow the recipient to change).
 //
-// Rows come back in the mock app's shape: snake_case columns mapped to
+// Rows come back in the shape consumers expect: snake_case columns mapped to
 // { id, userId, title, message, image, read, type, announcementId, navigation, createdAt }.
 import { supabase } from "../lib/supabaseClient";
 

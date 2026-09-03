@@ -1,132 +1,197 @@
-# Tilmaan Modern Academy — School Management System
+# Hiil Model School — School Management System
 
-Phase 1: a complete, runnable **React + Vite** frontend for the Tilmaan
-Modern Academy School Management System, built from the approved prototype.
-It runs entirely on local mock data — no backend required yet.
+A **React + Vite** single-page app for running Hiil Model School: admissions,
+classes and curriculum, timetables, attendance and leave, homework, exam
+results and report cards, fees and payments, payroll and expenses, behaviour
+records, announcements, 1:1 messaging, and a staff activity feed.
+
+The app is backed entirely by **Supabase** — Postgres with Row Level Security,
+Supabase Auth, Realtime, Storage, and Edge Functions. There is no mock data
+layer and nothing is persisted in the browser; every screen reads and writes
+live data through the authenticated Supabase client.
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev
+cp .env.example .env      # then fill in the two Supabase values (see below)
+npm run dev               # Vite dev server, usually http://localhost:5173
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`). To build for
-production:
+### Scripts
 
-```bash
-npm run build
-npm run preview   # serve the production build locally to double-check it
-```
+| Command           | What it does                                              |
+|-------------------|----------------------------------------------------------|
+| `npm run dev`     | Start the Vite dev server with HMR                        |
+| `npm run build`   | Production build to `dist/`                               |
+| `npm run preview` | Serve the built `dist/` locally to sanity-check it        |
 
-## Demo accounts
+There is no separate lint / typecheck / test script in this project.
 
-The app seeds a realistic demo school on first load and persists changes to
-your browser's `localStorage` (per-browser, not shared across devices).
-
-| Role                        | Email                       | Password   |
-|-----------------------------|-----------------------------|------------|
-| Owner (Super Admin)         | `owner@tilmaan-demo.com`    | `Demo123!` |
-| Educational Director        | `admin@tilmaan-demo.com`    | `Demo123!` |
-| Finance & Operations Director | `finance@tilmaan-demo.com` | `Demo123!` |
-| Teacher                     | `teacher@tilmaan-demo.com`  | `Demo123!` |
-| Parent                      | `parent@tilmaan-demo.com`   | `Demo123!` |
-
-"Educational Director" is the same underlying role as the original single
-Admin account — just relabeled now that an Owner sits above it. The Owner
-can also **view the app as any other user** (Accounts & Access → "View as")
-without needing their password, and return to their own account at any time.
-
-There are more teacher/parent accounts in the seed data too (10 teachers,
-23 users total) — check Owner/Director → Teachers / Parents once logged in.
-Staff (including non-login roles like cleaners, guards, and drivers) and
-their payroll history are seeded too — see Owner/Finance → Staff / Payroll.
-
-To wipe local data and start over, use **Settings → Reset demo data** inside
-the app (or clear the site's local storage in your browser's dev tools).
-
-## What's here
-
-```
-src/
-  utils/        constants.js, helpers.js       – pure constants + formatting helpers
-  data/         seed.js                        – mock data generator + localStorage persistence
-  context/      ToastContext, DataContext,      – toast notifications, the app "database" +
-                AuthContext                        CRUD API, and the logged-in user
-  components/   ui.jsx, ReportCard.jsx          – shared UI kit + the printable report card template
-  layouts/      AppShell.jsx                    – sidebar nav + page routing + impersonation banner
-  pages/        auth/, owner/, admin/, finance/, – all the screens, grouped by role (admin/ also
-                teacher/, parent/                  covers the Educational Director, who shares its pages)
-  services/     studentService.js, etc.         – thin adapters over DataContext (see below)
-  App.jsx, main.jsx                             – app root / entry point
-```
-
-This mirrors the original prototype's structure and behavior exactly —
-same layout, roles, dashboards, workflows, calculations, and demo data. The
-prototype was split from one 5,400-line file into these modules; nothing
-about how it looks or works was changed in the process.
-
-### Why `src/services/`?
-
-Every page currently talks to the mock "database" through `useData()` from
-`DataContext`, which is the Phase 1 stand-in for a real backend
-(`MockStudentService`-style, in spirit). The `src/services/` folder wraps
-that same context into named, per-domain functions —
-`studentService.create(...)`, `paymentService.record(...)`, etc. — so that
-in Phase 2 you can replace what's *inside* one service file with a real
-Supabase query and nothing else in the app has to change. `useServices()`
-is a convenience hook that bundles all of them together if you want to
-start using it in new code.
-
-## Phase 1 → Phase 4 roadmap
-
-- **Phase 1 (this delivery):** React + Vite frontend, local mock data,
-  Supabase/Firebase-ready but not required to run.
-- **Phase 2:** Connect Supabase — Auth, Postgres, Row Level Security,
-  real users/data, Realtime, Edge Functions. Replace the bodies of the
-  files in `src/services/` with real Supabase calls.
-- **Phase 3:** File/image storage — every user-uploaded image and file
-  (profile & student photos, student documents, announcement and
-  payment-reminder attachments, expense receipts, exam evidence) lives in
-  a **private Supabase Storage bucket**; Postgres stores only the object
-  path and the app reads short-lived signed URLs. No third-party object
-  store is used or required.
-- **Phase 4:** Connect Firebase Cloud Messaging for real push
-  notifications, layered on top of the in-app notification system that
-  already works today.
+Node 20+ is recommended (developed on Node 24).
 
 ## Environment variables
 
-`.env.example` lists the Supabase (required) and Firebase (optional, push
-notifications) variables — copy it to `.env` and fill in the Supabase URL
-and publishable key.
+`.env` (git-ignored) needs exactly two values, both safe to ship to the browser:
 
-## A note on the persistence layer
+```
+VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY=sb_publishable_...
+```
 
-The original prototype called `window.storage.get/set` — an API that only
-exists inside Claude.ai's Artifacts preview and would not work in a real
-deployed site. That's been replaced with real browser `localStorage`
-(`src/data/seed.js`, `loadDB`/`saveDB`) behind the exact same function
-signatures, so nothing else in the app needed to change, and the existing
-cross-tab "live update" polling still works the same way.
+- `VITE_SUPABASE_ANON_KEY` must be a **publishable / anon** key
+  (`sb_publishable_…`). Never put a `service_role` / secret key in `.env`, in
+  client code, or in this repo — RLS is what protects the data, and the
+  publishable key is meant to be public.
+- `src/lib/supabaseClient.js` throws on startup if either variable is missing.
+- Firebase Cloud Messaging variables in `.env.example` are optional and only
+  needed if/when web push is wired up.
 
-## Before moving to Phase 2
+The same two variables must be configured in the hosting provider (e.g. Vercel
+project → Settings → Environment Variables, Production scope).
 
-Run through all five roles once, on both desktop and a phone, to confirm
-Phase 1 feels solid:
+## Architecture
 
-- **Owner:** Login → dashboard → students → teachers → staff → payroll → expenses → accounts & access ("View as" a Director/Teacher, then return) → audit log
-- **Educational Director** (`admin@tilmaan-demo.com`): Login → dashboard → students → teachers → classes → results → report cards → reports
-- **Finance & Operations Director:** Login → dashboard → fees → payroll → expenses
-- **Teacher:** Login → dashboard → class → homework → attendance → results → messages
-- **Parent:** Login → dashboard → children → homework → attendance → results → report cards → behavior → payments → messages
+```
+Browser (React SPA)
+  │   authenticated Supabase JS client (publishable key + user session)
+  ▼
+Supabase
+  ├─ Auth              real accounts for every role; sessions + password reset
+  ├─ Postgres + RLS    every table has RLS; role/ownership checks live in policies
+  ├─ RPCs              SECURITY DEFINER functions for notifications, activity,
+  │                    money movement, leave decisions, obligation materialisation
+  ├─ Realtime          per-user channel for notifications / messages / activity,
+  │                    plus Presence + Broadcast for "online" and "typing"
+  ├─ Storage           private buckets for every user-uploaded image / file
+  └─ Edge Function     manage-staff-account (creates/disables/resets auth accounts)
+```
 
-Also confirm the lifecycle paths work end to end: changing a student's
-status (e.g. to Transferred) hides them from "active" counts and shows
-"No longer enrolled" on the parent's dashboard without deleting any history;
-disabling a Director/Finance/Teacher account blocks their next login with a
-clear message; and a report card can't be generated until every subject for
-that class has a Final mark, then flows Generate → Publish → Lock.
+### Data layer (`src/`)
 
-Only once that feels stable should Supabase + RLS + Auth + Realtime work
-begin.
+- **`src/lib/supabaseClient.js`** — the single shared Supabase client.
+- **`src/services/*`** — one module per domain (students, fees, payments,
+  timetable, results, messaging, …). Each talks only to Supabase (tables, RPCs,
+  Storage) and maps rows into the camelCase shape the UI expects.
+- **`src/context/DataContext.jsx`** — owns read-side state and a `refetch`
+  function per domain, exposes an `api.*` method for every mutation, and folds
+  every domain onto one read-only `db` object that pages consume through
+  `useData()`. It also opens the per-user Realtime channel and re-hydrates
+  everything on login / account switch / logout.
+- **`src/context/AuthContext.jsx`** — the logged-in user, the post-login
+  ACTIVE/SUSPENDED/DISABLED check (`my_profile()` RPC), and the Owner-only
+  "View as" (client-side impersonation; the Supabase session stays the Owner's).
+- **`src/data/skeleton.js`** — empty starting shape for `db` before the first
+  fetch resolves. No records, no credentials, no demo data.
+
+### Roles and access boundaries
+
+Five roles (`src/utils/constants.js`). RLS policies in
+`supabase/migrations/20260825190000_rls_policies.sql` (and later hardening
+migrations) are the real enforcement; the `src/utils/*Permissions.js` helpers
+only decide which buttons/forms render.
+
+| Role | Label in UI | Can see / do |
+|------|-------------|--------------|
+| `OWNER` | Owner | Everything: students, staff, teachers, classes, curriculum, timetable, attendance, leave, results, report cards, fees, payments, payroll, expenses, announcements, messaging, activity log, and Accounts & Access (create/disable/reset any account, "View as" any user). |
+| `ADMIN` | Educational Director | Academic operations: students, teachers, classes, curriculum, timetable, attendance, leave decisions for teachers/other staff, results, report cards, behaviour records, exam announcements, announcements, messaging. **No** payment, payroll or salary visibility. |
+| `FINANCE` | Finance & Operations Director | Finance only: fees, payments (record / void), expenses, payroll for every staff group, contact details for "Other Staff" they administer. **No** academic marks, attendance editing, or behaviour records. |
+| `TEACHER` | Teacher | Their own classes only: take attendance for a class they head, publish/edit homework and enter draft results for subjects they are assigned to teach, view their own timetable, request leave, message parents/staff, view their own payslips. Academic actions are also gated by the calendar and by their own attendance that day. |
+| `PARENT` | Parent | Their own children only: dashboard, homework, attendance, published results and report cards, behaviour records, fee balances and payment history, messaging. Sees "no longer enrolled" instead of history when a child's status changes. |
+
+Contact details (`profiles.email` / `profiles.phone`) are column-revoked from
+ordinary authenticated users and only returned through the
+`directory_contacts()` RPC to the accounts each role legitimately administers.
+
+### Modules
+
+| Area | Tables / RPCs (high level) |
+|------|----------------------------|
+| Auth & accounts | `profiles`, `my_profile()`, `manage-staff-account` Edge Function |
+| Academic structure | `academic_years`, `classes`, `subjects`, `class_subjects`, `teacher_assignments`, `enrollments` |
+| Timetable | `timetable_entries`, `timetable_config`, `substitutions`, `school_closures` |
+| Attendance & leave | `attendance`, `period_logs`, `staff_attendance`, `leave_requests` (+ `decide_leave_request()`), `owner_leave_log` |
+| Homework | `homework` (+ `notify_homework`) |
+| Results & report cards | `results`, `result_components`, `result_audit_log`, `result_evidence`, `exam_announcements`, `report_cards` |
+| Behaviour | `behavior_records` |
+| Fees & payments | `fee_types` → `fee_schedules` → `fee_installments` → `student_fee_obligations` → `fee_obligation_adjustments`; `payments`, `payment_allocations`, `payment_methods`, `payment_audit_log`; money moves only through `record_payment_batch()` / `void_payment()` / obligation-materialisation RPCs |
+| Payroll & expenses | `payroll_payments`, `salary_advances`, `expenses` (+ transactional RPCs) |
+| Communications | `notifications` (write only via `notify_*` RPCs), `announcements`, `conversations`, `messages`, `activities` (write only via `log_activity`) |
+
+### Storage (private buckets only)
+
+Every user-uploaded image or file lives in a **private** Supabase Storage
+bucket. Postgres stores only the object path; the app mints short-lived signed
+URLs on read. No public buckets, no base64 in the database, no third-party
+object store.
+
+| Bucket | Contents |
+|--------|----------|
+| `profile-photos` | staff / director / teacher / parent avatars |
+| `student-photos` | student photos |
+| `student-documents` | student document uploads |
+| `result-evidence` | photos/scans of marked exam papers |
+| `expense-receipts` | expense purchase receipts |
+| `announcement-attachments` | files attached to announcements |
+| `payment-reminder-attachments` | files attached to payment reminders |
+
+Object-level RLS on each bucket mirrors the owning table's row policies.
+Student payment receipts are rendered on the fly from `payments` data and
+printed, never stored as files.
+
+### Realtime — notifications, messaging, presence
+
+- **Notifications / messages / announcements / activity** — `DataContext`
+  opens one RLS-scoped Realtime channel per signed-in user
+  (`comms:<uid>`), debounces a refetch of the affected domain, and tears the
+  channel down + rebuilds it on account switch (torn down on logout).
+- **Presence ("online now")** — `src/utils/presence.js` uses Supabase Realtime
+  **Presence** on a single app-wide channel, keyed by the real logged-in user.
+- **"Last seen"** — `profiles.last_seen_at`, stamped by the `touch_presence()`
+  RPC on connect and on a ~25s heartbeat, so status survives a disconnect.
+- **Typing indicator** — Realtime **Broadcast** on a per-conversation channel.
+
+None of this touches `localStorage`.
+
+## Supabase project & migrations
+
+- SQL migrations live in `supabase/migrations/` (32 files as of this writing).
+- The linked project is referenced in `supabase/config.toml` /
+  `supabase/.temp/`.
+- Apply new migrations to the remote database with the Supabase CLI
+  (`supabase db push`, or `supabase migration up --linked`). Do **not** run
+  `supabase db reset` against the production project.
+- The `manage-staff-account` Edge Function is in `supabase/functions/`; it runs
+  with the service-role key **server-side only** and re-checks the caller's
+  session against `is_owner_or_admin()` before doing anything.
+- `supabase/seed_owner.sql` is a template for bootstrapping the first Owner
+  account. Real owner-bootstrap seeds (`seed_owner_*.sql`) contain a live email
+  and default password and are git-ignored.
+
+## Project layout
+
+```
+src/
+  lib/          supabaseClient.js, storageMedia.js
+  services/     one Supabase-backed module per domain (+ index.js barrel, useServices hook)
+  context/      DataContext (the db + api + realtime), AuthContext, ToastContext
+  hooks/        shared hooks (e.g. useMutationGuard)
+  components/   shared UI kit, Receipt, ReportCard, announcement/notification widgets
+  layouts/      AppShell — sidebar nav, routing, "View as" banner
+  pages/        auth/, owner/, admin/, finance/, teacher/, parent/
+  utils/        constants, helpers, permission checks, academic-calendar logic, presence
+  data/         skeleton.js (empty initial db shape)
+  App.jsx, main.jsx
+
+supabase/
+  migrations/   ordered SQL migrations (schema, RLS, RPCs, Storage)
+  functions/    manage-staff-account edge function
+  config.toml   linked-project + local config
+```
+
+## Deployment
+
+The app is a static SPA — `npm run build` produces `dist/`, deployable to any
+static host. Routing is state-based (no history-API deep links), so no rewrite
+rules are required. The host must provide `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY` at build time.

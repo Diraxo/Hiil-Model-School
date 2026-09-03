@@ -1,10 +1,10 @@
-// Real Supabase-backed subject catalog service. Subjects are still referenced by NAME (not id)
-// everywhere else in the still-mock DataContext (homework.subject, teacherAssignments.subject,
+// Supabase-backed subject catalog service. Several read-side shapes in DataContext still expose a
+// subject by NAME rather than id (homework.subject, teacherAssignments.subject,
 // classSubjects.subject, results.subject, teacher.subject) -- see migration notes on
-// `subjects.name unique`. As long as the real rows carry the same names, every one of those
-// still-mock string-keyed lookups keeps working unchanged. DataContext.jsx calls this directly
-// for the subjects table itself, and still runs its own commit()-based cascade rename across
-// those other (not-yet-converted) mock tables.
+// `subjects.name unique`. The underlying rows (homework, results, class_subjects,
+// teacher_assignments) all store the real subject_id and resolve the display name fresh from the
+// subjects row, so a rename only needs a subjects refetch -- there is no cross-table cascade to
+// run. DataContext.jsx calls this directly for the subjects table itself.
 import { supabase } from "../lib/supabaseClient";
 
 function mapSubject(row) {

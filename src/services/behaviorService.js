@@ -1,6 +1,6 @@
-// Phase 5 (CP2): real Supabase-backed student behavior / discipline records (behavior_records).
+// Supabase-backed student behavior / discipline records (behavior_records).
 //
-// Bridging: rows come back in the mock app's shape (mock `staff` <-> db `staff_name`, mock
+// Bridging: rows come back in the app's camelCase shape (`staff` <-> db `staff_name`,
 // `parentNotified` <-> db `parent_notified`).
 //
 // RLS is the real boundary:

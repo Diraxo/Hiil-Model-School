@@ -1,4 +1,4 @@
-// Phase 4 (Fees / Payments / Expenses): real Supabase-backed payment service.
+// Supabase-backed payment service (Fees / Payments / Expenses).
 //
 // Owns payments / payment_allocations / payment_methods / payment_audit_log. Every money-
 // moving write goes through a hardened SECURITY DEFINER RPC -- the client never inserts a
@@ -8,7 +8,7 @@
 //                                                                    row-locked per obligation.
 //   void_payment(payment_id, reason, actor_id, actor_role, actor_name) -- whole-receipt void.
 //
-// DataContext.jsx shadows list()/listAllocations()/listPaymentMethods() into the mock `db`
+// DataContext.jsx folds list()/listAllocations()/listPaymentMethods() into the in-memory `db`
 // shape so describeAllocation / paymentsForStudents / paymentMethodName / the family payment
 // history all keep working unchanged.
 //

@@ -49,9 +49,9 @@ function AuthProvider({ children }) {
   const data = useData();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
-  // Impersonation ("View as") still targets DataContext's mock user directory -- real accounts
-  // for Teacher/Admin/Finance/Parent don't exist yet outside of Owner, and `realUser` (the actual
-  // logged-in account) never changes while viewing as someone else, only `viewingAsId` does.
+  // Impersonation ("View as") picks a target from `db.users` (the real `profiles` directory) by
+  // id. `realUser` (the actual logged-in account) never changes while viewing as someone else,
+  // only `viewingAsId` does; the Supabase session and RLS still act as the real logged-in user.
   const [viewingAsId, setViewingAsId] = useState(null);
   const [sessionEndedMessage, setSessionEndedMessage] = useState(null);
   // Set while the app is showing the "choose a new password" screen reached via a Supabase Auth

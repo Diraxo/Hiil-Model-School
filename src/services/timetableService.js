@@ -1,12 +1,12 @@
-// Real Supabase-backed timetable service: timetable_entries, timetable_config (singleton),
-// substitutions. Period-level journal/attendance (period_logs) is converted in Phase 2 checkpoint
-// 2 alongside student attendance and lives here too once it lands.
+// Supabase-backed timetable service: timetable_entries, timetable_config (singleton),
+// substitutions. Period-level journal/attendance (period_logs) is a separate domain and lives in
+// attendanceService.js.
 //
 // Bridging: timetable_entries stores subject_id (real FK) + teacher_id (real profiles FK).
 // DataContext resolves subject_id -> subject NAME on top of this (its `timetableEntries` useMemo),
-// same pattern classService/subjectService already established, so every still-mock consumer that
-// reads `entry.subject` keeps working unchanged. teacher_id is a profiles id, which is exactly the
-// `user.id` the rest of the app compares against (cls.headTeacherId, auth.currentUser.id, ...).
+// same pattern classService/subjectService use, so every consumer that reads `entry.subject` as a
+// name keeps working unchanged. teacher_id is a profiles id, which is exactly the `user.id` the
+// rest of the app compares against (cls.headTeacherId, auth.currentUser.id, ...).
 //
 // RLS is the real boundary: timetable_entries / timetable_config write = is_owner_or_admin();
 // substitutions write = is_owner_or_admin(). This service forwards writes and lets Postgres reject

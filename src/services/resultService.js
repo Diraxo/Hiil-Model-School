@@ -1,12 +1,11 @@
-// Phase 3 checkpoint 2 (Results / Exams): real Supabase-backed results service. Same pattern
-// every earlier converted domain uses (see homeworkService.js / timetableService.js): this file
-// only ever talks to the `results`, `result_components` and `result_audit_log` tables;
-// DataContext.jsx owns the read-side state + refetch, resolves the real `subject_id` to the mock
-// app's subject-NAME convention on top of the rows this returns, rebuilds the mock record's
+// Supabase-backed results service. Same pattern as every other domain (see homeworkService.js /
+// timetableService.js): this file only ever talks to the `results`, `result_components` and
+// `result_audit_log` tables; DataContext.jsx owns the read-side state + refetch, resolves the real
+// `subject_id` to a subject NAME on top of the rows this returns, rebuilds the record's
 // `components` object (one key per assessment component) from the flat `componentRows` here, and
-// wraps every write in an async api.* method that writes through here, refetches, then commit()s
-// only the leftover mock side-effects (activities + parent notifications -- those domains haven't
-// converted; the notify_* RPCs exist but stay unwired per the locked Phase 2 decision).
+// wraps every write in an async api.* method that writes through here, refetches, then fans out
+// the activity line (log_activity RPC) and, on publish, the batched parent notification
+// (notify_results_published).
 //
 // RLS is the real security boundary (supabase/migrations/20260825190000_rls_policies.sql
 // L749-820):

@@ -1,10 +1,9 @@
-// Phase 3 checkpoint 1 (Homework): real Supabase-backed homework service. Same pattern every
-// earlier converted domain uses (see timetableService.js / studentService.js): this file only
-// ever talks to the `homework` table; DataContext.jsx owns the read-side state + refetch, resolves
-// the real `subject_id` to the mock app's subject-NAME convention on top of the rows this returns
-// (its `homework` useMemo -- same bridge as classSubjects/teacherAssignments/timetableEntries), and
-// wraps every write in an async api.* method that writes here, refetches, then commit()s only the
-// leftover mock side-effects (activities + parent notifications -- those domains haven't converted).
+// Supabase-backed homework service. Same pattern as every other domain (see timetableService.js /
+// studentService.js): this file only ever talks to the `homework` table; DataContext.jsx owns the
+// read-side state + refetch, resolves the real `subject_id` to a subject NAME on top of the rows
+// this returns (its `homework` useMemo -- same bridge as classSubjects/teacherAssignments/
+// timetableEntries), and wraps every write in an async api.* method that writes here, refetches,
+// then fans out the activity line (log_activity RPC) and the parent notification (notify_homework).
 //
 // RLS is the real security boundary (see supabase/migrations/20260825190000_rls_policies.sql
 // L721-747): insert/update require the assigning teacher themselves (teacher_id = auth.uid()) and
@@ -12,9 +11,9 @@
 // visibility of their own child's class. This service forwards writes and lets Postgres reject what
 // it must; DataContext turns the error into a user-facing message.
 //
-// homework.attachment_url is left untouched here -- the app has never had a homework-attachment
-// upload path (see components/DocumentViewer.jsx), so `attachment` is always null. Wiring real
-// Storage uploads for it belongs with the result-evidence Storage work in checkpoint 3, not here.
+// homework.attachment_url is left untouched here -- the app has no homework-attachment upload
+// path (see components/DocumentViewer.jsx), so `attachment` is always null. Wiring a private
+// Storage bucket for it would follow the same pattern as result-evidence.
 import { supabase } from "../lib/supabaseClient";
 
 function mapHomework(row) {
@@ -80,7 +79,7 @@ export function createHomeworkService() {
     },
     // Re-tags every homework row for a class after its grade/section is renamed (the columns are
     // denormalized onto homework, same as students) -- Owner/Educational Director only, no calendar
-    // gate (RLS's homework_update owner/admin branch). Mirrors the mock updateClass cascade.
+    // gate (RLS's homework_update owner/admin branch). Runs as part of DataContext's updateClass.
     async retagClass(classId, grade, section) {
       const { error } = await supabase
         .from("homework")

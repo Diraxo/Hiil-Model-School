@@ -1,9 +1,8 @@
 // Centralized Students permission checks — replaces the single ad hoc `isTeacher` check that used
 // to gate `StudentProfilePage` (Edit/Suspend/Delete/Payments were otherwise wide open to whoever
 // opened the page, including Teacher and Finance). Mirrors the existing `utils/permissions.js`
-// (Results) / `utils/staffPermissions.js` (Staff) pattern: simple `(user) -> boolean` checks, no
-// server-side enforcement yet (Phase 2/Supabase RLS's job) — Phase 1's UI calls these before
-// rendering inputs/buttons.
+// (Results) / `utils/staffPermissions.js` (Staff) pattern: simple `(user) -> boolean` checks that
+// decide which inputs/buttons render. Supabase RLS is the real server-side enforcement layer.
 import { ROLES, STUDENT_STATUS } from "./constants";
 
 // A student in one of these statuses is no longer part of day-to-day school life — they drop out

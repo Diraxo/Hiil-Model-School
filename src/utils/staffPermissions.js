@@ -1,8 +1,8 @@
 // Centralized Staff (not Payroll — Payroll stays open to Owner/Finance for every staff group,
 // that's Finance's core job) create/edit/disable permission checks, mirroring the style of
 // permissions.js (Results) and DataContext's canEditStaffAttendanceFor (Staff Attendance).
-// Phase 1's UI calls these before rendering the relevant buttons/forms; Phase 2/Supabase RLS is
-// the real enforcement layer, same caveat as the other Phase 1 permission helpers.
+// The UI calls these before rendering the relevant buttons/forms; Supabase RLS is the real
+// enforcement layer, same as the other permission helpers.
 import { ROLES, staffGroupLabel, TEACHER_UNAVAILABLE_STATUSES } from "./constants";
 
 function canManageDirectors(user) {

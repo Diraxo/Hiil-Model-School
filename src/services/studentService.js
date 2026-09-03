@@ -1,8 +1,8 @@
-// Real Supabase-backed students + enrollments + student_documents service (see classService.js /
-// subjectService.js for the same pattern: DataContext.jsx owns the read-side state/refetch and
+// Supabase-backed students + enrollments + student_documents service (see classService.js /
+// subjectService.js for the same pattern): DataContext.jsx owns the read-side state/refetch and
 // wraps every write in an async api.* method that calls into this file, then refetches, then
-// commit()s only the leftover mock-side-effects (activities, notifications, fee-obligation
-// materialization -- those domains haven't converted yet).
+// fans out the side effects -- activity lines via the log_activity RPC, parent notifications via
+// notify_* RPCs, and fee-obligation materialization via materialize_obligations_for_student.
 //
 // `parentIds` is joined in from `parent_students` for read compatibility with every existing
 // consumer that reads `student.parentIds` -- now real (see parentService.js / DataContext.jsx's
@@ -189,9 +189,9 @@ export function createStudentService() {
     },
     // Creates (or reuses) this student's enrollment row for `academicYearId`, updating its
     // grade/section/classId/status/suspension to match -- but only setting `enrollmentDate` at
-    // creation time, never on an update, exactly mirroring the mock `_syncEnrollment`'s behavior
-    // (so e.g. later editing a student's admissionDate doesn't retroactively rewrite an existing
-    // enrollment's enrollmentDate). Plain upsert() can't express "set this column on insert only",
+    // creation time, never on an update (so e.g. later editing a student's admissionDate doesn't
+    // retroactively rewrite an existing enrollment's enrollmentDate). Plain upsert() can't
+    // express "set this column on insert only",
     // hence the manual select-then-branch below.
     async syncEnrollment({ studentId, academicYearId, grade, section, classId, status, suspension, enrollmentDateForNew }) {
       if (!academicYearId) return null;

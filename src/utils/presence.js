@@ -86,9 +86,9 @@ function usePresenceHeartbeat(userId) {
   }, [userId]);
 }
 
-// Reader side for MessagesPage: returns the same `{ [userId]: lastActiveMs }` shape the old
-// localStorage map exposed, so `isOnline(map[id])` and `map[id] ? "Last seen …" ` are unchanged.
-// Online users report `now`; everyone else reports their persisted last_seen_at.
+// Reader side for MessagesPage: returns a `{ [userId]: lastActiveMs }` map, so `isOnline(map[id])`
+// and `map[id] ? "Last seen …"` read naturally. Online users report `now`; everyone else reports
+// their persisted last_seen_at.
 function usePresenceMap() {
   const [online, setOnline] = useState(() => presenceStore.onlineIds);
   const [lastSeen, setLastSeen] = useState(() => new Map());
@@ -132,8 +132,8 @@ function usePresenceMap() {
 
 // ---- typing: one Realtime Broadcast channel per conversation ----
 // A single websocket can join a given topic only once, so send + receive share ONE channel
-// (hence one hook) rather than the two the localStorage version could afford. Incoming pings are
-// filtered to the other participant and auto-expire after TYPING_STOP_DELAY_MS as a safety net for
+// (hence one hook). Incoming pings are filtered to the other participant and auto-expire after
+// TYPING_STOP_DELAY_MS as a safety net for
 // a sender whose tab closes mid-type; outgoing pings are throttled and always followed by a
 // deferred "typing-stop".
 function useConversationTyping(conversationId, myId) {

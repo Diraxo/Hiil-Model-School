@@ -1,10 +1,9 @@
-// Phase 3 checkpoint 2 (Results / Exams): real Supabase-backed exam-announcement service. The
-// school administers exams on paper -- there is no "exam" entity in the app; an exam announcement
-// is purely the heads-up notice to parents/teachers that a paper exam is scheduled. Same pattern
-// every earlier converted domain uses: this file only ever talks to `exam_announcements`;
-// DataContext.jsx owns the read-side state + refetch and wraps writes in an async api.* method
-// that writes here, refetches, then commit()s the leftover mock notification fan-out (that domain
-// hasn't converted -- notify_exam_announcement exists but stays unwired per the Phase 2 decision).
+// Supabase-backed exam-announcement service. The school administers exams on paper -- there is no
+// "exam" entity in the app; an exam announcement is purely the heads-up notice to parents/teachers
+// that a paper exam is scheduled. Same pattern as every other domain: this file only ever talks to
+// `exam_announcements`; DataContext.jsx owns the read-side state + refetch and wraps writes in an
+// async api.* method that writes here, refetches, then fans out the parent + head-teacher
+// notification via notify_exam_announcement and the activity line via log_activity.
 //
 // RLS (supabase/migrations/20260825190000_rls_policies.sql L868-897):
 //   - exam_announcements_select: every staff role sees all; a parent sees ALL / GRADE / SECTION
