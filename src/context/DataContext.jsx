@@ -679,9 +679,8 @@ function DataProvider({ children }) {
   // independent-state pattern every earlier converted domain uses. Calendar/date gating stays
   // client-side (classifyAttendanceDate) and is re-stated server-side by the attendance_date_guard
   // trigger; an APPROVED leave is applied to attendance transactionally by the decide_leave_request
-  // RPC. Notifications/activity stay bridged to the mock d.notifications/d.activities pipeline
-  // (locked Phase 2 decision) -- the mutators below refetch the real rows, then commit() only the
-  // notification/activity side effects.
+  // RPC. Notifications/activity are real Supabase as of Phase 6 -- the mutators below refetch the
+  // real rows, then call the notify_* / log_activity RPCs (dispatchNotify / logActivityFeed).
   const attendanceService = useMemo(() => createAttendanceService(), []);
   const leaveService = useMemo(() => createLeaveService(), []);
   const [attendanceRaw, setAttendanceRaw] = useState([]);
@@ -1283,12 +1282,6 @@ function DataProvider({ children }) {
     const leaveSubjectIdentity = (kind, subjectId) => computeLeaveSubjectIdentity(db, kind, subjectId);
     const announcementSenderLabel = (authorId) => computeAnnouncementSenderLabel(db, authorId);
 
-    function addActivity(text) {
-      db.activities = [{ id: uid("act"), text, createdAt: Date.now() }, ...db.activities].slice(0, 60);
-    }
-    function notify(userId, title, message, type) {
-      db.notifications = [{ id: uid("notif"), userId, title, message, read: false, createdAt: Date.now(), type }, ...db.notifications];
-    }
     function parentsOfClass(classId) {
       const studentIds = db.students.filter((s) => s.classId === classId).map((s) => s.id);
       const parentIds = new Set();
@@ -2992,10 +2985,9 @@ function DataProvider({ children }) {
         });
       },
 
-      // Real Supabase (substitutions). RLS: write = is_owner_or_admin(). Notifications stay bridged
-      // to the mock d.notifications pipeline (same as staff_attendance) until the notifications
-      // domain is converted. Availability of the chosen substitute is re-checked here against the
-      // freshly-overlaid db (substituteCandidates), same rule as before.
+      // Real Supabase (substitutions). RLS: write = is_owner_or_admin(). Notifications go via
+      // notify_substitute_assigned (Phase 6). Availability of the chosen substitute is re-checked
+      // here against the freshly-overlaid db (substituteCandidates), same rule as before.
       async assignSubstitute(timetableEntryId, date, substituteTeacherId, assignedBy) {
         const entry = db.timetableEntries.find((e) => e.id === timetableEntryId);
         if (!entry) return { ok: false, message: "Period not found." };
