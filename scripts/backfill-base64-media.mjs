@@ -47,6 +47,19 @@ if (!URL_ || !KEY) {
 
 const db = createClient(URL_, KEY, { auth: { persistSession: false } });
 
+// Fail loudly instead of treating an auth/RLS error as "0 rows to migrate".
+async function selectAll(table, cols) {
+  const { data, error } = await db.from(table).select(cols);
+  if (error) {
+    throw new Error(
+      `select ${table}(${cols}) failed: ${error.code || ""} ${error.message}. ` +
+      `This usually means SUPABASE_SERVICE_ROLE_KEY is not a service_role / secret key ` +
+      `(an anon/publishable key or a personal access token is blocked by RLS and returns no rows).`,
+    );
+  }
+  return data || [];
+}
+
 const EXT_BY_MIME = {
   "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
   "application/pdf": "pdf",
@@ -88,31 +101,40 @@ async function uploadAndSwap({ table, idCol, id, column, currentValue, bucket, m
 }
 
 async function run() {
+  const projectRef = (() => { try { return new URL(URL_).host.split(".")[0]; } catch { return "?"; } })();
+  const keyRole = (() => {
+    try {
+      const p = JSON.parse(Buffer.from(KEY.split(".")[1], "base64").toString("utf8"));
+      return `${p.role || "?"} (ref=${p.ref || "?"})`;
+    } catch { return "non-JWT key (sb_secret_… / sb_publishable_… / sbp_… style)"; }
+  })();
+  console.log(`Project ref : ${projectRef}`);
+  console.log(`Key role    : ${keyRole}   <- must be service_role / secret, NOT anon/publishable/access-token\n`);
   console.log(APPLY ? "APPLY mode — writing changes.\n" : "DRY RUN — no changes written. Add --apply to migrate.\n");
 
   // profiles.photo_url
-  for (const r of (await db.from("profiles").select("id, photo_url")).data || []) {
+  for (const r of await selectAll("profiles", "id, photo_url")) {
     if ((r.photo_url || "").startsWith("data:")) {
       await uploadAndSwap({ table: "profiles", idCol: "id", id: r.id, column: "photo_url",
         currentValue: r.photo_url, bucket: "profile-photos", makeNewValue: (p) => p });
     }
   }
   // staff.photo_url
-  for (const r of (await db.from("staff").select("id, photo_url")).data || []) {
+  for (const r of await selectAll("staff", "id, photo_url")) {
     if ((r.photo_url || "").startsWith("data:")) {
       await uploadAndSwap({ table: "staff", idCol: "id", id: r.id, column: "photo_url",
         currentValue: r.photo_url, bucket: "profile-photos", makeNewValue: (p) => p });
     }
   }
   // students.photo_url
-  for (const r of (await db.from("students").select("id, photo_url")).data || []) {
+  for (const r of await selectAll("students", "id, photo_url")) {
     if ((r.photo_url || "").startsWith("data:")) {
       await uploadAndSwap({ table: "students", idCol: "id", id: r.id, column: "photo_url",
         currentValue: r.photo_url, bucket: "student-photos", makeNewValue: (p) => p });
     }
   }
   // student_documents.file_url
-  for (const r of (await db.from("student_documents").select("id, student_id, file_url")).data || []) {
+  for (const r of await selectAll("student_documents", "id, student_id, file_url")) {
     if ((r.file_url || "").startsWith("data:")) {
       await uploadAndSwap({ table: "student_documents", idCol: "id", id: r.id, column: "file_url",
         currentValue: r.file_url, bucket: "student-documents",
@@ -121,7 +143,7 @@ async function run() {
     }
   }
   // announcements.attachment_url  (JSON {type,name,dataUrl})
-  for (const r of (await db.from("announcements").select("id, attachment_url")).data || []) {
+  for (const r of await selectAll("announcements", "id, attachment_url")) {
     const raw = r.attachment_url;
     if (!raw) continue;
     let obj = null;
