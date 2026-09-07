@@ -51,7 +51,7 @@ function isOnline(lastActive, now = Date.now()) {
 
 // Writer side: call once per authenticated session, keyed on the real logged-in user (not an
 // impersonated identity), so an Owner viewing-as a Teacher still shows the Owner as online.
-// Tracks Realtime Presence for the whole app and stamps profiles.last_seen_at on a heartbeat so
+// Tracks Realtime Presence for the whole app and stamps user_presence.last_seen_at on a heartbeat so
 // presence self-heals to "offline" once ONLINE_THRESHOLD_MS elapses after a crashed/closed tab.
 function usePresenceHeartbeat(userId) {
   useEffect(() => {

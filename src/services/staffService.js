@@ -173,7 +173,13 @@ export function createStaffService() {
         if (isStoragePath(previous) && previous !== nextPath) await removeObjects(PHOTO_BUCKET, previous);
         row.photo_url = nextPath;
         if (cur?.user_id) {
-          await supabase.from("profiles").update({ photo_url: nextPath }).eq("id", cur.user_id);
+          // Mirror the photo onto the linked profiles row so the top-bar avatar / profile-photo
+          // realtime subscription sees the change. Non-fatal: the staff row (the source of truth
+          // for directory listings) is already being updated below; a failed mirror shouldn't
+          // abort that, but it must not fail silently either.
+          const { error: mirrorErr } = await supabase
+            .from("profiles").update({ photo_url: nextPath }).eq("id", cur.user_id);
+          if (mirrorErr) console.warn("staff photo: profiles mirror-write failed", mirrorErr);
         }
       } else if (typeof patch.photo === "string" && isStoragePath(patch.photo)) {
         // Only a real object path is persisted; a signed URL handed back by the UI = "unchanged".
