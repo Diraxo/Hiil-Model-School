@@ -9,10 +9,12 @@
 // user-facing action.
 //
 // RLS note (see supabase/migrations/20260825190000_rls_policies.sql): parent_students insert/
-// update/delete is restricted to is_owner_or_admin() -- a parent can never link themselves to a
-// student from the client, by design (see AuthPages.jsx's RegisterScreen comment). Every write
-// here is expected to be called by an Owner/Educational Director session; Postgres itself rejects
-// anything else, this file doesn't re-implement that check client-side.
+// update/delete is restricted to is_owner_or_admin() -- link()/unlink() below are only ever
+// called by an Owner/Educational Director session; Postgres itself rejects anything else, this
+// file doesn't re-implement that check client-side. A parent linking THEMSELVES to a child during
+// self-registration is a separate, narrowly-scoped path entirely -- see checkStudentIds() below
+// and AuthContext.signUp, which calls the check_student_ids/self_register_link_children RPCs
+// (20260907000000_parent_self_registration.sql) instead of this file's link().
 import { supabase } from "../lib/supabaseClient";
 import { directoryContactsMap } from "./profileContacts";
 
@@ -68,6 +70,17 @@ export function createParentService() {
     async unlink(parentId, studentId) {
       const { error } = await supabase.from("parent_students").delete().eq("parent_id", parentId).eq("student_id", studentId);
       if (error) throw error;
+    },
+    // Live pre-signup validation for the registration form (anon-callable RPC -- see
+    // check_student_ids in 20260907000000_parent_self_registration.sql). Returns a Map of
+    // trimmed input -> "not_found" | "already_linked" | "available"; never exposes any student
+    // field, only whether the code is claimable.
+    async checkStudentIds(studentIds) {
+      const ids = (studentIds || []).map((s) => (s || "").trim()).filter(Boolean);
+      if (ids.length === 0) return new Map();
+      const { data, error } = await supabase.rpc("check_student_ids", { p_student_ids: ids });
+      if (error) throw error;
+      return new Map((data || []).map((row) => [row.input_id, row.status]));
     },
   };
 }

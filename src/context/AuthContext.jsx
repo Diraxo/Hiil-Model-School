@@ -46,6 +46,33 @@ async function resolveProfilePhoto(mapped) {
   }
 }
 
+// Calls self_register_link_children (20260907000000_parent_self_registration.sql) and turns its
+// all-or-nothing INVALID_STUDENT_IDS:.../ALREADY_LINKED_STUDENT_IDS:... exception into per-child
+// field errors the registration form can show inline, matching the "Student ID not found" /
+// "already linked" copy from the product spec.
+async function linkChildrenOrExplain(studentIds) {
+  const { error } = await supabase.rpc("self_register_link_children", { p_student_ids: studentIds });
+  if (!error) return { ok: true };
+  const msg = error.message || "";
+  const invalid = msg.match(/^INVALID_STUDENT_IDS:(.+)$/);
+  const taken = msg.match(/^ALREADY_LINKED_STUDENT_IDS:(.+)$/);
+  if (invalid) {
+    return {
+      ok: false,
+      fieldErrors: Object.fromEntries(invalid[1].split(",").map((id) => [id, "Student ID not found."])),
+      message: "We couldn't find one or more of the Student IDs you entered.",
+    };
+  }
+  if (taken) {
+    return {
+      ok: false,
+      fieldErrors: Object.fromEntries(taken[1].split(",").map((id) => [id, "This student is already linked to a parent account."])),
+      message: "One or more children are already connected to a parent account.",
+    };
+  }
+  return { ok: false, message: "Your account was created, but connecting your child(ren) failed. Please sign in and try again, or contact the school office." };
+}
+
 function AuthProvider({ children }) {
   const data = useData();
   const [loading, setLoading] = useState(true);
@@ -130,7 +157,7 @@ function AuthProvider({ children }) {
   }, [loadProfile]);
 
   const login = useCallback(async (email, password) => {
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (signInError) return { ok: false, message: "Incorrect email or password." };
     const { profile: mapped, message } = await loadProfile();
     if (!mapped) {
@@ -139,6 +166,16 @@ function AuthProvider({ children }) {
       return { ok: false, message: message || "Unable to sign in." };
     }
     setProfile(mapped);
+    // Finishes a self-registration that couldn't link its children at signup time because this
+    // project has Supabase email confirmation enabled (no session existed yet -- see
+    // AuthContext.signUp). Best-effort: no field-level UI to show a mistyped/reused id against on
+    // the login screen itself, but the ids came straight from check_student_ids-validated
+    // registration input, so this only fails if something changed in between (e.g. another parent
+    // claimed the same child first).
+    if (mapped.role === ROLES.PARENT && Array.isArray(signInData?.user?.user_metadata?.pending_student_ids) && signInData.user.user_metadata.pending_student_ids.length > 0) {
+      await linkChildrenOrExplain(signInData.user.user_metadata.pending_student_ids).catch(() => {});
+      await supabase.auth.updateUser({ data: { pending_student_ids: null } }).catch(() => {});
+    }
     return { ok: true };
   }, [loadProfile]);
 
@@ -146,6 +183,55 @@ function AuthProvider({ children }) {
     setViewingAsId(null);
     await supabase.auth.signOut();
   }, []);
+
+  // Real parent self-registration (20260907000000_parent_self_registration.sql). Field validation
+  // (required fields, min password length) mirrors login()/changePassword()'s inline style; the
+  // Student ID linking step is atomic server-side (self_register_link_children), so a rejected
+  // call here never leaves a half-connected account -- but the Auth account + profile themselves
+  // can't be part of that same transaction (GoTrue and Postgres are separate systems), so a link
+  // failure after a successful signUp is reported as "account created, but..." rather than undone.
+  const signUp = useCallback(async ({ fullName, email, password, phone, studentIds }) => {
+    const trimmedName = (fullName || "").trim();
+    const trimmedEmail = (email || "").trim();
+    const trimmedPhone = (phone || "").trim();
+    const ids = [...new Set((studentIds || []).map((s) => (s || "").trim()).filter(Boolean))];
+
+    if (!trimmedName) return { ok: false, message: "Full name is required." };
+    if (!trimmedEmail) return { ok: false, message: "Email is required." };
+    if (!password || password.length < 6) return { ok: false, message: "Password must be at least 6 characters." };
+    if (!trimmedPhone) return { ok: false, message: "Phone number is required." };
+    if (ids.length === 0) return { ok: false, message: "Add at least one child's Student ID." };
+
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email: trimmedEmail,
+      password,
+      options: { data: { full_name: trimmedName, phone: trimmedPhone, self_registration: true, pending_student_ids: ids } },
+    });
+    const alreadyRegisteredMessage = "An account with this email already exists. Please sign in, or use \"Forgot password?\" instead.";
+    if (signUpError) {
+      const already = /already registered|already exists/i.test(signUpError.message || "");
+      return { ok: false, message: already ? alreadyRegisteredMessage : (signUpError.message || "Couldn't create your account.") };
+    }
+    // Supabase's anti-enumeration behavior: signing up with an email that already has a confirmed
+    // account returns success with an empty `identities` array instead of an error.
+    if (signUpData?.user && Array.isArray(signUpData.user.identities) && signUpData.user.identities.length === 0) {
+      return { ok: false, message: alreadyRegisteredMessage };
+    }
+
+    if (!signUpData.session) {
+      // Email confirmation is enabled on this project -- no session yet, so the authenticated
+      // link RPC can't run now. AuthContext.login finishes the job (linking these same ids) the
+      // first time this parent actually signs in, once their email is confirmed.
+      return { ok: true, pendingConfirmation: true, message: "Account created. Check your email to confirm it, then sign in to finish connecting your child(ren)." };
+    }
+
+    const linkResult = await linkChildrenOrExplain(ids);
+    if (!linkResult.ok) return { ok: true, accountCreated: true, ...linkResult };
+
+    const { profile: mapped } = await loadProfile();
+    if (mapped) setProfile(mapped);
+    return { ok: true, message: "Account created." };
+  }, [loadProfile]);
 
   const clearSessionEndedMessage = useCallback(() => setSessionEndedMessage(null), []);
 
@@ -275,7 +361,7 @@ function AuthProvider({ children }) {
 
   return (
     <AuthCtx.Provider value={{
-      loading, currentUser, realUser, viewingAsUser, login, logout, viewAs, returnToSelf,
+      loading, currentUser, realUser, viewingAsUser, login, logout, signUp, viewAs, returnToSelf,
       sessionEndedMessage, clearSessionEndedMessage, changePassword, updateOwnProfile,
       requestPasswordReset, passwordRecovery, completePasswordRecovery, cancelPasswordRecovery,
     }}>

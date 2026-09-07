@@ -2332,11 +2332,12 @@ function DataProvider({ children }) {
         }
       },
 
-      // Admin-only (see parentService.js's RLS note): links an existing parent account to another
-      // student by their Student ID. There is deliberately no self-service equivalent — a parent
-      // can never insert their own parent_students row (Postgres rejects it), and knowing a
-      // student's printed ID isn't proof of guardianship, so this is only ever called from the
-      // school's own Parents management screen.
+      // Admin-only (see parentService.js's RLS note): links an EXISTING parent account to another
+      // student by their Student ID, from the school's own Parents management screen. A parent
+      // can never insert their own parent_students row directly (Postgres rejects it) -- the one
+      // narrow exception is a brand-new self-registering parent connecting their own first child(ren)
+      // in the same flow as creating their account, which goes through the dedicated
+      // self_register_link_children RPC instead (see AuthContext.signUp), not this function.
       async connectChild(parentId, studentIdRaw) {
         try {
           const code = (studentIdRaw || "").trim().toLowerCase();

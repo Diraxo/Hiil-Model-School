@@ -14,6 +14,10 @@ import {
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton,
 } from "../../components/ui";
 import { useAuth } from "../../context/AuthContext";
+import { useMutationGuard } from "../../hooks/useMutationGuard";
+import { createParentService } from "../../services/parentService";
+
+const parentService = createParentService();
 
 
 function LoginScreen() {
@@ -79,34 +83,103 @@ function LoginScreen() {
             New parent? <span className="text-sky-600 font-medium">Create an account</span>
           </button>
         </Card>
+        <p className="mt-5 text-center text-[11px] text-slate-400">
+          Powered by{" "}
+          <a href="https://www.hirgaliye.online/" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-sky-600 font-medium">
+            Hirgaliye
+          </a>
+        </p>
       </div>
     </div>
   );
 }
 
-// Parent self-registration stays disabled even now that Students/Parents are real Supabase data
-// (see project notes): `parent_students` RLS only allows Owner/Educational Director to insert a
-// parent<->student link (supabase/migrations/20260825190000_rls_policies.sql), by design -- a
-// parent typing in a printed Student ID is not proof of guardianship, and there's no secure
-// verification step (e.g. matching a birth date or a one-time code from the school) to allow a
-// parent to link themselves to a student. Until such a mechanism exists, linking a parent to a
-// student is only ever done by the school (see AdminPages.jsx's ParentsPage). The screen stays in
-// place, disabled, as a placeholder rather than being deleted.
+// Real parent self-registration (20260907000000_parent_self_registration.sql): creates a real
+// Supabase Auth account + profiles row, then atomically connects every submitted Student ID via
+// self_register_link_children. Student ID existence/availability is checked live per-field
+// (check_student_ids, anon-callable, reveals nothing but a status) and re-validated server-side on
+// submit -- see AuthContext.signUp for the full flow and its handling of Supabase's email-
+// confirmation setting.
 function RegisterScreen({ onBack }) {
-  const [name, setName] = useState("");
+  const auth = useAuth();
+  const { busy, run } = useMutationGuard();
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [phone, setPhone] = useState("");
-  const [children, setChildren] = useState([{ studentId: "" }]);
-  const [error] = useState("");
+  const [children, setChildren] = useState([{ studentId: "", status: null, error: "" }]);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(null); // { pendingConfirmation, message } once signUp succeeds
 
   function updateChild(i, val) {
-    setChildren((c) => c.map((ch, idx) => (idx === i ? { studentId: val } : ch)));
+    setChildren((c) => c.map((ch, idx) => (idx === i ? { studentId: val, status: null, error: "" } : ch)));
   }
 
-  function submit(e) {
+  async function checkChild(i) {
+    const id = (children[i]?.studentId || "").trim();
+    if (!id) return;
+    try {
+      const statuses = await parentService.checkStudentIds([id]);
+      const status = statuses.get(id) || null;
+      setChildren((c) => c.map((ch, idx) => {
+        if (idx !== i || ch.studentId.trim() !== id) return ch;
+        return {
+          ...ch,
+          status,
+          error: status === "not_found" ? "Student ID not found." : status === "already_linked" ? "This student is already linked to a parent account." : "",
+        };
+      }));
+    } catch {
+      // Live pre-check is a convenience only -- submit() re-validates server-side regardless.
+    }
+  }
+
+  async function submit(e) {
     e && e.preventDefault && e.preventDefault();
+    setError("");
+    if (!fullName.trim()) { setError("Full name is required."); return; }
+    if (!email.trim()) { setError("Email is required."); return; }
+    if (!password) { setError("Password is required."); return; }
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (!phone.trim()) { setError("Phone number is required."); return; }
+    const ids = [...new Set(children.map((c) => c.studentId.trim()).filter(Boolean))];
+    if (ids.length === 0) { setError("Enter a valid Student ID."); return; }
+
+    await run(async () => {
+      const res = await auth.signUp({ fullName, email, password, phone, studentIds: ids });
+      if (!res.ok) { setError(res.message); return; }
+      if (res.fieldErrors) {
+        setChildren((c) => c.map((ch) => {
+          const trimmed = ch.studentId.trim();
+          const key = Object.keys(res.fieldErrors).find((k) => k.toLowerCase() === trimmed.toLowerCase());
+          return key ? { ...ch, error: res.fieldErrors[key] } : ch;
+        }));
+        setError(res.message);
+        return;
+      }
+      setDone({ pendingConfirmation: !!res.pendingConfirmation, message: res.message });
+    });
+  }
+
+  if (done) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <div className="flex flex-col items-center mb-6">
+            <Logo size={56} />
+          </div>
+          <Card className="p-8 text-center">
+            <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
+            <h2 className="text-base font-semibold text-slate-800 mb-1">Account created</h2>
+            <p className="text-sm text-slate-400 mb-6">{done.message}</p>
+            {done.pendingConfirmation && (
+              <button onClick={onBack} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+            )}
+          </Card>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -115,19 +188,16 @@ function RegisterScreen({ onBack }) {
         <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 mb-4"><ArrowLeft size={15} /> Back to sign in</button>
         <div className="flex flex-col items-center mb-6">
           <Logo size={56} />
-          <h1 className="mt-3 text-lg font-semibold text-slate-800">Create a parent account</h1>
+          <h1 className="mt-3 text-lg font-semibold text-slate-800">Create your parent account</h1>
           <p className="text-xs text-slate-400 mt-1">Connect your child using the Student ID given by the school</p>
         </div>
         <Card className="p-6">
-          <div className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
-            Online registration is temporarily unavailable while the school switches to its new system. Please contact the school office to set up your parent account for now.
-          </div>
-          <div className="opacity-50 pointer-events-none">
-            <Field label="Full name" required><input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} /></Field>
-            <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} /></Field>
+          <div onKeyDown={(e) => { if (e.key === "Enter") submit(e); }}>
+            <Field label="Full name" required><input value={fullName} onChange={(e) => setFullName(e.target.value)} className={inputCls} /></Field>
+            <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="you@example.com" /></Field>
             <Field label="Password" required>
               <div className="relative">
-                <input type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls + " pr-9"} />
+                <input type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls + " pr-9"} placeholder="At least 6 characters" />
                 <button type="button" onClick={() => setShowPw((s) => !s)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
                   {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -136,16 +206,27 @@ function RegisterScreen({ onBack }) {
             <Field label="Phone number" required><input value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} placeholder="+252 61..." /></Field>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="block text-xs font-medium text-slate-500">Children</span>
-              <button type="button" onClick={() => setChildren((c) => [...c, { studentId: "" }])} className="text-xs text-sky-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
+              <button type="button" onClick={() => setChildren((c) => [...c, { studentId: "", status: null, error: "" }])} className="text-xs text-sky-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
             </div>
             {children.map((c, i) => (
-              <div key={i} className="flex gap-2 mb-2">
-                <input value={c.studentId} onChange={(e) => updateChild(i, e.target.value)} placeholder="e.g. TMA-2026-00031" className={inputCls} />
-                {children.length > 1 && <button type="button" onClick={() => setChildren((arr) => arr.filter((_, idx) => idx !== i))} className="text-slate-400 hover:text-red-500 px-2"><X size={16} /></button>}
+              <div key={i} className="mb-2">
+                <div className="flex gap-2">
+                  <input
+                    value={c.studentId}
+                    onChange={(e) => updateChild(i, e.target.value)}
+                    onBlur={() => checkChild(i)}
+                    placeholder="e.g. TMA-2026-00031"
+                    className={inputCls + (c.error ? " border-red-300" : c.status === "available" ? " border-emerald-300" : "")}
+                  />
+                  {children.length > 1 && <button type="button" onClick={() => setChildren((arr) => arr.filter((_, idx) => idx !== i))} className="text-slate-400 hover:text-red-500 px-2"><X size={16} /></button>}
+                </div>
+                {c.error && <span className="block text-xs text-red-500 mt-1">{c.error}</span>}
               </div>
             ))}
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2 mb-1">{error}</p>}
-            <button type="button" onClick={submit} className="w-full mt-4 bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Create account</button>
+            <button type="button" disabled={busy} onClick={submit} className="w-full mt-4 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+              {busy ? "Creating account…" : "Create account"}
+            </button>
           </div>
         </Card>
       </div>
