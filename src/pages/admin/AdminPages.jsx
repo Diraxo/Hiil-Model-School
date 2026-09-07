@@ -19,7 +19,7 @@ import {
   SEMESTERS, SEMESTER_LABEL, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, ageFromDob, computePeriodSchedule,
   leaveDurationLabel, amountInWords, monthLabel,
 } from "../../utils/helpers";
 import {
@@ -340,17 +340,75 @@ function StudentsPage({ onOpen }) {
   );
 }
 
-const RELATIONSHIP_OPTIONS = ["Father", "Mother", "Guardian", "Sibling", "Other"];
+const RELATIONSHIP_OPTIONS = ["Father", "Mother", "Guardian", "Sibling", "Uncle", "Other"];
+
+// "Other" + a stored custom value reads as the custom value; anything else reads as itself.
+function formatRelationship(rel, other) {
+  if (!rel) return "";
+  if (rel === "Other") return (other || "").trim() || "Other";
+  return rel;
+}
+
+// A read-only "label : value" row for the student profile, hidden entirely when the value is empty.
+function DetailRow({ label, value }) {
+  const v = (value || "").toString().trim();
+  if (!v) return null;
+  return (
+    <div className="flex gap-3 py-1 text-sm">
+      <span className="text-slate-400 shrink-0 w-32">{label}</span>
+      <span className="text-slate-700 whitespace-pre-wrap break-words">{v}</span>
+    </div>
+  );
+}
+
+// Section header inside the student form grid — spans both columns.
+function FormSectionHeading({ children, hint }) {
+  return (
+    <div className="sm:col-span-2 mt-2 mb-1.5 border-t border-slate-100 pt-3 first:border-0 first:pt-0 first:mt-0">
+      <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{children}</h4>
+      {hint && <p className="text-[11px] text-slate-400 mt-0.5">{hint}</p>}
+    </div>
+  );
+}
+
+// A relationship <select> + a conditional free-text "specify" input shown only when "Other" is
+// picked (spec §6/§8/§16 — never a confusing state where "Other" is selected but the custom value
+// is invisible/ignored). `relKey`/`otherKey` are the two form keys it drives.
+function RelationshipField({ form, set, relKey, otherKey }) {
+  const isOther = form[relKey] === "Other";
+  return (
+    <>
+      <Field label="Relationship">
+        <select className={inputCls} value={form[relKey] || ""} onChange={(e) => set(relKey, e.target.value)}>
+          <option value="">Select relationship</option>
+          {RELATIONSHIP_OPTIONS.map((r) => <option key={r}>{r}</option>)}
+        </select>
+      </Field>
+      {isOther ? (
+        <Field label="Other relationship">
+          <input className={inputCls} value={form[otherKey] || ""} onChange={(e) => set(otherKey, e.target.value)} placeholder="e.g. Aunt, Grandfather, Neighbour" />
+        </Field>
+      ) : <div className="hidden sm:block" />}
+    </>
+  );
+}
 
 // Shared by AddStudentModal and EditStudentModal so Edit always has exactly the same fields as
 // Add (previously Edit was missing middleName/gender/dob/admissionDate/photo entirely — spec §5).
 // `mode` toggles the couple of fields that only make sense once a student already exists
 // (Status — Add always creates ACTIVE students via the dedicated flow, not a free status picker;
 // photo — handled by the dedicated Change Profile Photo action, see ChangePhotoModal).
-function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, onPickPhoto }) {
+//
+// Blocker 5: parent/guardian contact and emergency contact are now SEPARATE sections backed by
+// separate columns (guardian_* vs emergency_contact_*) — they never overwrite each other. All of
+// the new fields are optional.
+function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, onPickPhoto, academicYears = [] }) {
   const isEdit = mode === "edit";
+  const age = ageFromDob(form.dob);
+  const sortedYears = [...academicYears].sort((a, b) => (b.yearStart || "").localeCompare(a.yearStart || ""));
   return (
     <div className="grid sm:grid-cols-2 gap-x-4">
+      <FormSectionHeading>Student Information</FormSectionHeading>
       {isEdit && (
         <Field label="Profile photo">
           <div className="flex items-center gap-3">
@@ -370,7 +428,9 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
         </select>
       </Field>
       <Field label="Date of birth"><input type="date" className={inputCls} value={form.dob || ""} onChange={(e) => set("dob", e.target.value)} /></Field>
-      <Field label="Enrollment / start date"><input type="date" className={inputCls} value={form.admissionDate || ""} onChange={(e) => set("admissionDate", e.target.value)} /></Field>
+      <Field label="Age">
+        <input className={`${inputCls} bg-slate-50 text-slate-500`} value={age === null ? "—" : `${age} year${age === 1 ? "" : "s"}`} readOnly tabIndex={-1} title="Calculated from the date of birth" />
+      </Field>
       <Field label="Grade" required error={errors.grade}>
         <select className={fieldCls("grade")} value={form.grade} onChange={(e) => set("grade", e.target.value)}>
           <option value="">Select grade</option>
@@ -383,20 +443,17 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
           {SECTIONS.filter(Boolean).map((s) => <option key={s} value={s}>{sectionLabel(s)}</option>)}
         </select>
       </Field>
+      {!isEdit && sortedYears.length > 0 && (
+        <Field label="Academic year">
+          <select className={inputCls} value={form.academicYearId || ""} onChange={(e) => set("academicYearId", e.target.value)}>
+            {sortedYears.map((y) => <option key={y.id} value={y.id}>{formatAcademicYearLabel(y)}{y.isCurrent ? " (current)" : ""}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Enrollment / start date"><input type="date" className={inputCls} value={form.admissionDate || ""} onChange={(e) => set("admissionDate", e.target.value)} /></Field>
       {isEdit && (
         <Field label="Status"><select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value)}>{STUDENT_STATUS.map((st) => <option key={st}>{st}</option>)}</select></Field>
       )}
-      <div className="sm:col-span-2 mt-1 mb-1.5">
-        <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Parent / Emergency Contact</h4>
-      </div>
-      <Field label="Name"><input className={inputCls} value={form.emergencyContactName || ""} onChange={(e) => set("emergencyContactName", e.target.value)} placeholder="Mohamed Hassan" /></Field>
-      <Field label="Phone number"><input className={inputCls} value={form.emergencyContact || ""} onChange={(e) => set("emergencyContact", e.target.value)} placeholder="+251 61..." /></Field>
-      <Field label="Relationship">
-        <select className={inputCls} value={form.emergencyContactRelationship || ""} onChange={(e) => set("emergencyContactRelationship", e.target.value)}>
-          <option value="">Select relationship</option>
-          {RELATIONSHIP_OPTIONS.map((r) => <option key={r}>{r}</option>)}
-        </select>
-      </Field>
       <Field label="Bus fee">
         <label className="flex items-center gap-2 text-sm text-slate-600 border border-slate-200 rounded-lg px-3 py-2">
           <input type="checkbox" checked={!!form.usesBus} onChange={(e) => set("usesBus", e.target.checked)} className="rounded border-slate-300 text-sky-600" /> Uses the school bus
@@ -416,6 +473,23 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
           </div>
         </Field>
       )}
+
+      <FormSectionHeading hint="Optional — the family's main contact. This is a school record only; it does not grant Parent Portal access.">Parent / Guardian Information</FormSectionHeading>
+      <Field label="Full name"><input className={inputCls} value={form.guardianName || ""} onChange={(e) => set("guardianName", e.target.value)} placeholder="Mohamed Hassan" /></Field>
+      <Field label="Phone number"><input className={inputCls} value={form.guardianPhone || ""} onChange={(e) => set("guardianPhone", e.target.value)} placeholder="+251 9..." /></Field>
+      <RelationshipField form={form} set={set} relKey="guardianRelationship" otherKey="guardianRelationshipOther" />
+      <Field label="Custody"><input className={inputCls} value={form.custody || ""} onChange={(e) => set("custody", e.target.value)} placeholder="e.g. Mother, Shared, Legal guardian" /></Field>
+
+      <FormSectionHeading hint="Optional — a separate person to reach in an emergency if the parent/guardian is unavailable.">Emergency Contact</FormSectionHeading>
+      <Field label="Full name"><input className={inputCls} value={form.emergencyContactName || ""} onChange={(e) => set("emergencyContactName", e.target.value)} placeholder="Abdi Ahmed" /></Field>
+      <Field label="Phone number"><input className={inputCls} value={form.emergencyContact || ""} onChange={(e) => set("emergencyContact", e.target.value)} placeholder="+251 9..." /></Field>
+      <RelationshipField form={form} set={set} relKey="emergencyContactRelationship" otherKey="emergencyContactRelationshipOther" />
+
+      <FormSectionHeading>Additional Information</FormSectionHeading>
+      <Field label="Home address">
+        <textarea rows={2} className={inputCls} value={form.homeAddress || ""} onChange={(e) => set("homeAddress", e.target.value)} placeholder="Jigjiga, Kebele 03, near ..." />
+      </Field>
+      <Field label="Previous school"><input className={inputCls} value={form.previousSchool || ""} onChange={(e) => set("previousSchool", e.target.value)} placeholder="e.g. None, KG, Transferred from ..." /></Field>
     </div>
   );
 }
@@ -423,11 +497,25 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
 function AddStudentModal({ open, onClose }) {
   const data = useData();
   const toast = useToast();
-  const empty = { firstName: "", middleName: "", lastName: "", gender: "", dob: "", grade: "", section: "", admissionDate: new Date().toISOString().slice(0, 10), emergencyContactName: "", emergencyContact: "", emergencyContactRelationship: "", usesBus: false, photo: null, photoPreview: null };
+  const empty = {
+    firstName: "", middleName: "", lastName: "", gender: "", dob: "", grade: "", section: "",
+    academicYearId: (currentAcademicYear(data.db.academicYears) || {}).id || "",
+    admissionDate: new Date().toISOString().slice(0, 10),
+    guardianName: "", guardianPhone: "", guardianRelationship: "", guardianRelationshipOther: "", custody: "",
+    emergencyContactName: "", emergencyContact: "", emergencyContactRelationship: "", emergencyContactRelationshipOther: "",
+    homeAddress: "", previousSchool: "",
+    usesBus: false, photo: null, photoPreview: null,
+  };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const [createdId, setCreatedId] = useState(null);
   const { busy, run } = useMutationGuard();
+  // Academic years may finish loading after this modal first mounts — default the year picker
+  // to the current year once it's known (and only while the user hasn't picked one).
+  useEffect(() => {
+    if (!open) return;
+    setForm((f) => (f.academicYearId ? f : { ...f, academicYearId: (currentAcademicYear(data.db.academicYears) || {}).id || "" }));
+  }, [open, data.db.academicYears]);
 
   function set(k, v) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -480,7 +568,7 @@ function AddStudentModal({ open, onClose }) {
         </div>
       ) : (
         <div>
-          <StudentFormFields form={form} set={set} fieldCls={fieldCls} errors={errors} mode="add" gradeOptions={data.gradeOptions()} />
+          <StudentFormFields form={form} set={set} fieldCls={fieldCls} errors={errors} mode="add" gradeOptions={data.gradeOptions()} academicYears={data.db.academicYears} />
           <p className="text-xs text-slate-400 mb-3">A unique Student ID will be generated automatically for {formatAcademicYearLabel(currentYear)}.</p>
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -867,25 +955,53 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
           <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-700">Parent / Guardian</h3>
-              {canEdit && <button type="button" onClick={() => setEditOpen(true)} className="text-xs text-sky-600 font-medium">Edit relationship</button>}
+              {canEdit && <button type="button" onClick={() => setEditOpen(true)} className="text-xs text-sky-600 font-medium">Edit</button>}
             </div>
             {parents.length === 0 ? (
-              s.emergencyContactName || s.emergencyContact ? (
-                <div>
-                  <p className="text-sm text-slate-700">{s.emergencyContactName || "No parent account connected yet."}</p>
-                  <p className="text-xs text-slate-400">{s.emergencyContact || "No phone on file"}{s.emergencyContactRelationship ? ` • ${s.emergencyContactRelationship}` : ""}</p>
-                </div>
-              ) : <p className="text-xs text-slate-400">No parent account connected yet.</p>
+              <p className="text-xs text-slate-400 mb-2">No parent account connected yet.</p>
             ) : parents.map((p) => (
               <div key={p.id} className="flex items-center gap-2.5 mb-2">
                 <Avatar name={p.name} photo={p.photo} size={30} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-slate-700">{p.name}</p>
-                  <p className="text-xs text-slate-400">{s.emergencyContactName && s.emergencyContactName !== p.name ? `${s.emergencyContactName} — ` : ""}{s.emergencyContact || p.phone || "No phone on file"}{s.emergencyContactRelationship ? ` • ${s.emergencyContactRelationship}` : ""}</p>
+                  <p className="text-xs text-slate-400">Connected parent account{p.phone ? ` • ${p.phone}` : ""}</p>
                 </div>
                 {onMessage && <button type="button" onClick={() => onMessage(p.id)} className="text-xs text-sky-600 font-medium flex items-center gap-1 border border-sky-100 rounded-lg px-2 py-1 hover:bg-sky-50 shrink-0"><MessageSquare size={12} /> Message</button>}
               </div>
             ))}
+            {(s.guardianName || s.guardianPhone || s.guardianRelationship || s.custody) ? (
+              <div className="mt-1 pt-2 border-t border-slate-100">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Contact on record</p>
+                <DetailRow label="Name" value={s.guardianName} />
+                <DetailRow label="Phone" value={s.guardianPhone} />
+                <DetailRow label="Relationship" value={formatRelationship(s.guardianRelationship, s.guardianRelationshipOther)} />
+                <DetailRow label="Custody" value={s.custody} />
+              </div>
+            ) : parents.length === 0 ? <p className="text-xs text-slate-400">No parent/guardian contact on record.</p> : null}
+          </Card>
+        </div>
+      )}
+
+      {tab === "overview" && (
+        <div className="grid lg:grid-cols-2 gap-4 mt-4">
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Emergency Contact</h3>
+            {(s.emergencyContactName || s.emergencyContact || s.emergencyContactRelationship) ? (
+              <div>
+                <DetailRow label="Name" value={s.emergencyContactName} />
+                <DetailRow label="Phone" value={s.emergencyContact} />
+                <DetailRow label="Relationship" value={formatRelationship(s.emergencyContactRelationship, s.emergencyContactRelationshipOther)} />
+              </div>
+            ) : <p className="text-xs text-slate-400">No emergency contact on record.</p>}
+          </Card>
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Student Details</h3>
+            <DetailRow label="Gender" value={s.gender} />
+            <DetailRow label="Date of birth" value={s.dob ? fmtDate(s.dob) : ""} />
+            <DetailRow label="Age" value={ageFromDob(s.dob) === null ? "" : `${ageFromDob(s.dob)} years`} />
+            <DetailRow label="Home address" value={s.homeAddress} />
+            <DetailRow label="Previous school" value={s.previousSchool} />
+            {!s.gender && !s.dob && !s.homeAddress && !s.previousSchool && <p className="text-xs text-slate-400">No additional information on record.</p>}
           </Card>
         </div>
       )}
@@ -1191,7 +1307,7 @@ function EditStudentModal({ open, onClose, student }) {
             <span className="text-slate-500 font-mono">{student.studentId}</span>
             <span className="text-slate-500">{formatAcademicYearLabel(year)}</span>
           </div>
-          <StudentFormFields form={form} set={set} fieldCls={() => inputCls} errors={{}} mode="edit" gradeOptions={data.gradeOptions()} onPickPhoto={() => setPhotoOpen(true)} />
+          <StudentFormFields form={form} set={set} fieldCls={() => inputCls} errors={{}} mode="edit" gradeOptions={data.gradeOptions()} academicYears={data.db.academicYears} onPickPhoto={() => setPhotoOpen(true)} />
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
             <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save Changes</PrimaryButton>

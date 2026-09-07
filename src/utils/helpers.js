@@ -44,6 +44,18 @@ function monthLabel(monthKey) {
   if (!y || !m) return monthKey || "";
   return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
+// Whole-years age from a "YYYY-MM-DD" date of birth (the ONLY source of truth for age — never a
+// stored field). Returns null for a missing/invalid/future DOB.
+function ageFromDob(dob) {
+  if (!dob) return null;
+  const d = dob instanceof Date ? dob : new Date(dob);
+  if (isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age -= 1;
+  return age < 0 || age > 130 ? null : age;
+}
 function initials(name = "") {
   return name.split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
 }
@@ -176,6 +188,6 @@ function joinWithAnd(items) {
 }
 
 export {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, ageFromDob, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
   numberToWords, amountInWords, joinWithAnd, monthLabel,
 };

@@ -42,6 +42,14 @@ function mapStudent(row, parentIdsByStudent) {
     emergencyContact: row.emergency_contact,
     emergencyContactName: row.emergency_contact_name,
     emergencyContactRelationship: row.emergency_contact_relationship,
+    emergencyContactRelationshipOther: row.emergency_contact_relationship_other,
+    guardianName: row.guardian_name,
+    guardianPhone: row.guardian_phone,
+    guardianRelationship: row.guardian_relationship,
+    guardianRelationshipOther: row.guardian_relationship_other,
+    custody: row.custody,
+    homeAddress: row.home_address,
+    previousSchool: row.previous_school,
     usesBus: row.uses_bus,
     parentIds: (parentIdsByStudent && parentIdsByStudent.get(row.id)) || [],
   };
@@ -65,9 +73,34 @@ function studentPayload(fields) {
   }
   if (fields.status !== undefined) p.status = fields.status;
   if (fields.suspension !== undefined) p.suspension = fields.suspension;
-  if (fields.emergencyContact !== undefined) p.emergency_contact = fields.emergencyContact || null;
-  if (fields.emergencyContactName !== undefined) p.emergency_contact_name = fields.emergencyContactName || null;
-  if (fields.emergencyContactRelationship !== undefined) p.emergency_contact_relationship = fields.emergencyContactRelationship || null;
+  // Trim every free-text contact/profile field and collapse a whitespace-only value to null, so
+  // the DB never holds a meaningless "   " string (spec §16). `text()` returns null for
+  // undefined/empty/whitespace-only, a trimmed string otherwise.
+  const text = (v) => {
+    if (v === undefined || v === null) return null;
+    const t = String(v).trim();
+    return t === "" ? null : t;
+  };
+  if (fields.emergencyContact !== undefined) p.emergency_contact = text(fields.emergencyContact);
+  if (fields.emergencyContactName !== undefined) p.emergency_contact_name = text(fields.emergencyContactName);
+  if (fields.emergencyContactRelationship !== undefined) p.emergency_contact_relationship = text(fields.emergencyContactRelationship);
+  // The "Other" free-text only means anything while the relationship is literally "Other" —
+  // otherwise it's stale UI state and must not be persisted. Keyed off the relationship field
+  // being present in this patch (the Add/Edit forms always send both together).
+  if (fields.emergencyContactRelationship !== undefined) {
+    p.emergency_contact_relationship_other =
+      fields.emergencyContactRelationship === "Other" ? text(fields.emergencyContactRelationshipOther) : null;
+  }
+  if (fields.guardianName !== undefined) p.guardian_name = text(fields.guardianName);
+  if (fields.guardianPhone !== undefined) p.guardian_phone = text(fields.guardianPhone);
+  if (fields.guardianRelationship !== undefined) p.guardian_relationship = text(fields.guardianRelationship);
+  if (fields.guardianRelationship !== undefined) {
+    p.guardian_relationship_other =
+      fields.guardianRelationship === "Other" ? text(fields.guardianRelationshipOther) : null;
+  }
+  if (fields.custody !== undefined) p.custody = text(fields.custody);
+  if (fields.homeAddress !== undefined) p.home_address = text(fields.homeAddress);
+  if (fields.previousSchool !== undefined) p.previous_school = text(fields.previousSchool);
   if (fields.usesBus !== undefined) p.uses_bus = !!fields.usesBus;
   return p;
 }

@@ -1590,7 +1590,11 @@ function DataProvider({ children }) {
       // via log_activity, notifications via notify_* RPCs.
       async createStudent(fields) {
         try {
-          const year = currentAcademicYear(academicYears);
+          // Enrollment year: caller may pick one explicitly (the Academic Year field on the
+          // registration form); otherwise it's the current year, exactly as before. Uses the
+          // existing academic_years / enrollments model — no second academic-year concept.
+          const year = (fields.academicYearId && academicYears.find((y) => y.id === fields.academicYearId))
+            || currentAcademicYear(academicYears);
           const cls = classesRaw.find((c) => c.grade === fields.grade && c.section === fields.section);
           const student = await studentService.create({ ...fields, classId: cls ? cls.id : null, status: "ACTIVE" });
           await syncStudentEnrollment(student, year ? year.id : null);
