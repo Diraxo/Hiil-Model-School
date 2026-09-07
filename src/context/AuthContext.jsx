@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from "react";
-import { supabase } from "../lib/supabaseClient";
+import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
+import { supabase, recoveryUrlState, scrubAuthParamsFromUrl } from "../lib/supabaseClient";
 import { useData } from "../context/DataContext";
 import { ROLES, ROLE_LABEL } from "../utils/constants";
 import { usePresenceHeartbeat } from "../utils/presence";
@@ -82,10 +82,20 @@ function AuthProvider({ children }) {
   // only `viewingAsId` does; the Supabase session and RLS still act as the real logged-in user.
   const [viewingAsId, setViewingAsId] = useState(null);
   const [sessionEndedMessage, setSessionEndedMessage] = useState(null);
-  // Set while the app is showing the "choose a new password" screen reached via a Supabase Auth
-  // password-recovery email link (detectSessionInUrl parses it into a real, if narrowly-scoped,
-  // session -- see supabaseClient.js).
-  const [passwordRecovery, setPasswordRecovery] = useState(false);
+  // Password-recovery flow, reached via a Supabase Auth reset-email link. The authoritative
+  // signal is the URL snapshot taken in supabaseClient.js (before supabase-js strips it); the
+  // `PASSWORD_RECOVERY` event below is a secondary trigger. `passwordRecovery` shows the dedicated
+  // "set a new password" screen; `recoveryLinkInvalid` shows the "request a new link" screen when
+  // the emailed link was expired / already used / malformed. `recoveryModeRef` lets the auth
+  // listener recognise the flow synchronously so a recovery-scoped session is never mistaken for
+  // a completed login.
+  const [passwordRecovery, setPasswordRecovery] = useState(
+    recoveryUrlState.isRecovery && !recoveryUrlState.linkError
+  );
+  const [recoveryLinkInvalid, setRecoveryLinkInvalid] = useState(
+    recoveryUrlState.isRecovery && !!recoveryUrlState.linkError
+  );
+  const recoveryModeRef = useRef(recoveryUrlState.isRecovery);
 
   // Fetches the caller's own profiles row via a SECURITY DEFINER RPC that bypasses RLS (see
   // migration 20260825200000_auth_self_service.sql) -- ordinary RLS hides a SUSPENDED/DISABLED
@@ -106,9 +116,34 @@ function AuthProvider({ children }) {
     let firstEventHandled = false;
     const finishLoading = () => { if (!firstEventHandled) { firstEventHandled = true; setLoading(false); } };
 
+    // The URL said this is a recovery landing but supabase-js established no session and won't
+    // fire PASSWORD_RECOVERY (expired / already-used / malformed link). Fall back to the
+    // "request a new link" screen instead of a dead reset form. getSession() awaits the same
+    // init that consumes the URL, so once it resolves the outcome is settled.
+    if (recoveryUrlState.isRecovery && !recoveryUrlState.linkError) {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!active) return;
+        if (!data?.session) {
+          recoveryModeRef.current = false;
+          setPasswordRecovery(false);
+          setRecoveryLinkInvalid(true);
+        }
+        finishLoading();
+      }).catch(() => { if (active) finishLoading(); });
+    }
+
     const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!active) return;
-      if (event === "PASSWORD_RECOVERY") { setPasswordRecovery(true); finishLoading(); return; }
+      if (event === "PASSWORD_RECOVERY") {
+        recoveryModeRef.current = true;
+        setRecoveryLinkInvalid(false);
+        setPasswordRecovery(true);
+        finishLoading();
+        return;
+      }
+      // In a recovery flow the recovery-scoped session must not be treated as a login: ignore the
+      // ordinary session lifecycle until the user sets a new password or bails out.
+      if (recoveryModeRef.current) { finishLoading(); return; }
       if (event === "SIGNED_OUT" || !newSession) {
         setProfile(null);
         setViewingAsId(null);
@@ -322,18 +357,47 @@ function AuthProvider({ children }) {
   }, []);
 
   // Forgot-password, step 2: reached via the emailed link, which Supabase's client already turned
-  // into a real (recovery-scoped) session -- see the PASSWORD_RECOVERY event above.
-  const completePasswordRecovery = useCallback(async (newPassword) => {
-    if (!newPassword || newPassword.length < 6) return { ok: false, message: "New password must be at least 6 characters." };
+  // into a real (recovery-scoped) session. Supabase Auth (updateUser) is the sole authority for
+  // the password and its strength rules; the checks here are just fast client-side feedback.
+  // On success the caller shows the confirmation card and then invokes finalizePasswordRecovery()
+  // -- we deliberately do NOT drop the recovery screen here, so the success message isn't skipped.
+  const completePasswordRecovery = useCallback(async (newPassword, confirmPassword) => {
+    if (!newPassword || !confirmPassword) return { ok: false, message: "Enter and confirm your new password." };
+    if (newPassword !== confirmPassword) return { ok: false, message: "The two passwords don't match." };
+    if (newPassword.length < 6) return { ok: false, message: "New password must be at least 6 characters." };
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData?.session) {
+      return { ok: false, message: "Your reset link has expired. Please request a new password reset." };
+    }
     const { error } = await supabase.auth.updateUser({ password: newPassword });
-    if (error) return { ok: false, message: error.message || "Couldn't reset your password." };
-    setPasswordRecovery(false);
+    if (error) {
+      const expired = /session|expired|token|not authenticated|jwt/i.test(error.message || "");
+      return { ok: false, message: expired
+        ? "Your reset link has expired. Please request a new password reset."
+        : (error.message || "Couldn't reset your password.") };
+    }
     return { ok: true, message: "" };
   }, []);
 
-  const cancelPasswordRecovery = useCallback(async () => {
+  // Leave the recovery flow for the normal login screen: end the recovery-scoped session and
+  // wipe any auth params still in the URL. Used both after a successful reset (from the
+  // confirmation card) and when the user cancels out of the reset screen.
+  const exitPasswordRecovery = useCallback(async () => {
+    recoveryModeRef.current = false;
     setPasswordRecovery(false);
-    await supabase.auth.signOut();
+    setRecoveryLinkInvalid(false);
+    await supabase.auth.signOut().catch(() => {});
+    scrubAuthParamsFromUrl();
+  }, []);
+  const finalizePasswordRecovery = exitPasswordRecovery;
+  const cancelPasswordRecovery = exitPasswordRecovery;
+
+  // "This link is invalid or has expired" screen -> back to login. There's no session to end
+  // (the link never established one); just clear the flag and scrub the error params.
+  const dismissInvalidRecoveryLink = useCallback(() => {
+    recoveryModeRef.current = false;
+    setRecoveryLinkInvalid(false);
+    scrubAuthParamsFromUrl();
   }, []);
 
   const realUser = profile;
@@ -363,7 +427,8 @@ function AuthProvider({ children }) {
     <AuthCtx.Provider value={{
       loading, currentUser, realUser, viewingAsUser, login, logout, signUp, viewAs, returnToSelf,
       sessionEndedMessage, clearSessionEndedMessage, changePassword, updateOwnProfile,
-      requestPasswordReset, passwordRecovery, completePasswordRecovery, cancelPasswordRecovery,
+      requestPasswordReset, passwordRecovery, recoveryLinkInvalid, completePasswordRecovery,
+      finalizePasswordRecovery, cancelPasswordRecovery, dismissInvalidRecoveryLink,
     }}>
       {children}
     </AuthCtx.Provider>

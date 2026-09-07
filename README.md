@@ -50,6 +50,18 @@ VITE_SUPABASE_ANON_KEY=sb_publishable_...
 The same two variables must be configured in the hosting provider (e.g. Vercel
 project → Settings → Environment Variables, Production scope).
 
+### `VITE_SITE_URL` (optional — password-reset / auth-email redirects)
+
+Leave blank locally (reset links then open your dev server via the browser
+origin). In production set it to the deployed origin
+(`https://hiil-model-school.vercel.app`) so recovery emails always return users
+to production. The same origin **must** also be listed under **Supabase
+Dashboard → Authentication → URL Configuration → Redirect URLs** (add both
+`https://hiil-model-school.vercel.app` and `https://hiil-model-school.vercel.app/**`),
+and the project **Site URL** should be that origin — otherwise Supabase ignores
+`redirectTo` and falls back to the Site URL. See
+[`docs/password-reset.md`](docs/password-reset.md) for the full flow.
+
 ## Architecture
 
 ```

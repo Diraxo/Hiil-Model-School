@@ -288,29 +288,32 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
   );
 }
 
-// Reached when a Supabase Auth password-recovery email link lands the user back in the app --
-// AuthContext detects the resulting PASSWORD_RECOVERY event and routes here instead of the
-// normal login/dashboard split (see App.jsx's Root).
+// Reached when a Supabase Auth password-recovery email link lands the user back in the app.
+// AuthContext detects the recovery landing (URL snapshot in supabaseClient.js, backed up by the
+// PASSWORD_RECOVERY event) and routes here instead of the normal login/dashboard split -- see
+// App.jsx's Root. The recovery-scoped session is never allowed to fall through to the dashboard;
+// the user must set a new password (or cancel) first.
 function PasswordRecoveryScreen() {
   const auth = useAuth();
+  const { busy, run } = useMutationGuard();
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
   async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     setError("");
-    if (!newPw || !confirmPw) { setError("Please fill in your new password."); return; }
-    if (newPw !== confirmPw) { setError("New password and confirmation don't match."); return; }
-    setSubmitting(true);
-    const res = await auth.completePasswordRecovery(newPw);
-    setSubmitting(false);
-    if (!res.ok) { setError(res.message); return; }
-    setDone(true);
+    if (!newPw || !confirmPw) { setError("Enter and confirm your new password."); return; }
+    if (newPw !== confirmPw) { setError("The two passwords don't match."); return; }
+    if (newPw.length < 6) { setError("Use a password of at least 6 characters."); return; }
+    await run(async () => {
+      const res = await auth.completePasswordRecovery(newPw, confirmPw);
+      if (!res.ok) { setError(res.message); return; }
+      setDone(true);
+    }, { key: "password-recovery-update" });
   }
 
   return (
@@ -318,15 +321,16 @@ function PasswordRecoveryScreen() {
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-6">
           <Logo size={56} />
-          <h1 className="mt-3 text-lg font-semibold text-slate-800">Choose a new password</h1>
+          <h1 className="mt-3 text-lg font-semibold text-slate-800">Reset your password</h1>
+          {!done && <p className="text-xs text-slate-400 mt-1">Enter a new password for your Hiil Model School account.</p>}
         </div>
 
         {done ? (
           <Card className="p-8 text-center">
             <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
-            <h2 className="text-base font-semibold text-slate-800 mb-1">Password reset</h2>
-            <p className="text-sm text-slate-400 mb-6">Your password has been changed. Continue to your dashboard.</p>
-            <button onClick={() => window.location.reload()} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Continue</button>
+            <h2 className="text-base font-semibold text-slate-800 mb-1">Password updated successfully</h2>
+            <p className="text-sm text-slate-400 mb-6">Your password has been changed. You can now sign in with your new password.</p>
+            <button onClick={auth.finalizePasswordRecovery} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
           </Card>
         ) : (
           <Card className="p-6">
@@ -347,8 +351,8 @@ function PasswordRecoveryScreen() {
               </div>
             </Field>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" disabled={submitting} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
-              {submitting ? "Saving…" : "Reset password"}
+            <button type="button" disabled={busy} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
+              {busy ? "Saving…" : "Set new password"}
             </button>
             <button type="button" onClick={auth.cancelPasswordRecovery} className="w-full mt-2 text-center text-xs text-slate-500 hover:text-slate-700">Cancel</button>
           </Card>
@@ -358,5 +362,28 @@ function PasswordRecoveryScreen() {
   );
 }
 
+// Shown when the emailed reset link is expired, already used, or malformed -- Supabase
+// established no recovery session, so there is nothing to reset. AuthContext sets
+// `recoveryLinkInvalid` (see App.jsx's Root).
+function InvalidRecoveryLinkScreen() {
+  const auth = useAuth();
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-6">
+          <Logo size={56} />
+          <h1 className="mt-3 text-lg font-semibold text-slate-800">Reset your password</h1>
+        </div>
+        <Card className="p-8 text-center">
+          <div className="w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-4"><CircleAlert className="text-amber-600" size={28} /></div>
+          <h2 className="text-base font-semibold text-slate-800 mb-1">This link can't be used</h2>
+          <p className="text-sm text-slate-400 mb-6">This password reset link is invalid or has expired. Please request a new one.</p>
+          <button onClick={auth.dismissInvalidRecoveryLink} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+        </Card>
+      </div>
+    </div>
+  );
+}
 
-export { LoginScreen, RegisterScreen, PasswordRecoveryScreen };
+
+export { LoginScreen, RegisterScreen, PasswordRecoveryScreen, InvalidRecoveryLinkScreen };

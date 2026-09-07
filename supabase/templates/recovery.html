@@ -1,0 +1,45 @@
+<!--
+  Hiil Model School — password reset email.
+
+  This file is wired into the LOCAL `supabase start` stack via
+  supabase/config.toml ([auth.email.template.recovery]). The HOSTED project does
+  NOT read it — paste this same markup into
+  Supabase Dashboard → Authentication → Emails → Templates → "Reset Password".
+
+  Keep the CTA href as {{ .ConfirmationURL }} (the supported Supabase variable) —
+  do NOT hardcode the project URL, the recovery token, or the recipient email.
+  The <img> src must be an absolute https:// URL reachable by email clients; the
+  production favicon is used here. Swap it for a Storage/CDN-hosted school logo
+  when one is available. See docs/password-reset.md.
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+        <tr>
+          <td style="padding:32px 40px 8px;text-align:center;">
+            <img src="https://hiil-model-school.vercel.app/favicon.png" width="56" height="56" alt="Hiil Model School" style="border-radius:12px;" />
+            <h1 style="margin:16px 0 0;font-size:18px;font-weight:600;color:#1e293b;">Hiil Model School</h1>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 40px 8px;color:#475569;font-size:14px;line-height:1.6;">
+            <p style="margin:0 0 12px;">We received a request to reset the password for your Hiil Model School account.</p>
+            <p style="margin:0 0 12px;">Click the button below to choose a new password. This link lets you set a new password and will expire after a short time.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:12px 40px 24px;text-align:center;">
+            <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#0284c7;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 28px;border-radius:10px;">Reset your password</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 40px 32px;color:#94a3b8;font-size:12px;line-height:1.6;">
+            <p style="margin:0;">If you didn't request a password reset, you can safely ignore this email — your password won't change.</p>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:16px 0 0;color:#94a3b8;font-size:11px;">Hiil Model School · School Management Portal</p>
+    </td>
+  </tr>
+</table>

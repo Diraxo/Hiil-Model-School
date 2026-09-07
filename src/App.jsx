@@ -3,7 +3,7 @@ import { ToastProvider } from "./context/ToastContext";
 import { DataProvider } from "./context/DataContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { AppShell } from "./layouts/AppShell";
-import { LoginScreen, PasswordRecoveryScreen } from "./pages/auth/AuthPages";
+import { LoginScreen, PasswordRecoveryScreen, InvalidRecoveryLinkScreen } from "./pages/auth/AuthPages";
 import { Logo } from "./components/ui";
 
 
@@ -18,7 +18,10 @@ function SplashScreen() {
 function Root() {
   const auth = useAuth();
   if (auth.loading) return <SplashScreen />;
+  // A password-recovery landing takes precedence over any session that may have loaded, so the
+  // user always chooses a new password before reaching the app.
   if (auth.passwordRecovery) return <PasswordRecoveryScreen />;
+  if (auth.recoveryLinkInvalid) return <InvalidRecoveryLinkScreen />;
   if (!auth.currentUser) return <LoginScreen />;
   return <AppShell />;
 }
