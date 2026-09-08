@@ -66,11 +66,11 @@ function AnnouncementAttachmentField({ attachment, onChange }) {
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300 w-fit">
+          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-brand-300 w-fit">
             <ImagePlus size={15} /> Attach image
             <input type="file" accept="image/*" className="hidden" onChange={pick("image")} />
           </label>
-          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300 w-fit">
+          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-brand-300 w-fit">
             <FileText size={15} /> Attach PDF
             <input type="file" accept="application/pdf" className="hidden" onChange={pick("pdf")} />
           </label>
@@ -116,7 +116,7 @@ function AnnouncementDetailModal({ announcement, onClose }) {
         {announcement.attachment?.type === "pdf" && (
           <button
             type="button" onClick={() => setPdfOpen(true)}
-            className="inline-flex items-center gap-1.5 text-sm text-sky-600 font-medium hover:underline"
+            className="inline-flex items-center gap-1.5 text-sm text-brand-600 font-medium hover:underline"
           >
             <FileText size={15} /> PDF attachment: {announcement.attachment.name} → Open
           </button>
@@ -152,7 +152,7 @@ function AnnouncementsPreviewCard({ announcements, emptyText = "No announcements
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
-        <Megaphone size={16} className="text-sky-600" />
+        <Megaphone size={16} className="text-brand-600" />
         <h3 className="text-sm font-semibold text-slate-700">School Announcements</h3>
       </div>
       {top.length === 0 ? (
@@ -167,11 +167,11 @@ function AnnouncementsPreviewCard({ announcements, emptyText = "No announcements
               setDetail(a);
             }
             return (
-              <Card key={a.id} className={`p-0 overflow-hidden border-l-4 ${unread ? "border-l-sky-500" : "border-l-transparent"}`}>
-                <button type="button" onClick={open} className={`w-full text-left p-4 hover:bg-slate-50 ${unread ? "bg-sky-50/50" : ""}`}>
+              <Card key={a.id} className={`p-0 overflow-hidden border-l-4 ${unread ? "border-l-brand-500" : "border-l-transparent"}`}>
+                <button type="button" onClick={open} className={`w-full text-left p-4 hover:bg-slate-50 ${unread ? "bg-brand-50/50" : ""}`}>
                   <div className="flex items-start justify-between gap-3 mb-1">
                     <h4 className={`text-sm flex items-center gap-2 ${unread ? "font-semibold text-slate-800" : "font-medium text-slate-700"}`}>
-                      {unread && <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />}
+                      {unread && <span className="w-2 h-2 rounded-full bg-brand-500 shrink-0" />}
                       {a.pinned && <Pin size={12} className="text-amber-500 shrink-0" />}
                       {a.title}
                     </h4>
@@ -180,7 +180,7 @@ function AnnouncementsPreviewCard({ announcements, emptyText = "No announcements
                   <p className="text-xs text-slate-400 mb-1.5">{data.announcementSenderLabel(a.authorId)} · {timeAgo(a.createdAt)}</p>
                   <p className="text-sm text-slate-600 mb-2 line-clamp-2">{a.message}</p>
                   {a.attachment && <div className="mb-2"><AnnouncementAttachmentChip attachment={a.attachment} /></div>}
-                  <span className="text-xs text-sky-600 font-medium">View announcement →</span>
+                  <span className="text-xs text-brand-600 font-medium">View announcement →</span>
                 </button>
               </Card>
             );

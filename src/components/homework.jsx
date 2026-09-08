@@ -68,7 +68,7 @@ function HomeworkCard({ homework, teacherName, onOpen }) {
           <span className="text-slate-600 font-medium">{teacherLabel(teacherName)}</span>
           <span> • Published {fmtDate(homework.createdAt)}</span>
         </div>
-        <span className="text-xs font-medium text-sky-600 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <span className="text-xs font-medium text-brand-600 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           View details <ChevronRight size={13} />
         </span>
       </div>
@@ -126,7 +126,7 @@ function HomeworkDetailsModal({ homework, teacherName, classLabel, onClose, onEd
           {(onEdit || onDelete) && (
             <div className="flex justify-end gap-2 border-t border-slate-100 mt-4 pt-4">
               {onDelete && <button type="button" onClick={onDelete} className="px-4 py-2 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50">Delete</button>}
-              {onEdit && <button type="button" onClick={onEdit} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-sky-600 hover:bg-sky-700">Edit Homework</button>}
+              {onEdit && <button type="button" onClick={onEdit} className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-brand-600 hover:bg-brand-700">Edit Homework</button>}
             </div>
           )}
         </div>

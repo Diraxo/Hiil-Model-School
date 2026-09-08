@@ -96,7 +96,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Staff on payroll</p><p className="text-lg font-semibold text-slate-800">{db.staff.length}</p></div>
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Net pay owed</p><p className="text-lg font-semibold text-amber-600">{formatMoney(payrollNetPay)}</p></div>
           </div>
-          <button onClick={() => setPage("payroll")} className="mt-3 text-xs font-medium text-sky-600 hover:text-sky-700">View Payroll →</button>
+          <button onClick={() => setPage("payroll")} className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700">View Payroll →</button>
         </Card>
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-4">Expenses</h3>
@@ -104,7 +104,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">This month</p><p className="text-lg font-semibold text-slate-800">{formatMoney(expensesThisMonth)}</p></div>
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">All time</p><p className="text-lg font-semibold text-slate-800">{formatMoney(db.expenses.reduce((s, e) => s + e.totalAmount, 0))}</p></div>
           </div>
-          <button onClick={() => setPage("expenses")} className="mt-3 text-xs font-medium text-sky-600 hover:text-sky-700">View Expenses →</button>
+          <button onClick={() => setPage("expenses")} className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700">View Expenses →</button>
         </Card>
       </div>
 
@@ -113,7 +113,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-slate-700">Recent Activity</h3>
-          <button onClick={() => setPage("auditLog")} className="text-xs font-medium text-sky-600 hover:text-sky-700">Full Audit Log →</button>
+          <button onClick={() => setPage("auditLog")} className="text-xs font-medium text-brand-600 hover:text-brand-700">Full Audit Log →</button>
         </div>
         <RecentActivityFeed activities={db.activities} onOpenActivity={onOpenActivity} />
       </Card>
@@ -283,7 +283,7 @@ function LeadershipFormModal({ open, role, onClose }) {
             <div><p className="text-[10px] text-slate-400 uppercase tracking-wide">Email</p><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span></div>
             <div><p className="text-[10px] text-slate-400 uppercase tracking-wide">Temporary password</p><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span></div>
           </div>
-          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Done</button>
+          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">Done</button>
         </div>
       </Modal>
     );
@@ -300,7 +300,7 @@ function LeadershipFormModal({ open, role, onClose }) {
           <input type={showPw ? "text" : "password"} className={inputCls + " pr-16 font-mono"} value={form.password} onChange={(e) => set("password", e.target.value)} />
           <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
             <button type="button" onClick={() => setShowPw((s) => !s)} className="text-slate-400 hover:text-slate-600">{showPw ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-            <button type="button" onClick={() => set("password", generatePassword())} className="text-slate-400 hover:text-sky-600"><RefreshCw size={14} /></button>
+            <button type="button" onClick={() => set("password", generatePassword())} className="text-slate-400 hover:text-brand-600"><RefreshCw size={14} /></button>
           </div>
         </div>
       </Field>
@@ -497,7 +497,7 @@ function StaffFormModal({ open, onClose, staff }) {
       {isOtherStaff && (
         <Field label="Attendance">
           <label className="flex items-center gap-2 text-xs text-slate-600">
-            <input type="checkbox" className="rounded border-slate-300 text-sky-600 focus:ring-sky-500" checked={form.hasShifts} onChange={(e) => set("hasShifts", e.target.checked)} />
+            <input type="checkbox" className="rounded border-slate-300 text-brand-600 focus:ring-brand-500" checked={form.hasShifts} onChange={(e) => set("hasShifts", e.target.checked)} />
             Records attendance twice a day (morning &amp; afternoon shifts — e.g. a driver)
           </label>
         </Field>
@@ -505,7 +505,7 @@ function StaffFormModal({ open, onClose, staff }) {
       <Field label="Photo (optional)">
         <div className="flex items-center gap-3">
           {(form.photoPreview || typeof form.photo === "string") && <Avatar name={isOtherStaff ? fullName(form.firstName, form.middleName, form.lastName) : form.name} photo={form.photoPreview || form.photo} size={40} />}
-          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
+          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-brand-50">
             <ImagePlus size={13} /> {(form.photoPreview || form.photo) ? "Replace photo" : "Add photo"}
             <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files[0] && uploadPhoto(e.target.files[0])} />
           </label>
@@ -1056,9 +1056,9 @@ function PayrollPage({ onOpen }) {
             key={f.key}
             type="button"
             onClick={() => setStatusFilter(f.key)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${statusFilter === f.key ? "bg-sky-600 border-sky-600 text-white" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${statusFilter === f.key ? "bg-brand-600 border-brand-600 text-white" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}
           >
-            {f.label} <span className={statusFilter === f.key ? "text-sky-100" : "text-slate-400"}>{counts[f.key] || 0}</span>
+            {f.label} <span className={statusFilter === f.key ? "text-brand-100" : "text-slate-400"}>{counts[f.key] || 0}</span>
           </button>
         ))}
       </div>
@@ -1086,7 +1086,7 @@ function PayrollPage({ onOpen }) {
                         return (
                           <tr key={s.id} onClick={() => onOpen && onOpen(s.id)} className="border-t border-slate-100 cursor-pointer hover:bg-slate-50">
                             <td className="px-4 py-2.5 text-slate-400">{idx + 1}</td>
-                            <td className="px-4 py-2.5 text-slate-700 font-medium whitespace-nowrap hover:text-sky-600">{s.name}</td>
+                            <td className="px-4 py-2.5 text-slate-700 font-medium whitespace-nowrap hover:text-brand-600">{s.name}</td>
                             <td className="px-4 py-2.5 text-slate-500">{s.position}</td>
                             <td className="px-4 py-2.5">{s.bankAccount ? <span className="text-slate-600">{s.bankAccount}</span> : <Badge tone="amber">Not provided</Badge>}</td>
                             <td className="px-4 py-2.5">
@@ -1156,7 +1156,7 @@ function PaymentMethodsPage() {
               {editingId === m.id ? (
                 <input autoFocus className={inputCls + " max-w-xs"} value={editingName} onChange={(e) => setEditingName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveRename(m.id)} onBlur={() => saveRename(m.id)} />
               ) : (
-                <button type="button" onClick={() => { setEditingId(m.id); setEditingName(m.name); }} className="text-sm font-medium text-slate-700 hover:text-sky-600 text-left">{m.name}</button>
+                <button type="button" onClick={() => { setEditingId(m.id); setEditingName(m.name); }} className="text-sm font-medium text-slate-700 hover:text-brand-600 text-left">{m.name}</button>
               )}
               <div className="flex items-center gap-2">
                 <Badge tone={m.active ? "green" : "slate"}>{m.active ? "Active" : "Inactive"}</Badge>
@@ -1232,13 +1232,13 @@ function ExpensesPage({ focus, clearFocus }) {
                   <tr key={e.id} onClick={() => setEditExpense(e)} className="border-t border-slate-100 cursor-pointer hover:bg-slate-50">
                     <td className="px-4 py-2.5 text-slate-400 font-mono text-xs whitespace-nowrap">{e.expenseNo}</td>
                     <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">{fmtDate(e.date)}</td>
-                    <td className="px-4 py-2.5 text-slate-700 font-medium whitespace-nowrap hover:text-sky-600">{expenseSummaryLabel(e.items)}</td>
+                    <td className="px-4 py-2.5 text-slate-700 font-medium whitespace-nowrap hover:text-brand-600">{expenseSummaryLabel(e.items)}</td>
                     <td className="px-4 py-2.5 text-slate-500">{e.method}</td>
                     <td className="px-4 py-2.5 text-slate-700 font-semibold">{formatMoney(e.totalAmount)}</td>
                     <td className="px-4 py-2.5 text-slate-500">{e.purchasedBy || "—"}</td>
                     <td className="px-4 py-2.5">
                       {e.receiptImage ? (
-                        <button type="button" onClick={(ev) => { ev.stopPropagation(); setViewer(e); }} className="text-sky-600 hover:text-sky-700" title="View receipt"><Eye size={15} /></button>
+                        <button type="button" onClick={(ev) => { ev.stopPropagation(); setViewer(e); }} className="text-brand-600 hover:text-brand-700" title="View receipt"><Eye size={15} /></button>
                       ) : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-2.5"><div className="flex gap-2"><GhostButton icon={Edit2} onClick={(ev) => { ev.stopPropagation(); setEditExpense(e); }}>Edit</GhostButton><GhostButton danger onClick={(ev) => { ev.stopPropagation(); setDeleteTarget(e); }}>Delete</GhostButton></div></td>
@@ -1390,14 +1390,14 @@ function ExpenseFormModal({ open, onClose, expense }) {
             <ExpenseItemRow key={i} item={item} index={i} onChange={setItem} onRemove={removeItem} canRemove={form.items.length > 1} />
           ))}
         </div>
-        <button type="button" onClick={addItem} className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-sky-600 hover:text-sky-700">
+        <button type="button" onClick={addItem} className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
           <Plus size={14} /> Add Item
         </button>
       </div>
 
-      <div className="flex items-center justify-between bg-sky-50 rounded-lg px-4 py-3 mb-3.5">
+      <div className="flex items-center justify-between bg-brand-50 rounded-lg px-4 py-3 mb-3.5">
         <span className="text-sm font-medium text-slate-600">Total Expense</span>
-        <span className="text-lg font-semibold text-sky-700">{formatMoney(grandTotal)}</span>
+        <span className="text-lg font-semibold text-brand-700">{formatMoney(grandTotal)}</span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4">
@@ -1407,7 +1407,7 @@ function ExpenseFormModal({ open, onClose, expense }) {
       <Field label="Notes"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} /></Field>
       <Field label="Receipt">
         <div className="flex items-center gap-2">
-          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
+          <label className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-brand-50">
             <Receipt size={13} /> {hasReceipt ? "Replace receipt" : "Attach receipt (image or PDF)"}
             <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => pickReceipt(e.target.files[0])} />
           </label>
@@ -1451,7 +1451,7 @@ function AuditLogPage() {
           <div className="space-y-3.5 max-h-[32rem] overflow-y-auto">
             {filtered.map((a) => (
               <div key={a.id} className="flex gap-3 text-sm border-b border-slate-50 pb-3 last:border-0">
-                <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
+                <div className="w-1.5 h-1.5 rounded-full bg-brand-500 mt-1.5 shrink-0" />
                 <div>
                   <p className="text-slate-600 leading-snug">{a.text}</p>
                   {a.actorName ? (

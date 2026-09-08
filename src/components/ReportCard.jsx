@@ -86,11 +86,11 @@ function ReportCardModal({ student, classId, onClose }) {
           <div className="absolute border-2 border-slate-800" style={{ top: "12mm", right: "12mm", width: "26mm", height: "31mm" }} />
 
           {/* Header */}
-          <div className="relative text-center pb-3 mb-4 border-b-[3px] border-sky-800">
+          <div className="relative text-center pb-3 mb-4 border-b-[3px] border-brand-800">
             <div className="absolute inset-x-0 top-2 h-[5px] bg-red-600" />
             <img src={LOGO_DATA_URI} alt="Hiil Model School" className="relative z-10 w-20 h-20 mx-auto rounded-2xl border-2 border-white shadow object-cover" />
-            <h1 className="mt-1 text-2xl font-bold tracking-wide text-sky-900 uppercase">Hiil Model School</h1>
-            <p className="text-xs italic font-medium text-sky-800 tracking-wide">Quality Education and Personal Excellence</p>
+            <h1 className="mt-1 text-2xl font-bold tracking-wide text-brand-900 uppercase">Hiil Model School</h1>
+            <p className="text-xs italic font-medium text-brand-800 tracking-wide">Quality Education and Personal Excellence</p>
           </div>
 
           <p className="text-center font-bold text-sm uppercase underline underline-offset-4 mb-3">Student Yearly Report Card</p>
@@ -188,7 +188,7 @@ function ReportCardModal({ student, classId, onClose }) {
       <div className="flex justify-end gap-2 pt-4 no-print">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
         <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 bg-slate-600 hover:bg-slate-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium"><Printer size={15} /> Print Report Card</button>
-        <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60"><Download size={15} /> {downloading ? "Preparing…" : "Download PDF"}</button>
+        <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60"><Download size={15} /> {downloading ? "Preparing…" : "Download PDF"}</button>
       </div>
     </Modal>
   );

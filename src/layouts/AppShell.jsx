@@ -217,6 +217,8 @@ function AppShell() {
   return (
     <>
     <div className="min-h-screen bg-slate-50 flex flex-col">
+      {/* School brand accent — the signage red, with a hairline of the crest gold. */}
+      <div className="h-1 bg-brand-600 shrink-0 border-b border-gold-400" />
       {auth.viewingAsUser && (
         <div className="bg-red-600 text-white text-xs sm:text-sm px-4 py-2 flex items-center justify-center gap-2 sticky top-0 z-50 shrink-0">
           <ArrowLeftRight size={14} />
@@ -303,8 +305,8 @@ function SidebarContent({ nav, page, setPage, unreadByPage, needsPasswordChange,
           const showPwDot = item.key === "settings" && needsPasswordChange;
           return (
             <button key={item.key} onClick={() => { setPage(item.key); onNavigate && onNavigate(); }}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium mb-0.5 transition-colors ${active ? "bg-sky-50 text-sky-700" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"}`}>
-              <Icon size={16} className={active ? "text-sky-600" : "text-slate-400"} />
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium mb-0.5 transition-colors ${active ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"}`}>
+              <Icon size={16} className={active ? "text-brand-600" : "text-slate-400"} />
               <span className="flex-1 text-left">{item.label}</span>
               {badge > 0 && (
                 <span className="min-w-[18px] h-[18px] px-[5px] inline-flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none shrink-0">
@@ -317,9 +319,9 @@ function SidebarContent({ nav, page, setPage, unreadByPage, needsPasswordChange,
         })}
       </nav>
       <div className="p-3 border-t border-slate-100">
-        <div className="rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2.5">
-          <p className="text-[11px] font-medium text-emerald-800">Quality Education</p>
-          <p className="text-[10px] text-emerald-600">and Personal Excellence</p>
+        <div className="rounded-lg bg-gold-50 border border-gold-200 px-3 py-2.5">
+          <p className="text-[11px] font-semibold text-brand-700">Center of Excellence</p>
+          <p className="text-[10px] text-gold-700">Quality Education and Personal Excellence</p>
         </div>
       </div>
     </>

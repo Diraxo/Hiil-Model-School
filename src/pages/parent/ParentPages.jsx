@@ -56,11 +56,11 @@ function ChildSwitcher({ children, activeChildId, setActiveChildId }) {
       {children.map((c) => {
         const notActive = c.status !== "ACTIVE";
         return (
-          <button key={c.id} onClick={() => setActiveChildId(c.id)} className={`flex items-center gap-2 px-3 py-2 rounded-xl border whitespace-nowrap transition-colors ${activeChildId === c.id ? "bg-sky-600 border-sky-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+          <button key={c.id} onClick={() => setActiveChildId(c.id)} className={`flex items-center gap-2 px-3 py-2 rounded-xl border whitespace-nowrap transition-colors ${activeChildId === c.id ? "bg-brand-600 border-brand-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
             <Avatar name={data.studentFullName(c)} photo={c.photo} size={26} />
             <div className="text-left leading-tight">
               <p className="text-xs font-semibold">{data.studentFullName(c)}</p>
-              <p className={`text-[10px] ${activeChildId === c.id ? "text-sky-100" : "text-slate-400"}`}>{c.grade}{c.section}</p>
+              <p className={`text-[10px] ${activeChildId === c.id ? "text-brand-100" : "text-slate-400"}`}>{c.grade}{c.section}</p>
             </div>
             {notActive && <Badge tone={activeChildId === c.id ? "slate" : "amber"}>No longer enrolled</Badge>}
           </button>
@@ -216,8 +216,8 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
                     <div>
                       <span className="text-slate-700 font-medium">{e.subject}</span>
                       <span className="text-slate-400"> — {teacher?.name}</span>
-                      {substituteUser && <span className="text-sky-600"> · 🔄 Substitute: {substituteUser.name}</span>}
-                      {directCovererUser && <span className="text-sky-600"> · 🔄 Covered by {directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</span>}
+                      {substituteUser && <span className="text-brand-600"> · 🔄 Substitute: {substituteUser.name}</span>}
+                      {directCovererUser && <span className="text-brand-600"> · 🔄 Covered by {directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</span>}
                     </div>
                     {substituteUser || directCovererUser ? (
                       <Badge tone="sky">Covered</Badge>
@@ -359,7 +359,7 @@ function ParentAttendancePage({ activeChildId, setActiveChildId, focus, clearFoc
           { label: "Present", value: att.filter((a) => a.status === "Present").length, color: "bg-emerald-500" },
           { label: "Late", value: att.filter((a) => a.status === "Late").length, color: "bg-amber-400" },
           { label: "Sick", value: att.filter((a) => a.status === "Sick").length, color: "bg-indigo-400" },
-          { label: "Permission", value: att.filter((a) => a.status === "Permission").length, color: "bg-sky-400" },
+          { label: "Permission", value: att.filter((a) => a.status === "Permission").length, color: "bg-blue-400" },
           { label: "Absent", value: att.filter((a) => a.status === "Absent").length, color: "bg-red-400" },
         ]} />
       </Card>
@@ -400,8 +400,8 @@ function PeriodAttendanceSection({ child, dateKey }) {
               <div>
                 <p className="text-slate-700 font-medium">Period {e.period} · {e.subject}</p>
                 <p className="text-xs text-slate-400">{substituteUser ? `Teacher: ${teacher?.name}` : directCovererUser ? `Original teacher: ${teacher?.name}` : teacher?.name}</p>
-                {substituteUser && <p className="text-xs text-sky-600 mt-0.5">🔄 Substitute: {substituteUser.name}</p>}
-                {directCovererUser && <p className="text-xs text-sky-600 mt-0.5">🔄 Covered by {directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</p>}
+                {substituteUser && <p className="text-xs text-brand-600 mt-0.5">🔄 Substitute: {substituteUser.name}</p>}
+                {directCovererUser && <p className="text-xs text-brand-600 mt-0.5">🔄 Covered by {directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</p>}
               </div>
               {childRecord ? (
                 <Badge tone={statusTone(childRecord.status)}>{childRecord.status}</Badge>
@@ -502,32 +502,32 @@ function ParentTimetablePage({ activeChildId, setActiveChildId }) {
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-sky-50 text-sky-700 text-xs">
+              <thead className="bg-brand-50 text-brand-700 text-xs">
                 <tr>
                   <th className="text-left font-semibold px-3 py-2.5 w-24">Period</th>
-                  {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-sky-800" : ""}`}>{d}</th>)}
+                  {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-brand-800" : ""}`}>{d}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {schedule.periods.map((p) => (
                   <React.Fragment key={p.period}>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2.5 align-top bg-sky-50/60">
-                        <p className="font-semibold text-sky-700">Period {p.period}</p>
-                        <p className="text-[11px] text-sky-600">{p.startLabel} – {p.endLabel}</p>
+                      <td className="px-3 py-2.5 align-top bg-brand-50/60">
+                        <p className="font-semibold text-brand-700">Period {p.period}</p>
+                        <p className="text-[11px] text-brand-600">{p.startLabel} – {p.endLabel}</p>
                       </td>
                       {SCHOOL_DAYS.map((day) => {
                         const entry = entryFor(day, p.period);
                         const coverage = day === todayName ? coverageFor(entry) : null;
                         const covererRoleLabel = coverage?.directCovererUser ? ROLE_LABEL[coverage.directCovererUser.role] : null;
                         return (
-                          <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-sky-50/40" : ""}`}>
+                          <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-brand-50/40" : ""}`}>
                             {entry ? (
                               <div>
                                 <p className="text-xs font-medium text-slate-700">{entry.subject}</p>
                                 <p className="text-[11px] text-slate-400">{data.getUser(entry.teacherId)?.name || "Unassigned"}</p>
-                                {coverage?.substituteUser && <p className="text-[10px] text-sky-600 mt-0.5">🔄 Substitute: {coverage.substituteUser.name}</p>}
-                                {coverage?.directCovererUser && <p className="text-[10px] text-sky-600 mt-0.5">🔄 Covered by {coverage.directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</p>}
+                                {coverage?.substituteUser && <p className="text-[10px] text-brand-600 mt-0.5">🔄 Substitute: {coverage.substituteUser.name}</p>}
+                                {coverage?.directCovererUser && <p className="text-[10px] text-brand-600 mt-0.5">🔄 Covered by {coverage.directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</p>}
                               </div>
                             ) : (
                               <span className="text-xs text-slate-300">—</span>
@@ -537,8 +537,8 @@ function ParentTimetablePage({ activeChildId, setActiveChildId }) {
                       })}
                     </tr>
                     {schedule.breakAfterPeriod === p.period && (
-                      <tr className="bg-sky-50 border-y border-sky-100">
-                        <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-sky-700 py-1.5">
+                      <tr className="bg-brand-50 border-y border-brand-100">
+                        <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-brand-700 py-1.5">
                           Break • {schedule.breakStartLabel} – {schedule.breakEndLabel}
                         </td>
                       </tr>
@@ -639,7 +639,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
                         <span key={c} className="inline-flex items-center gap-1">
                           {ASSESSMENT_COMPONENT_LABEL[c]}: {comp?.score != null ? `${comp.score}/${ASSESSMENT_COMPONENT_WEIGHT[c]}` : "Not yet recorded"}
                           {pages.length > 0 && (
-                            <button onClick={() => setEvidenceView({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-sky-600 hover:text-sky-700"><Eye size={12} /></button>
+                            <button onClick={() => setEvidenceView({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-brand-600 hover:text-brand-700"><Eye size={12} /></button>
                           )}
                         </span>
                       );

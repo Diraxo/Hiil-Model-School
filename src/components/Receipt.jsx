@@ -281,7 +281,7 @@ function CashReceiptModal({ open, onClose, pages, voidedLines = [], allVoided = 
       </div>
       <div className="flex justify-end gap-2 pt-4 no-print">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
-        <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60">
+        <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60">
           <Printer size={15} /> {downloading ? "Preparing…" : "Download Receipt"}
         </button>
       </div>

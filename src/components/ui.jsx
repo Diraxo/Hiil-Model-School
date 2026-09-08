@@ -40,7 +40,7 @@ function Badge({ children, tone = "slate" }) {
     green: "bg-emerald-50 text-emerald-700 border-emerald-200",
     red: "bg-red-50 text-red-700 border-red-200",
     amber: "bg-amber-50 text-amber-700 border-amber-200",
-    sky: "bg-sky-50 text-sky-700 border-sky-200",
+    sky: "bg-blue-50 text-blue-700 border-blue-200",
     indigo: "bg-indigo-50 text-indigo-700 border-indigo-200",
   };
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${tones[tone] || tones.slate}`}>{children}</span>;
@@ -53,7 +53,7 @@ const ATTENDANCE_BUTTON_CLASS = {
   Present: "bg-emerald-600 text-white border-emerald-600",
   Late: "bg-amber-500 text-white border-amber-500",
   Sick: "bg-indigo-500 text-white border-indigo-500",
-  Permission: "bg-sky-500 text-white border-sky-500",
+  Permission: "bg-blue-500 text-white border-blue-500",
   Excused: "bg-slate-500 text-white border-slate-500",
   Absent: "bg-red-500 text-white border-red-500",
 };
@@ -202,7 +202,7 @@ function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLa
       <p className="text-sm text-slate-600 mb-5">{description}</p>
       <div className="flex justify-end gap-2">
         <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
-        <button type="button" disabled={busy} onClick={handleConfirm} className={`px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 disabled:cursor-not-allowed ${danger ? "bg-red-600 hover:bg-red-700" : "bg-sky-600 hover:bg-sky-700"}`}>{busy ? "Working…" : confirmLabel}</button>
+        <button type="button" disabled={busy} onClick={handleConfirm} className={`px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 disabled:cursor-not-allowed ${danger ? "bg-red-600 hover:bg-red-700" : "bg-brand-600 hover:bg-brand-700"}`}>{busy ? "Working…" : confirmLabel}</button>
       </div>
     </Modal>
   );
@@ -231,7 +231,7 @@ function CopyIdChip({ id, label = "Copy" }) {
         const ok = await copyText(id);
         toast(ok ? "Student ID copied." : "Couldn't copy automatically — please select and copy the ID manually.", ok ? "info" : "error");
       }}
-      className="inline-flex items-center gap-1 text-slate-400 hover:text-sky-600 shrink-0"
+      className="inline-flex items-center gap-1 text-slate-400 hover:text-brand-600 shrink-0"
       title="Copy Student ID"
     >
       <Copy size={13} />{label && <span className="text-[11px] font-medium">{label}</span>}
@@ -248,7 +248,7 @@ function Field({ label, children, required, error }) {
     </label>
   );
 }
-const inputCls = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400";
+const inputCls = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-400";
 
 // A <textarea> that grows to fit its content instead of scrolling internally — used by the
 // announcement composer so a long message stays fully visible while it's being written.
@@ -277,7 +277,7 @@ function Card({ children, className = "" }) {
 }
 
 function StatCard({ label, value, icon: Icon, tone = "sky", sub }) {
-  const tones = { sky: "bg-sky-50 text-sky-600", emerald: "bg-emerald-50 text-emerald-700", amber: "bg-amber-50 text-amber-600", indigo: "bg-indigo-50 text-indigo-600", red: "bg-red-50 text-red-600" };
+  const tones = { sky: "bg-brand-50 text-brand-600", emerald: "bg-emerald-50 text-emerald-700", amber: "bg-amber-50 text-amber-600", indigo: "bg-indigo-50 text-indigo-600", red: "bg-red-50 text-red-600" };
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex items-start justify-between">
@@ -354,7 +354,7 @@ function DateNav({ date, onChange, minDate, maxDate, skipDates }) {
       </div>
       <button type="button" disabled={!nextDate} onClick={() => nextDate && onChange(nextDate)} className={`p-1.5 rounded-lg border ${!nextDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
       <span className="text-sm font-medium text-slate-600">{dateKeyLabel(date)}</span>
-      {date < effectiveMax && <button type="button" onClick={() => onChange(effectiveMax)} className="text-xs text-sky-600 font-medium ml-1">Jump to today</button>}
+      {date < effectiveMax && <button type="button" onClick={() => onChange(effectiveMax)} className="text-xs text-brand-600 font-medium ml-1">Jump to today</button>}
     </div>
   );
 }
@@ -451,7 +451,7 @@ function CheckboxList({ items, selectedIds, onChange, emptyLabel = "Nothing to s
     <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
       {items.map((it) => (
         <label key={it.id} className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
-          <input type="checkbox" checked={selectedIds.includes(it.id)} onChange={() => toggle(it.id)} className="rounded border-slate-300 text-sky-600 shrink-0" />
+          <input type="checkbox" checked={selectedIds.includes(it.id)} onChange={() => toggle(it.id)} className="rounded border-slate-300 text-brand-600 shrink-0" />
           <span className="flex-1 min-w-0">
             <span className="block truncate">{it.label}</span>
             {it.sublabel && <span className="block text-xs text-slate-400">{it.sublabel}</span>}
@@ -474,7 +474,7 @@ function FeeScheduleList({ rows, emptyLabel = "Nothing configured yet." }) {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <p className="font-medium text-slate-700 truncate">{r.label}</p>
-              {r.current && <span className="shrink-0 text-[10px] font-medium text-sky-600 bg-sky-50 border border-sky-100 px-1.5 py-0.5 rounded-full">Current</span>}
+              {r.current && <span className="shrink-0 text-[10px] font-medium text-brand-600 bg-brand-50 border border-brand-100 px-1.5 py-0.5 rounded-full">Current</span>}
             </div>
             {r.dueLabel && <p className="text-xs text-slate-400">{r.dueLabel}</p>}
           </div>
@@ -493,7 +493,7 @@ const CALENDAR_CELL_TONE = {
   green: "bg-emerald-100 text-emerald-800",
   red: "bg-red-100 text-red-800",
   amber: "bg-amber-100 text-amber-800",
-  sky: "bg-sky-100 text-sky-800",
+  sky: "bg-blue-100 text-blue-800",
   indigo: "bg-indigo-100 text-indigo-800",
 };
 // A month-at-a-time calendar grid for attendance history (e.g. a staff profile's "click a date
@@ -533,7 +533,7 @@ function MonthCalendarGrid({ year, month, getDayInfo, onSelectDay, minDate, maxD
               disabled={!clickable}
               onClick={() => clickable && onSelectDay(dateKey)}
               title={info ? `${dateKey} — ${info.status}${info.note ? `: ${info.note}` : ""}` : dateKey}
-              className={`aspect-square rounded-lg text-[11px] font-medium flex items-center justify-center transition-colors ${outOfRange ? "text-slate-200" : info ? CALENDAR_CELL_TONE[tone] : "bg-slate-50 text-slate-400"} ${clickable ? "hover:ring-2 hover:ring-sky-300 cursor-pointer" : "cursor-default"}`}
+              className={`aspect-square rounded-lg text-[11px] font-medium flex items-center justify-center transition-colors ${outOfRange ? "text-slate-200" : info ? CALENDAR_CELL_TONE[tone] : "bg-slate-50 text-slate-400"} ${clickable ? "hover:ring-2 hover:ring-brand-300 cursor-pointer" : "cursor-default"}`}
             >
               {d}
             </button>
@@ -580,7 +580,7 @@ function Select({ value, onChange, options, placeholder }) {
 function PrimaryButton({ children, onClick, icon: Icon = Plus, type = "button", full, loading = false, disabled = false, loadingText }) {
   const isDisabled = disabled || loading;
   return (
-    <button type={type} onClick={onClick} disabled={isDisabled} className={`inline-flex items-center justify-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${full ? "w-full" : ""}`}>
+    <button type={type} onClick={onClick} disabled={isDisabled} className={`inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${full ? "w-full" : ""}`}>
       {loading ? <Loader2 size={15} className="animate-spin" /> : <Icon size={15} />}{loading && loadingText ? loadingText : children}
     </button>
   );

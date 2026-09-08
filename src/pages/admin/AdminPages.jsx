@@ -105,14 +105,14 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
             { label: "Present", value: todaysAttendance.filter((a) => a.status === "Present").length, color: "bg-emerald-500" },
             { label: "Late", value: todaysAttendance.filter((a) => a.status === "Late").length, color: "bg-amber-400" },
             { label: "Sick", value: todaysAttendance.filter((a) => a.status === "Sick").length, color: "bg-indigo-400" },
-            { label: "Permission", value: todaysAttendance.filter((a) => a.status === "Permission").length, color: "bg-sky-400" },
+            { label: "Permission", value: todaysAttendance.filter((a) => a.status === "Permission").length, color: "bg-blue-400" },
             { label: "Absent", value: todaysAttendance.filter((a) => a.status === "Absent").length, color: "bg-red-400" },
           ]} height={12} />
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-4 text-xs">
             <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-emerald-500" />Present</span>
             <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-amber-400" />Late</span>
             <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-indigo-400" />Sick</span>
-            <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-sky-400" />Permission</span>
+            <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-blue-400" />Permission</span>
             <span className="flex items-center gap-1.5 text-slate-500"><span className="w-2 h-2 rounded-full bg-red-400" />Absent</span>
           </div>
           </>
@@ -129,7 +129,7 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
             {gradeDist.map((g) => (
               <div key={g.label}>
                 <div className="flex justify-between text-xs mb-1"><span className="text-slate-500">{g.label}</span><span className="font-medium text-slate-700">{g.value}</span></div>
-                <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-sky-500 rounded-full" style={{ width: `${(g.value / maxGrade) * 100}%` }} /></div>
+                <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-brand-500 rounded-full" style={{ width: `${(g.value / maxGrade) * 100}%` }} /></div>
               </div>
             ))}
           </div>
@@ -394,7 +394,7 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
         <Field label="Profile photo">
           <div className="flex items-center gap-3">
             <Avatar name={`${form.firstName || ""} ${form.lastName || ""}`} photo={form.photo} size={44} />
-            <button type="button" onClick={onPickPhoto} className="text-xs text-sky-600 font-medium border border-sky-100 rounded-lg px-3 py-2 hover:bg-sky-50">Change Photo</button>
+            <button type="button" onClick={onPickPhoto} className="text-xs text-brand-600 font-medium border border-brand-100 rounded-lg px-3 py-2 hover:bg-brand-50">Change Photo</button>
           </div>
         </Field>
       )}
@@ -437,14 +437,14 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
       )}
       <Field label="Bus fee">
         <label className="flex items-center gap-2 text-sm text-slate-600 border border-slate-200 rounded-lg px-3 py-2">
-          <input type="checkbox" checked={!!form.usesBus} onChange={(e) => set("usesBus", e.target.checked)} className="rounded border-slate-300 text-sky-600" /> Uses the school bus
+          <input type="checkbox" checked={!!form.usesBus} onChange={(e) => set("usesBus", e.target.checked)} className="rounded border-slate-300 text-brand-600" /> Uses the school bus
         </label>
       </Field>
       {!isEdit && (
         <Field label="Student photo">
           <div className="flex items-center gap-3">
             {form.photoPreview && <img src={form.photoPreview} alt="Student preview" className="w-12 h-12 rounded-full object-cover border border-slate-200 shrink-0" />}
-            <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300">
+            <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-brand-300">
               <Camera size={15} /> {form.photoPreview ? "Change photo" : "Upload photo (optional)"}
               <input type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files[0]; if (!file) return;
@@ -504,7 +504,7 @@ function AddStudentModal({ open, onClose }) {
   }
   function fieldCls(k) {
     return errors[k]
-      ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-sky-500/40", "focus:ring-red-400/40").replace("focus:border-sky-400", "focus:border-red-400")
+      ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-brand-500/40", "focus:ring-red-400/40").replace("focus:border-brand-400", "focus:border-red-400")
       : inputCls;
   }
   async function submit(e) {
@@ -543,9 +543,9 @@ function AddStudentModal({ open, onClose }) {
           <p className="text-xs text-slate-400 mb-4">The parent will use this ID to connect their account.</p>
           <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 flex items-center justify-between max-w-xs mx-auto">
             <span className="font-mono text-sm font-semibold text-slate-700">{createdId}</span>
-            <button onClick={async () => { const ok = await copyText(createdId); toast(ok ? "Student ID copied." : "Couldn't copy automatically — please select and copy the ID manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={15} /></button>
+            <button onClick={async () => { const ok = await copyText(createdId); toast(ok ? "Student ID copied." : "Couldn't copy automatically — please select and copy the ID manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={15} /></button>
           </div>
-          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Done</button>
+          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">Done</button>
         </div>
       ) : (
         <div>
@@ -591,7 +591,7 @@ function ChangePhotoModal({ open, onClose, student }) {
       <div className="flex flex-col items-center gap-4 py-2">
         <Avatar name={`${student.firstName} ${student.lastName}`} photo={preview} size={96} />
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-sky-300">
+          <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-brand-300">
             <Camera size={15} /> {preview ? "Replace photo" : "Upload photo"}
             <input type="file" accept="image/*" className="hidden" onChange={onFile} />
           </label>
@@ -666,7 +666,7 @@ function UploadDocumentModal({ open, onClose, studentId }) {
       </Field>
       <Field label="Title" required><input className={inputCls} value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Midterm Report Card" /></Field>
       <Field label="File">
-        <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-sky-300">
+        <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-brand-300">
           <FileText size={15} /> {form.fileName || "Choose an image or PDF"}
           <input type="file" accept="image/*,application/pdf" className="hidden" onChange={onFile} />
         </label>
@@ -904,7 +904,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
 
       <div className="flex gap-1 border-b border-slate-200 mb-4 overflow-x-auto">
         {tabs.map((t) => (
-          <button key={t} onClick={() => setTab(t)} className={`px-3.5 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${tab === t ? "border-sky-600 text-sky-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}>{TAB_LABELS[t] || t}</button>
+          <button key={t} onClick={() => setTab(t)} className={`px-3.5 py-2 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${tab === t ? "border-brand-600 text-brand-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}>{TAB_LABELS[t] || t}</button>
         ))}
       </div>
 
@@ -936,7 +936,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
           <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-700">Parent / Guardian</h3>
-              {canEdit && <button type="button" onClick={() => setEditOpen(true)} className="text-xs text-sky-600 font-medium">Edit</button>}
+              {canEdit && <button type="button" onClick={() => setEditOpen(true)} className="text-xs text-brand-600 font-medium">Edit</button>}
             </div>
             {parents.length === 0 ? (
               <p className="text-xs text-slate-400 mb-2">No parent account connected yet.</p>
@@ -947,7 +947,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                   <p className="text-sm text-slate-700">{p.name}</p>
                   <p className="text-xs text-slate-400">Connected parent account{p.phone ? ` • ${p.phone}` : ""}</p>
                 </div>
-                {onMessage && <button type="button" onClick={() => onMessage(p.id)} className="text-xs text-sky-600 font-medium flex items-center gap-1 border border-sky-100 rounded-lg px-2 py-1 hover:bg-sky-50 shrink-0"><MessageSquare size={12} /> Message</button>}
+                {onMessage && <button type="button" onClick={() => onMessage(p.id)} className="text-xs text-brand-600 font-medium flex items-center gap-1 border border-brand-100 rounded-lg px-2 py-1 hover:bg-brand-50 shrink-0"><MessageSquare size={12} /> Message</button>}
               </div>
             ))}
             {(s.guardianName || s.guardianPhone || s.guardianRelationship || s.custody) ? (
@@ -1075,7 +1075,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                       <span key={c} className="inline-flex items-center gap-1">
                         {ASSESSMENT_COMPONENT_LABEL[c]}: {comp?.score != null ? `${comp.score}/${ASSESSMENT_COMPONENT_WEIGHT[c]}` : "—"}
                         {pages.length > 0 && (
-                          <button type="button" onClick={() => setDocViewer({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-sky-600 hover:text-sky-700"><FileText size={12} /></button>
+                          <button type="button" onClick={() => setDocViewer({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-brand-600 hover:text-brand-700"><FileText size={12} /></button>
                         )}
                       </span>
                     );
@@ -1336,7 +1336,7 @@ function BehaviorModal({ open, onClose, studentId }) {
         <Field label="Action taken"><input className={inputCls} value={form.action} onChange={(e) => set("action", e.target.value)} /></Field>
         <Field label="Staff member"><input className={inputCls} value={form.staff} onChange={(e) => set("staff", e.target.value)} /></Field>
         <label className="flex items-center gap-2 text-sm text-slate-600 mb-4">
-          <input type="checkbox" checked={form.parentNotified} onChange={(e) => set("parentNotified", e.target.checked)} className="rounded border-slate-300 text-sky-600" /> Notify parent
+          <input type="checkbox" checked={form.parentNotified} onChange={(e) => set("parentNotified", e.target.checked)} className="rounded border-slate-300 text-brand-600" /> Notify parent
         </label>
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -1418,7 +1418,7 @@ function ParentsPage({ onOpen, onMessage }) {
                         <div className="flex items-center justify-between">
                           {paymentStatusBadge(summary.status)}
                           {["UNPAID", "PARTIAL"].includes(summary.status) ? (
-                            <button onClick={() => setRecordFor(c)} className="text-[11px] text-sky-600 font-medium">Record Payment</button>
+                            <button onClick={() => setRecordFor(c)} className="text-[11px] text-brand-600 font-medium">Record Payment</button>
                           ) : (
                             <span className="text-[11px] text-slate-300">{summary.status === "NO_FEE" ? "No fee configured" : "Up to date"}</span>
                           )}
@@ -1429,7 +1429,7 @@ function ParentsPage({ onOpen, onMessage }) {
                 })}
               </div>
               <div className="flex gap-2 mt-3">
-                <button onClick={() => onMessage(p.id)} className="flex-1 text-xs text-sky-600 font-medium flex items-center justify-center gap-1 border border-sky-100 rounded-lg py-1.5 hover:bg-sky-50"><MessageSquare size={13} /> Message</button>
+                <button onClick={() => onMessage(p.id)} className="flex-1 text-xs text-brand-600 font-medium flex items-center justify-center gap-1 border border-brand-100 rounded-lg py-1.5 hover:bg-brand-50"><MessageSquare size={13} /> Message</button>
                 <button onClick={() => setManageFor(p)} className="flex-1 text-xs text-slate-500 font-medium flex items-center justify-center gap-1 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50"><Edit2 size={13} /> Manage</button>
               </div>
             </Card>
@@ -1505,14 +1505,14 @@ function ParentFormModal({ open, onClose }) {
             <div><p className="text-[10px] text-slate-400 uppercase tracking-wide">Name</p><span className="text-sm text-slate-700">{createdCreds.name}</span></div>
             <div>
               <p className="text-[10px] text-slate-400 uppercase tracking-wide">Email</p>
-              <div className="flex items-center justify-between"><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span><button onClick={async () => { const ok = await copyText(createdCreds.email); toast(ok ? "Email copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span><button onClick={async () => { const ok = await copyText(createdCreds.email); toast(ok ? "Email copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={14} /></button></div>
             </div>
             <div>
               <p className="text-[10px] text-slate-400 uppercase tracking-wide">Temporary password</p>
-              <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={14} /></button></div>
             </div>
           </div>
-          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Done</button>
+          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">Done</button>
         </div>
       </Modal>
     );
@@ -1544,7 +1544,7 @@ function ParentFormModal({ open, onClose }) {
               </div>
             ))}
           </div>
-          <button type="button" onClick={addChildRow} className="mt-2 text-xs text-sky-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
+          <button type="button" onClick={addChildRow} className="mt-2 text-xs text-brand-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
         </Field>
         <div className="flex justify-end gap-2 pt-3">
           <button type="button" onClick={close} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -1694,7 +1694,7 @@ function TeachersPage({ onMessage }) {
               </div>
               <div className="flex gap-2 mb-2">
                 <button onClick={() => setEditTeacher(t)} className="flex-1 text-xs text-slate-500 font-medium flex items-center justify-center gap-1 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50"><Edit2 size={13} /> Edit</button>
-                <button onClick={() => onMessage(t.id)} className="flex-1 text-xs text-sky-600 font-medium flex items-center justify-center gap-1 border border-sky-100 rounded-lg py-1.5 hover:bg-sky-50"><MessageSquare size={13} /> Message</button>
+                <button onClick={() => onMessage(t.id)} className="flex-1 text-xs text-brand-600 font-medium flex items-center justify-center gap-1 border border-brand-100 rounded-lg py-1.5 hover:bg-brand-50"><MessageSquare size={13} /> Message</button>
               </div>
               <div className="flex gap-2">
                 <button disabled={isBusy(`teacher-status:${t.id}`)} onClick={() => run(async () => { const next = t.status === "ACTIVE" ? "DISABLED" : "ACTIVE"; const res = await data.setAccountStatus(t.id, next); toast(res.ok ? `${t.name}'s account access is now ${next === "ACTIVE" ? "active" : "disabled"}.` : res.message, res.ok ? "info" : "error"); }, { key: `teacher-status:${t.id}` })} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50 disabled:opacity-50">{t.status === "ACTIVE" ? "Disable" : "Enable"}</button>
@@ -1803,7 +1803,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
   }
   function fieldCls(k) {
     return errors[k]
-      ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-sky-500/40", "focus:ring-red-400/40").replace("focus:border-sky-400", "focus:border-red-400")
+      ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-brand-500/40", "focus:ring-red-400/40").replace("focus:border-brand-400", "focus:border-red-400")
       : inputCls;
   }
   function toggleClass(id) {
@@ -1939,11 +1939,11 @@ function TeacherFormModal({ open, onClose, teacher }) {
             </div>
             <div>
               <p className="text-[10px] text-slate-400 uppercase tracking-wide">Email</p>
-              <div className="flex items-center justify-between"><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span><button onClick={async () => { const ok = await copyText(createdCreds.email); toast(ok ? "Email copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm text-slate-700">{createdCreds.email}</span><button onClick={async () => { const ok = await copyText(createdCreds.email); toast(ok ? "Email copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={14} /></button></div>
             </div>
             <div>
               <p className="text-[10px] text-slate-400 uppercase tracking-wide">Temporary password</p>
-              <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={14} /></button></div>
+              <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={14} /></button></div>
             </div>
             <div>
               <p className="text-[10px] text-slate-400 uppercase tracking-wide">Subjects</p>
@@ -1954,7 +1954,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
               <div className="flex flex-wrap gap-1 mt-0.5">{createdCreds.classIds.map((cid) => { const c = data.getClass(cid); return c ? <Badge key={cid} tone="sky">{c.grade}{c.section}</Badge> : null; })}</div>
             </div>
           </div>
-          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium">Done</button>
+          <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">Done</button>
         </div>
       </Modal>
     );
@@ -1966,7 +1966,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
         <Field label="Photo (optional)">
           <div className="flex items-center gap-3">
             <Avatar name={fullName(form.firstName, form.middleName, form.lastName) || "?"} photo={form.photoPreview || (typeof form.photo === "string" ? form.photo : null)} size={44} />
-            <label className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-sky-50">
+            <label className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-brand-50">
               <ImagePlus size={13} /> {(form.photoPreview || form.photo) ? "Replace photo" : "Add photo"}
               <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files[0] && uploadPhoto(e.target.files[0])} />
             </label>
@@ -1990,7 +1990,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
               <input type={showPw ? "text" : "password"} className={fieldCls("password") + " pr-16 font-mono"} value={form.password} onChange={(e) => set("password", e.target.value)} />
               <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
                 <button type="button" onClick={() => setShowPw((s) => !s)} className="text-slate-400 hover:text-slate-600" title={showPw ? "Hide" : "Show"}>{showPw ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-                <button type="button" onClick={() => set("password", generatePassword())} className="text-slate-400 hover:text-sky-600" title="Generate new password"><RefreshCw size={14} /></button>
+                <button type="button" onClick={() => set("password", generatePassword())} className="text-slate-400 hover:text-brand-600" title="Generate new password"><RefreshCw size={14} /></button>
               </div>
             </div>
             <p className="text-[11px] text-slate-400 mt-1">Share this with the teacher privately — it will only be shown once, right after you create the account.</p>
@@ -2012,7 +2012,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
                   <p className="text-[10px] text-slate-400 uppercase tracking-wide">New temporary password</p>
                   <span className="font-mono text-sm font-semibold text-slate-700">{resetReveal}</span>
                 </div>
-                <button onClick={async () => { const ok = await copyText(resetReveal); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-sky-600 hover:text-sky-700"><Copy size={15} /></button>
+                <button onClick={async () => { const ok = await copyText(resetReveal); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={15} /></button>
               </div>
             )}
             {resetReveal && <p className="text-[11px] text-amber-600 mt-2">Share this privately with the teacher now — it won't be shown again.</p>}
@@ -2024,7 +2024,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
           <div className={`grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-lg p-3 ${errors.classIds ? "border-red-400" : "border-slate-200"}`}>
             {data.db.classes.length === 0 ? <p className="text-xs text-slate-400 col-span-full">No classes yet — add a class first.</p> : data.db.classes.map((c) => (
               <label key={c.id} className="flex items-center gap-2 text-sm text-slate-600">
-                <input type="checkbox" checked={form.classIds.includes(c.id)} onChange={() => toggleClass(c.id)} className="rounded border-slate-300 text-sky-600" />
+                <input type="checkbox" checked={form.classIds.includes(c.id)} onChange={() => toggleClass(c.id)} className="rounded border-slate-300 text-brand-600" />
                 {c.grade}{c.section}
               </label>
             ))}
@@ -2043,7 +2043,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
               return (
                 <div key={s.id} className="py-1.5 border-b border-slate-100 last:border-0">
                   <label className={`flex items-center gap-2 text-sm ${selectable ? "text-slate-700 cursor-pointer" : "text-slate-400 cursor-not-allowed"}`}>
-                    <input type="checkbox" disabled={!checked && !selectable} checked={checked} onChange={() => toggleSubject(s.name)} className="rounded border-slate-300 text-sky-600" />
+                    <input type="checkbox" disabled={!checked && !selectable} checked={checked} onChange={() => toggleSubject(s.name)} className="rounded border-slate-300 text-brand-600" />
                     {!selectable && <Lock size={12} />}
                     {s.name}
                   </label>
@@ -2061,7 +2061,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
                               {r.status === "locked" && reassigned && `↺ ${r.className} — will move here from ${r.ownerName}`}
                             </span>
                             {r.status === "locked" && (
-                              <button type="button" onClick={() => toggleReassign(r.classId, s.name)} className="inline-flex items-center gap-1 text-sky-600 hover:underline shrink-0">
+                              <button type="button" onClick={() => toggleReassign(r.classId, s.name)} className="inline-flex items-center gap-1 text-brand-600 hover:underline shrink-0">
                                 <ArrowRightLeft size={11} />{reassigned ? "Undo" : "Reassign"}
                               </button>
                             )}
@@ -2288,7 +2288,7 @@ function ClassFormModal({ open, onClose, cls }) {
               ) : (
                 <div key={s.id} className="flex items-center justify-between gap-2 py-1">
                   <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer min-w-0">
-                    <input type="checkbox" checked={form.subjects.includes(s.name)} onChange={() => toggleSubject(s.name)} className="rounded border-slate-300 text-sky-600 shrink-0" />
+                    <input type="checkbox" checked={form.subjects.includes(s.name)} onChange={() => toggleSubject(s.name)} className="rounded border-slate-300 text-brand-600 shrink-0" />
                     <span className="truncate">{s.name}</span>
                   </label>
                   <div className="flex items-center gap-2 shrink-0 text-slate-400">
@@ -2301,7 +2301,7 @@ function ClassFormModal({ open, onClose, cls }) {
           </div>
           <div className="flex items-center gap-1.5 mt-2">
             <input className={inputCls + " py-1.5 text-sm"} placeholder="New subject name" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addNewSubject())} />
-            <button type="button" disabled={isBusy(`create-subject:${newSubject.trim().toLowerCase()}`)} onClick={addNewSubject} className="inline-flex items-center gap-1 text-xs font-medium text-sky-600 border border-sky-200 rounded-lg px-3 py-2 whitespace-nowrap hover:bg-sky-50 disabled:opacity-50"><Plus size={13} /> Add</button>
+            <button type="button" disabled={isBusy(`create-subject:${newSubject.trim().toLowerCase()}`)} onClick={addNewSubject} className="inline-flex items-center gap-1 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg px-3 py-2 whitespace-nowrap hover:bg-brand-50 disabled:opacity-50"><Plus size={13} /> Add</button>
           </div>
           <p className="text-xs text-slate-400 mt-1.5">Check the subjects this class teaches. Add a new one if it's not in the list yet.</p>
         </div>
@@ -2362,7 +2362,7 @@ function AdminTimetablePage() {
         <>
           <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
             {db.classes.map((c) => (
-              <button key={c.id} onClick={() => setClassId(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${classId === c.id ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{c.grade}{c.section}</button>
+              <button key={c.id} onClick={() => setClassId(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${classId === c.id ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{c.grade}{c.section}</button>
             ))}
           </div>
 
@@ -2371,35 +2371,35 @@ function AdminTimetablePage() {
               <Card className="overflow-hidden mb-4">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-sky-50 text-sky-700 text-xs">
+                    <thead className="bg-brand-50 text-brand-700 text-xs">
                       <tr>
                         <th className="text-left font-semibold px-3 py-2.5 w-24">Period</th>
-                        {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-sky-800" : ""}`}>{d}</th>)}
+                        {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-brand-800" : ""}`}>{d}</th>)}
                       </tr>
                     </thead>
                     <tbody>
                       {schedule.periods.map((p) => (
                         <React.Fragment key={p.period}>
                           <tr className="border-t border-slate-100">
-                            <td className="px-3 py-2.5 align-top bg-sky-50/60">
-                              <p className="font-semibold text-sky-700">Period {p.period}</p>
-                              <p className="text-[11px] text-sky-600">{p.startLabel} – {p.endLabel}</p>
+                            <td className="px-3 py-2.5 align-top bg-brand-50/60">
+                              <p className="font-semibold text-brand-700">Period {p.period}</p>
+                              <p className="text-[11px] text-brand-600">{p.startLabel} – {p.endLabel}</p>
                             </td>
                             {SCHOOL_DAYS.map((day) => {
                               const entry = entryFor(day, p.period);
                               const log = logFor(entry);
                               const sub = day === todayName ? subFor(entry) : null;
                               return (
-                                <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-sky-50/40" : ""}`}>
+                                <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-brand-50/40" : ""}`}>
                                   {entry ? (
                                     <div className="relative pr-4">
                                       <p className="text-xs font-medium text-slate-700">{entry.subject}</p>
-                                      <p className="text-[11px] text-slate-400">{sub ? <span className="text-sky-600">{data.getUser(sub.substituteTeacherId)?.name} (sub)</span> : data.getUser(entry.teacherId)?.name || "Unassigned"}</p>
+                                      <p className="text-[11px] text-slate-400">{sub ? <span className="text-brand-600">{data.getUser(sub.substituteTeacherId)?.name} (sub)</span> : data.getUser(entry.teacherId)?.name || "Unassigned"}</p>
                                       {day === todayName && log?.status === "done" && <Badge tone="green">Done</Badge>}
                                       <button onClick={() => setDeleteTarget(entry)} className="absolute -top-1 -right-1 text-slate-300 hover:text-red-500 transition-colors" title="Remove period"><X size={15} /></button>
                                     </div>
                                   ) : (
-                                    <button onClick={() => setPickerTarget({ day, period: p.period })} className="w-full flex items-center justify-center py-1.5 rounded-lg border border-dashed border-slate-200 text-slate-300 hover:border-sky-300 hover:text-sky-500 hover:bg-sky-50/40 transition-colors" title="Assign a subject">
+                                    <button onClick={() => setPickerTarget({ day, period: p.period })} className="w-full flex items-center justify-center py-1.5 rounded-lg border border-dashed border-slate-200 text-slate-300 hover:border-brand-300 hover:text-brand-500 hover:bg-brand-50/40 transition-colors" title="Assign a subject">
                                       <Plus size={15} />
                                     </button>
                                   )}
@@ -2408,8 +2408,8 @@ function AdminTimetablePage() {
                             })}
                           </tr>
                           {schedule.breakAfterPeriod === p.period && (
-                            <tr className="bg-sky-50 border-y border-sky-100">
-                              <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-sky-700 py-1.5">
+                            <tr className="bg-brand-50 border-y border-brand-100">
+                              <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-brand-700 py-1.5">
                                 Break • {schedule.breakStartLabel} – {schedule.breakEndLabel}
                               </td>
                             </tr>
@@ -2518,7 +2518,7 @@ function TodaysJournalSummaryCard({ setPage }) {
     <Card className="p-5">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold text-slate-700">Today's Journal — School-Wide</h3>
-        {setPage && <button onClick={() => setPage("timetable")} className="text-xs font-medium text-sky-600 hover:text-sky-700">Open Timetable →</button>}
+        {setPage && <button onClick={() => setPage("timetable")} className="text-xs font-medium text-brand-600 hover:text-brand-700">Open Timetable →</button>}
       </div>
       {!summary.available ? (
         <p className="text-xs text-slate-400">{summary.label}</p>
@@ -2694,13 +2694,13 @@ function TimetableSettingsModal({ open, onClose }) {
           </div>
         )}
 
-        <div className="bg-sky-50 border border-sky-100 rounded-lg p-3 mb-3">
-          <p className="text-xs font-semibold text-sky-700 mb-2">Preview</p>
+        <div className="bg-brand-50 border border-brand-100 rounded-lg p-3 mb-3">
+          <p className="text-xs font-semibold text-brand-700 mb-2">Preview</p>
           <div className="space-y-1">
             {preview.periods.map((p) => (
               <React.Fragment key={p.period}>
-                <p className="text-xs text-sky-700">Period {p.period} — {p.startLabel} – {p.endLabel}</p>
-                {preview.breakAfterPeriod === p.period && <p className="text-xs font-medium text-sky-800">Break — {preview.breakStartLabel} – {preview.breakEndLabel}</p>}
+                <p className="text-xs text-brand-700">Period {p.period} — {p.startLabel} – {p.endLabel}</p>
+                {preview.breakAfterPeriod === p.period && <p className="text-xs font-medium text-brand-800">Break — {preview.breakStartLabel} – {preview.breakEndLabel}</p>}
               </React.Fragment>
             ))}
           </div>
@@ -2783,7 +2783,7 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
                 </p>
                 <div className="flex gap-2">
                   {classification.available && students.length > 0 && canTake ? (
-                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-sky-600 rounded-lg py-1.5 hover:bg-sky-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
+                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-brand-600 rounded-lg py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
                   ) : (
                     <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">View</button>
                   )}
@@ -2898,7 +2898,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
 }
 
 const ATTENDANCE_STATUS_CODE = { Present: "P", Late: "L", Sick: "S", Permission: "PER", Excused: "E", Absent: "A" };
-const ATTENDANCE_CODE_TEXT_TONE = { green: "text-emerald-600", amber: "text-amber-600", indigo: "text-indigo-600", sky: "text-sky-600", red: "text-red-600", slate: "text-slate-300" };
+const ATTENDANCE_CODE_TEXT_TONE = { green: "text-emerald-600", amber: "text-amber-600", indigo: "text-indigo-600", sky: "text-blue-600", red: "text-red-600", slate: "text-slate-300" };
 
 // A whole-class monthly attendance history — one row per student, one column per day the day was
 // available for attendance (per classifyAttendanceDay) or already has a record. Shared by the
@@ -3065,7 +3065,7 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
 
   return (
     <Modal open={open} onClose={onClose} title="Academic Calendar & Attendance" wide>
-      <div className="rounded-lg bg-sky-50 border border-sky-200 px-3.5 py-2.5 text-xs text-sky-800 mb-4">
+      <div className="rounded-lg bg-brand-50 border border-brand-200 px-3.5 py-2.5 text-xs text-brand-800 mb-4">
         Changing the academic calendar may affect which dates are available for attendance. Existing attendance records will not be deleted.
       </div>
 
@@ -3092,7 +3092,7 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
 
       <div className="flex items-center justify-between mb-2 mt-1">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Semester 2</p>
-        <button type="button" onClick={suggestSemester2End} className="text-xs text-sky-600 font-medium">Suggest end date</button>
+        <button type="button" onClick={suggestSemester2End} className="text-xs text-brand-600 font-medium">Suggest end date</button>
       </div>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Semester 2 start date">
@@ -3170,7 +3170,7 @@ function AcademicYearsPanel() {
     <div>
       <div className="flex items-center justify-between mb-2">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Academic Years</p>
-        {!creating && <button type="button" onClick={() => setCreating(true)} className="text-xs text-sky-600 font-medium">+ Create New Academic Year</button>}
+        {!creating && <button type="button" onClick={() => setCreating(true)} className="text-xs text-brand-600 font-medium">+ Create New Academic Year</button>}
       </div>
       {creating && (
         <Card className="p-3.5 mb-3 bg-slate-50">
@@ -3189,7 +3189,7 @@ function AcademicYearsPanel() {
             {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" disabled={isBusy(`set-current-year:${y.id}`)} onClick={() => run(async () => {
               const result = await data.setCurrentAcademicYear(y.id);
               toast(result.ok ? `${formatAcademicYearLabel(y)} is now current.` : (result.message || "Couldn't update the current academic year."), result.ok ? "success" : "error");
-            }, { key: `set-current-year:${y.id}` })} className="text-xs text-sky-600 font-medium disabled:opacity-50">Set as Current</button>}
+            }, { key: `set-current-year:${y.id}` })} className="text-xs text-brand-600 font-medium disabled:opacity-50">Set as Current</button>}
           </div>
         ))}
       </div>
@@ -3456,7 +3456,7 @@ function StaffAttendancePage() {
                                 return (
                                   <div key={e.id} className="flex items-center justify-between gap-2 text-xs text-amber-700">
                                     <span>Period {e.period} • {e.subject} • {cls ? data.classLabel(cls) : ""}</span>
-                                    <button onClick={() => setSubEntry(e)} className="text-sky-600 font-medium hover:underline shrink-0">Assign Substitute</button>
+                                    <button onClick={() => setSubEntry(e)} className="text-brand-600 font-medium hover:underline shrink-0">Assign Substitute</button>
                                   </div>
                                 );
                               })}
@@ -3505,7 +3505,7 @@ function StaffAttendancePage() {
                       <td className="px-4 py-3 text-right">
                         <button
                           onClick={() => setSelectedGroup(g.label)}
-                          className={stats.canEdit ? "text-xs text-white font-medium bg-sky-600 rounded-lg px-3 py-1.5 hover:bg-sky-700" : "text-xs text-slate-500 font-medium border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50"}
+                          className={stats.canEdit ? "text-xs text-white font-medium bg-brand-600 rounded-lg px-3 py-1.5 hover:bg-brand-700" : "text-xs text-slate-500 font-medium border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50"}
                         >
                           {actionLabel}
                         </button>
@@ -3663,8 +3663,8 @@ function LeaveApprovalsPage() {
       <p className="text-sm text-slate-400 mb-4">Approve or reject leave requests. Approving marks every school day in the date range automatically — weekends and non-school days are skipped.</p>
 
       <div className="flex gap-2 mb-4">
-        <button onClick={() => setSection("approvals")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${section === "approvals" ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Approvals</button>
-        <button onClick={() => setSection("mine")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${section === "mine" ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{role === ROLES.OWNER ? "My Leave" : "My Requests"}</button>
+        <button onClick={() => setSection("approvals")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${section === "approvals" ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Approvals</button>
+        <button onClick={() => setSection("mine")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${section === "mine" ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{role === ROLES.OWNER ? "My Leave" : "My Requests"}</button>
       </div>
 
       {section === "mine" ? (
@@ -3686,9 +3686,9 @@ function LeaveApprovalsPage() {
         <>
           <div className="flex gap-2 mb-4">
             {role !== ROLES.FINANCE && (
-              <button onClick={() => setTab("STUDENT")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${tab === "STUDENT" ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Student Requests{pendingStudent.length > 0 ? ` (${pendingStudent.length})` : ""}</button>
+              <button onClick={() => setTab("STUDENT")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${tab === "STUDENT" ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Student Requests{pendingStudent.length > 0 ? ` (${pendingStudent.length})` : ""}</button>
             )}
-            <button onClick={() => setTab("STAFF")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${tab === "STAFF" ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Staff Requests{pendingStaff.length > 0 ? ` (${pendingStaff.length})` : ""}</button>
+            <button onClick={() => setTab("STAFF")} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${tab === "STAFF" ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>Staff Requests{pendingStaff.length > 0 ? ` (${pendingStaff.length})` : ""}</button>
           </div>
 
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Pending</p>
@@ -3919,7 +3919,7 @@ function ResultsPage({ role, focus, clearFocus }) {
         <>
           <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
             {browsableClasses.map((c) => (
-              <button key={c.id} onClick={() => setClassTab(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${(cls && cls.id) === c.id ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              <button key={c.id} onClick={() => setClassTab(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${(cls && cls.id) === c.id ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
                 {c.grade}{c.section}
               </button>
             ))}
@@ -3943,7 +3943,7 @@ function ResultsPage({ role, focus, clearFocus }) {
                 const recorded = records.filter((r) => resultTotals(r).count > 0).length;
                 return (
                   <button key={subject} onClick={() => setSelected({ classId: cls.id, subject, semester })} className="text-left">
-                    <Card className="p-4 hover:border-sky-300 transition-colors h-full">
+                    <Card className="p-4 hover:border-brand-300 transition-colors h-full">
                       <p className="text-sm font-medium text-slate-700 mb-1">{subject}</p>
                       <p className="text-xs text-slate-400">{recorded}/{studentsInClass.length} students have a result</p>
                     </Card>
@@ -4012,7 +4012,7 @@ function ResultsGridOverview({ classId, semester, onOpenSubject }) {
                 <th className="text-left font-medium px-4 py-2.5 whitespace-nowrap">Student</th>
                 {subjects.map((subject) => (
                   <th key={subject} className="text-left font-medium px-3 py-2.5">
-                    <button onClick={() => onOpenSubject(subject)} className="hover:text-sky-600 whitespace-nowrap">{subject}</button>
+                    <button onClick={() => onOpenSubject(subject)} className="hover:text-brand-600 whitespace-nowrap">{subject}</button>
                   </th>
                 ))}
                 <th className="text-left font-medium px-3 py-2.5 whitespace-nowrap">Total</th>
@@ -4350,7 +4350,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
                                     const pageBusy = isBusy(`evidence-remove:${p.id}`) || isBusy(`evidence-replace:${p.id}`) || isBusy(`evidence-reorder:${record.id}:${c}`);
                                     return (
                                     <div key={p.id} className="flex flex-col items-center">
-                                      <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages, initialIndex: idx })} className="w-6 h-6 rounded border border-slate-200 hover:border-sky-400 overflow-hidden flex items-center justify-center bg-slate-50">
+                                      <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages, initialIndex: idx })} className="w-6 h-6 rounded border border-slate-200 hover:border-brand-400 overflow-hidden flex items-center justify-center bg-slate-50">
                                         {p.fileType === "pdf" || !p.fileDataUrl
                                           ? <FileText size={12} className="text-slate-400" />
                                           : <img src={p.fileDataUrl} alt="" className="w-full h-full object-cover" />}
@@ -4359,7 +4359,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
                                         <div className="flex items-center gap-0.5">
                                           <button type="button" disabled={idx === 0 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
                                           <button type="button" disabled={idx === pages.length - 1 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
-                                          <label className={`text-slate-400 hover:text-sky-600 cursor-pointer ${pageBusy ? "opacity-30 pointer-events-none" : ""}`} title="Replace this page">
+                                          <label className={`text-slate-400 hover:text-brand-600 cursor-pointer ${pageBusy ? "opacity-30 pointer-events-none" : ""}`} title="Replace this page">
                                             <RefreshCw size={9} />
                                             <input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) replaceEvidencePage(p.id, f); }} />
                                           </label>
@@ -4373,7 +4373,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
                               )}
                               <div className="flex items-center gap-1">
                                 {canEdit && (
-                                  <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${c}`)} onClick={() => setCameraChooserFor({ studentId: s.id, component: c })} className="text-slate-400 hover:text-sky-600 disabled:opacity-30" title="Add evidence page">
+                                  <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${c}`)} onClick={() => setCameraChooserFor({ studentId: s.id, component: c })} className="text-slate-400 hover:text-brand-600 disabled:opacity-30" title="Add evidence page">
                                     {isBusy(`evidence-upload:${s.id}:${c}`) ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
                                   </button>
                                 )}
@@ -4421,13 +4421,13 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
       <Modal open={!!cameraChooserFor} onClose={() => setCameraChooserFor(null)} title="Attach exam photo">
         <div className="space-y-2">
           <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
-            <Camera size={18} className="text-sky-600" />
+            <Camera size={18} className="text-brand-600" />
             <span className="text-sm font-medium text-slate-700">Take Photo</span>
             <input type="file" accept="image/*" capture="environment" className="hidden"
               onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files[0] && target) uploadEvidencePages(target.studentId, target.component, e.target.files); }} />
           </label>
           <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
-            <ImageIcon size={18} className="text-sky-600" />
+            <ImageIcon size={18} className="text-brand-600" />
             <span className="text-sm font-medium text-slate-700">Choose from Gallery</span>
             <input type="file" accept="image/*" multiple className="hidden"
               onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files.length > 0 && target) uploadEvidencePages(target.studentId, target.component, e.target.files); }} />
@@ -4490,7 +4490,7 @@ function ReportCardsPage() {
         <>
           <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
             {db.classes.map((c) => (
-              <button key={c.id} onClick={() => setClassId(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${classId === c.id ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{c.grade}{c.section}</button>
+              <button key={c.id} onClick={() => setClassId(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${classId === c.id ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{c.grade}{c.section}</button>
             ))}
           </div>
           <Card className="overflow-hidden">
@@ -4686,7 +4686,7 @@ function AnnouncementsPage({ role }) {
             const unread = isUnread(a);
             const stats = canManage ? announcementReadStats(db, a.id) : null;
             return (
-              <Card key={a.id} className={`p-0 overflow-hidden relative ${unread ? "ring-1 ring-sky-200" : ""}`}>
+              <Card key={a.id} className={`p-0 overflow-hidden relative ${unread ? "ring-1 ring-brand-200" : ""}`}>
                 {canPin(a) && (
                   <button
                     type="button" onClick={() => data.toggleAnnouncementPinned(a.id)}
@@ -4696,10 +4696,10 @@ function AnnouncementsPage({ role }) {
                     {a.pinned ? <Pin size={15} /> : <PinOff size={15} />}
                   </button>
                 )}
-                <button type="button" onClick={() => openAnnouncement(a)} className={`w-full text-left p-4 hover:bg-slate-50 ${unread ? "bg-sky-50/40" : ""}`}>
+                <button type="button" onClick={() => openAnnouncement(a)} className={`w-full text-left p-4 hover:bg-slate-50 ${unread ? "bg-brand-50/40" : ""}`}>
                   <div className="flex items-start justify-between gap-3 mb-1.5 pr-8">
                     <h3 className={`text-sm flex items-center gap-2 ${unread ? "font-semibold text-slate-800" : "font-semibold text-slate-700"}`}>
-                      {unread && <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />}
+                      {unread && <span className="w-2 h-2 rounded-full bg-brand-500 shrink-0" />}
                       {a.pinned && <Pin size={13} className="text-amber-500 shrink-0" />}
                       {a.title}
                     </h3>
@@ -4714,7 +4714,7 @@ function AnnouncementsPage({ role }) {
                   {a.attachment && <div className="mb-2"><AnnouncementAttachmentChip attachment={a.attachment} /></div>}
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-400">{timeAgo(a.createdAt)}{stats && stats.total > 0 ? ` · ${stats.read}/${stats.total} read` : ""}</span>
-                    <span className="text-sky-600 font-medium">Read announcement →</span>
+                    <span className="text-brand-600 font-medium">Read announcement →</span>
                   </div>
                 </button>
               </Card>
@@ -4935,7 +4935,7 @@ function PaymentsPage({ onOpenStudent }) {
     .sort((a, b) => (segGradeOpts.indexOf(a.grade) - segGradeOpts.indexOf(b.grade)) || data.studentFullName(a).localeCompare(data.studentFullName(b)));
   const segBusLabel = segBus === "bus" ? "Bus Users" : segBus === "nonbus" ? "Non-Bus Users" : "All Students";
   const segGradeLabel = segGrade || "All Grades";
-  const segBtnCls = (active) => `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${active ? "border-sky-500 bg-sky-50 text-sky-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`;
+  const segBtnCls = (active) => `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${active ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`;
 
   return (
     <div>
@@ -5443,8 +5443,8 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
         {GRADES.map((g) => {
           const on = gradeSel.includes(g);
           return (
-            <label key={g} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-sky-300 bg-sky-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
-              <input type="checkbox" checked={on} onChange={() => toggleGrade(g)} className="rounded border-slate-300 text-sky-600" />
+            <label key={g} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-brand-300 bg-brand-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
+              <input type="checkbox" checked={on} onChange={() => toggleGrade(g)} className="rounded border-slate-300 text-brand-600" />
               <span className="truncate">{g}</span>
             </label>
           );
@@ -5457,7 +5457,7 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[11px] text-slate-400">{billedAnchors.length} of {monthAnchors.length} selected</span>
         <div className="flex gap-2">
-          <button type="button" className="text-[11px] font-medium text-sky-600" onClick={() => setBilledAnchors(monthAnchors.map((a) => a.anchor))}>All</button>
+          <button type="button" className="text-[11px] font-medium text-brand-600" onClick={() => setBilledAnchors(monthAnchors.map((a) => a.anchor))}>All</button>
           <button type="button" className="text-[11px] font-medium text-slate-400" onClick={() => setBilledAnchors([])}>None</button>
         </div>
       </div>
@@ -5465,8 +5465,8 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
         {monthAnchors.map((a) => {
           const on = billedAnchors.includes(a.anchor);
           return (
-            <label key={a.anchor} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-sky-300 bg-sky-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
-              <input type="checkbox" checked={on} onChange={() => toggleAnchor(a.anchor)} className="rounded border-slate-300 text-sky-600" />
+            <label key={a.anchor} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-brand-300 bg-brand-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
+              <input type="checkbox" checked={on} onChange={() => toggleAnchor(a.anchor)} className="rounded border-slate-300 text-brand-600" />
               <span className="truncate">{a.label}</span>
             </label>
           );
@@ -5679,9 +5679,9 @@ function FeeMonthGrid({ rows, lines, onToggle, onAmount }) {
         const on = !!line;
         const fullyPaid = r.status === "PAID";
         return (
-          <div key={r.installmentId} className={`rounded-lg border p-2 ${on ? "border-sky-300 bg-sky-50" : fullyPaid ? "border-slate-100 bg-slate-50" : "border-slate-200"}`}>
+          <div key={r.installmentId} className={`rounded-lg border p-2 ${on ? "border-brand-300 bg-brand-50" : fullyPaid ? "border-slate-100 bg-slate-50" : "border-slate-200"}`}>
             <label className={`flex items-start gap-1.5 ${fullyPaid ? "cursor-default" : "cursor-pointer"}`}>
-              <input type="checkbox" disabled={fullyPaid} checked={on} onChange={() => onToggle(r.installmentId)} className="mt-0.5 rounded border-slate-300 text-sky-600 shrink-0" />
+              <input type="checkbox" disabled={fullyPaid} checked={on} onChange={() => onToggle(r.installmentId)} className="mt-0.5 rounded border-slate-300 text-brand-600 shrink-0" />
               <span className="min-w-0">
                 <span className="block text-xs font-medium text-slate-700 truncate">{r.label}{r.isCurrent ? " • now" : ""}</span>
                 <span className="block text-[11px] text-slate-400">{fullyPaid ? "Paid" : `${formatMoney(r.remaining)} due`}</span>
@@ -6036,7 +6036,7 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
               <button type="button" onClick={() => { setImageFile(null); setImagePreview(null); }} className="text-xs text-red-500 font-medium">Remove image</button>
             </div>
           ) : (
-            <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-sky-300 w-fit">
+            <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-400 cursor-pointer hover:border-brand-300 w-fit">
               <ImagePlus size={15} /> Upload payment details (e.g. account number / QR code)
               <input type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files[0]; if (!file) return;
@@ -6319,13 +6319,13 @@ function MessagesPage({ target, clearTarget }) {
                 if (!ou) return null;
                 const ouOnline = isOnline(presenceMap[ou.id]);
                 return (
-                  <button key={c.id} onClick={() => setActiveConv(c.id)} className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-slate-50 ${activeConv === c.id ? "bg-sky-50" : ""}`}>
+                  <button key={c.id} onClick={() => setActiveConv(c.id)} className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-slate-50 ${activeConv === c.id ? "bg-brand-50" : ""}`}>
                     <div className="relative shrink-0">
                       <Avatar name={ou.name} photo={ou.photo} size={34} />
                       {ouOnline && <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white" />}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between"><p className="text-sm font-medium text-slate-700 truncate">{ou.name}</p>{unread > 0 && <span className="w-4 h-4 rounded-full bg-sky-600 text-white text-[9px] flex items-center justify-center">{unread}</span>}</div>
+                      <div className="flex items-center justify-between"><p className="text-sm font-medium text-slate-700 truncate">{ou.name}</p>{unread > 0 && <span className="w-4 h-4 rounded-full bg-brand-600 text-white text-[9px] flex items-center justify-center">{unread}</span>}</div>
                       <p className="text-xs text-slate-400 truncate">{last?.text || "No messages yet"}</p>
                     </div>
                   </button>
@@ -6363,9 +6363,9 @@ function MessagesPage({ target, clearTarget }) {
                     const mine = m.senderId === myId;
                     return (
                       <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                        <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${mine ? "bg-sky-600 text-white rounded-br-sm" : "bg-slate-100 text-slate-700 rounded-bl-sm"}`}>
+                        <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${mine ? "bg-brand-600 text-white rounded-br-sm" : "bg-slate-100 text-slate-700 rounded-bl-sm"}`}>
                           <p>{m.text}</p>
-                          <p className={`text-[10px] mt-1 flex items-center gap-1 justify-end ${mine ? "text-sky-100" : "text-slate-400"}`}>
+                          <p className={`text-[10px] mt-1 flex items-center gap-1 justify-end ${mine ? "text-brand-100" : "text-slate-400"}`}>
                             {fmtTime(m.createdAt)}
                             {mine && (m.read ? <CheckCheck size={12} /> : <Check size={12} />)}
                           </p>
@@ -6380,7 +6380,7 @@ function MessagesPage({ target, clearTarget }) {
                 </div>
                 <div className="p-3 border-t border-slate-100 flex items-center gap-2">
                   <input value={text} onChange={(e) => { setText(e.target.value); notifyTyping(); }} onKeyDown={(e) => { if (e.key === "Enter") send(e); }} placeholder="Type a message…" className={inputCls} />
-                  <button type="button" onClick={send} className="bg-sky-600 hover:bg-sky-700 text-white rounded-lg p-2.5 shrink-0"><Send size={16} /></button>
+                  <button type="button" onClick={send} className="bg-brand-600 hover:bg-brand-700 text-white rounded-lg p-2.5 shrink-0"><Send size={16} /></button>
                 </div>
               </>
             )}
@@ -6474,7 +6474,7 @@ function PayslipModal({ paymentId, onClose }) {
       <div className="flex justify-end gap-2 pt-4 no-print">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
         {slip && (
-          <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60">
+          <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60">
             <Printer size={15} /> {downloading ? "Preparing…" : "Download Payslip"}
           </button>
         )}
@@ -6544,16 +6544,16 @@ function NotificationsPage({ onOpen }) {
             const Icon = typeIcon[n.type] || Bell;
             const hint = navHintFor(n);
             return (
-              <button key={n.id} onClick={() => openNotification(n)} className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-slate-50 ${!n.read ? "bg-sky-50/40" : ""}`}>
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${!n.read ? "bg-sky-100 text-sky-600" : "bg-slate-100 text-slate-400"}`}><Icon size={15} /></div>
+              <button key={n.id} onClick={() => openNotification(n)} className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-slate-50 ${!n.read ? "bg-brand-50/40" : ""}`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${!n.read ? "bg-brand-100 text-brand-600" : "bg-slate-100 text-slate-400"}`}><Icon size={15} /></div>
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm ${!n.read ? "font-semibold text-slate-800" : "text-slate-600"}`}>{n.title}</p>
                   <p className="text-xs text-slate-400 mt-0.5">{n.message}</p>
                   {n.image && <img src={n.image} alt="Payment details" className="mt-2 w-32 h-32 object-cover rounded-lg border border-slate-200" />}
-                  {hint && <p className="text-xs font-medium text-sky-600 mt-1">{hint} →</p>}
+                  {hint && <p className="text-xs font-medium text-brand-600 mt-1">{hint} →</p>}
                   <p className="text-[11px] text-slate-300 mt-1">{timeAgo(n.createdAt)}</p>
                 </div>
-                {!n.read && <span className="w-2 h-2 rounded-full bg-sky-500 mt-1.5 shrink-0" />}
+                {!n.read && <span className="w-2 h-2 rounded-full bg-brand-500 mt-1.5 shrink-0" />}
               </button>
             );
           })}
@@ -6705,7 +6705,7 @@ function SettingsPage({ role }) {
             <p className="text-sm font-semibold text-slate-700">{auth.currentUser.name}</p>
             <p className="text-xs text-slate-400">{auth.currentUser.email}</p>
             <div className="flex items-center gap-3 mt-1.5">
-              <label className="text-xs text-sky-600 font-medium cursor-pointer flex items-center gap-1.5">
+              <label className="text-xs text-brand-600 font-medium cursor-pointer flex items-center gap-1.5">
                 <Camera size={14} /> {auth.currentUser.photo ? "Replace photo" : "Change photo"}
                 <input type="file" accept="image/*" className="hidden" onChange={onPickPhoto} />
               </label>
@@ -6770,7 +6770,7 @@ function SettingsPage({ role }) {
         {["Homework updates", "Attendance alerts", "Exam results", "Announcements", "Messages"].map((p) => (
           <label key={p} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
             <span className="text-sm text-slate-600">{p}</span>
-            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-sky-600" />
+            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-brand-600" />
           </label>
         ))}
       </Card>

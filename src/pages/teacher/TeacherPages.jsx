@@ -96,12 +96,12 @@ function TeacherDashboard({ setPage, openStudent }) {
       {upcomingExamAnnouncements.length > 0 && (
         <div className="space-y-2">
           {upcomingExamAnnouncements.map((a) => (
-            <Card key={a.id} className="p-4 border border-sky-200 bg-sky-50">
+            <Card key={a.id} className="p-4 border border-brand-200 bg-brand-50">
               <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center shrink-0"><Megaphone size={17} /></div>
+                <div className="w-9 h-9 rounded-lg bg-brand-100 text-brand-700 flex items-center justify-center shrink-0"><Megaphone size={17} /></div>
                 <div>
-                  <p className="text-sm font-semibold text-sky-800">Exam announced: {a.title}</p>
-                  <p className="text-xs text-sky-700 mt-0.5">Scheduled {fmtDate(a.examDate)}. Enter results once it's complete.</p>
+                  <p className="text-sm font-semibold text-brand-800">Exam announced: {a.title}</p>
+                  <p className="text-xs text-brand-700 mt-0.5">Scheduled {fmtDate(a.examDate)}. Enter results once it's complete.</p>
                 </div>
               </div>
             </Card>
@@ -120,7 +120,7 @@ function TeacherDashboard({ setPage, openStudent }) {
 
       <div className="grid lg:grid-cols-2 gap-4">
         <Card className="p-5">
-          <div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold text-slate-700">My Classes</h3><button onClick={() => setPage("classes")} className="text-xs text-sky-600 font-medium">View all</button></div>
+          <div className="flex items-center justify-between mb-3"><h3 className="text-sm font-semibold text-slate-700">My Classes</h3><button onClick={() => setPage("classes")} className="text-xs text-brand-600 font-medium">View all</button></div>
           <div className="space-y-2">
             {myClasses.map((c) => {
               const cs = db.students.filter((s) => s.classId === c.id);
@@ -145,7 +145,7 @@ function TeacherDashboard({ setPage, openStudent }) {
                 { label: "Present", value: attToday.filter((a) => a.status === "Present").length, color: "bg-emerald-500" },
                 { label: "Late", value: attToday.filter((a) => a.status === "Late").length, color: "bg-amber-400" },
                 { label: "Sick", value: attToday.filter((a) => a.status === "Sick").length, color: "bg-indigo-400" },
-                { label: "Permission", value: attToday.filter((a) => a.status === "Permission").length, color: "bg-sky-400" },
+                { label: "Permission", value: attToday.filter((a) => a.status === "Permission").length, color: "bg-blue-400" },
                 { label: "Absent", value: attToday.filter((a) => a.status === "Absent").length, color: "bg-red-400" },
               ]} height={12} />
               <p className="text-xs text-slate-400 mt-3">{attToday.filter((a) => a.status === "Present").length} of {myHeadStudentIds.length} students present today in the classes you head.</p>
@@ -187,9 +187,9 @@ function TeacherClassesPage({ onOpen, onMessage }) {
       <h1 className="text-lg font-semibold text-slate-800 mb-4">My Classes</h1>
       <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
         {myClasses.map((c) => (
-          <button key={c.id} onClick={() => setSelected(c.id)} className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${selected === c.id ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+          <button key={c.id} onClick={() => setSelected(c.id)} className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${selected === c.id ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
             {c.grade}{c.section}
-            {c.headTeacherId === auth.currentUser.id && <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${selected === c.id ? "bg-white/20 text-white" : "bg-sky-50 text-sky-600"}`}>Head Teacher</span>}
+            {c.headTeacherId === auth.currentUser.id && <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${selected === c.id ? "bg-white/20 text-white" : "bg-brand-50 text-brand-600"}`}>Head Teacher</span>}
           </button>
         ))}
       </div>
@@ -210,7 +210,7 @@ function TeacherClassesPage({ onOpen, onMessage }) {
                     </td>
                     <td className="px-4 py-2.5"><Badge tone={statusTone(s.status)}>{s.status}</Badge></td>
                     <td className="px-4 py-2.5 text-right">
-                      {s.parentIds[0] && <button onClick={() => onMessage(s.parentIds[0])} className="text-xs text-sky-600 font-medium">Message parent</button>}
+                      {s.parentIds[0] && <button onClick={() => onMessage(s.parentIds[0])} className="text-xs text-brand-600 font-medium">Message parent</button>}
                     </td>
                   </tr>
                 ))}
@@ -268,7 +268,7 @@ function TeacherTimetablePage() {
 
       <div className="flex gap-2 mb-4">
         {[["today", "Today"], ["week", "Full Week"]].map(([key, label]) => (
-          <button key={key} onClick={() => setView(key)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${view === key ? "bg-sky-600 text-white border-sky-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{label}</button>
+          <button key={key} onClick={() => setView(key)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium border ${view === key ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>{label}</button>
         ))}
       </div>
 
@@ -279,19 +279,19 @@ function TeacherTimetablePage() {
           <Card className="overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-sky-50 text-sky-700 text-xs">
+                <thead className="bg-brand-50 text-brand-700 text-xs">
                   <tr>
                     <th className="text-left font-semibold px-3 py-2.5 w-24">Period</th>
-                    {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-sky-800" : ""}`}>{d}</th>)}
+                    {SCHOOL_DAYS.map((d) => <th key={d} className={`text-left font-medium px-3 py-2.5 ${d === todayName ? "font-bold text-brand-800" : ""}`}>{d}</th>)}
                   </tr>
                 </thead>
                 <tbody>
                   {schedule.periods.map((p) => (
                     <React.Fragment key={p.period}>
                       <tr className="border-t border-slate-100">
-                        <td className="px-3 py-2.5 align-top bg-sky-50/60">
-                          <p className="font-semibold text-sky-700">Period {p.period}</p>
-                          <p className="text-[11px] text-sky-600">{p.startLabel} – {p.endLabel}</p>
+                        <td className="px-3 py-2.5 align-top bg-brand-50/60">
+                          <p className="font-semibold text-brand-700">Period {p.period}</p>
+                          <p className="text-[11px] text-brand-600">{p.startLabel} – {p.endLabel}</p>
                         </td>
                         {SCHOOL_DAYS.map((day) => {
                           const entry = weekEntryFor(day, p.period);
@@ -299,12 +299,12 @@ function TeacherTimetablePage() {
                           const cls = entry ? data.getClass(entry.classId) : null;
                           const coveredByOther = sub && sub.substituteTeacherId !== myId;
                           return (
-                            <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-sky-50/40" : ""}`}>
+                            <td key={day} className={`px-3 py-2.5 align-top ${day === todayName ? "bg-brand-50/40" : ""}`}>
                               {entry ? (
                                 <div>
                                   <p className="text-xs font-medium text-slate-700">{entry.subject}</p>
                                   <p className="text-[11px] text-slate-400">{cls ? data.classLabel(cls) : ""}</p>
-                                  {coveredByOther && <p className="text-[10px] text-sky-600 mt-0.5">Covered by {data.getUser(sub.substituteTeacherId)?.name}</p>}
+                                  {coveredByOther && <p className="text-[10px] text-brand-600 mt-0.5">Covered by {data.getUser(sub.substituteTeacherId)?.name}</p>}
                                 </div>
                               ) : (
                                 <span className="text-xs text-slate-300">—</span>
@@ -314,8 +314,8 @@ function TeacherTimetablePage() {
                         })}
                       </tr>
                       {schedule.breakAfterPeriod === p.period && (
-                        <tr className="bg-sky-50 border-y border-sky-100">
-                          <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-sky-700 py-1.5">
+                        <tr className="bg-brand-50 border-y border-brand-100">
+                          <td colSpan={SCHOOL_DAYS.length + 1} className="text-center text-xs font-medium text-brand-700 py-1.5">
                             Break • {schedule.breakStartLabel} – {schedule.breakEndLabel}
                           </td>
                         </tr>
@@ -340,13 +340,13 @@ function TeacherTimetablePage() {
       )}
 
       {substitutingPeriods.length > 0 && (
-        <Card className="p-4 mb-4 border border-sky-200 bg-sky-50">
-          <p className="text-sm font-medium text-sky-800 mb-1">You're covering {substitutingPeriods.length} period{substitutingPeriods.length === 1 ? "" : "s"} today</p>
+        <Card className="p-4 mb-4 border border-brand-200 bg-brand-50">
+          <p className="text-sm font-medium text-brand-800 mb-1">You're covering {substitutingPeriods.length} period{substitutingPeriods.length === 1 ? "" : "s"} today</p>
           <div className="space-y-1">
             {substitutingPeriods.map((e) => {
               const cls = data.getClass(e.classId);
               const original = data.getUser(e.teacherId);
-              return <p key={e.id} className="text-xs text-sky-700">Period {e.period} • {e.subject} • {cls ? data.classLabel(cls) : ""} — covering for {original?.name}</p>;
+              return <p key={e.id} className="text-xs text-brand-700">Period {e.period} • {e.subject} • {cls ? data.classLabel(cls) : ""} — covering for {original?.name}</p>;
             })}
           </div>
         </Card>
@@ -375,7 +375,7 @@ function TeacherTimetablePage() {
                 <div>
                   <p className="text-sm font-medium text-slate-700">
                     Period {e.period} • {e.subject} • {cls ? data.classLabel(cls) : ""}
-                    {!isMyOwnPeriod && <span className="text-sky-600"> (substituting)</span>}
+                    {!isMyOwnPeriod && <span className="text-brand-600"> (substituting)</span>}
                   </p>
                   {slotFor(e) && <p className="text-xs text-slate-400">{slotFor(e).startLabel}–{slotFor(e).endLabel}</p>}
                 </div>
@@ -724,7 +724,7 @@ function TeacherAttendancePage() {
               </p>
               <div className="flex gap-2">
                 {canAct ? (
-                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-sky-600 rounded-lg py-1.5 hover:bg-sky-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
+                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-brand-600 rounded-lg py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
                 ) : blockedForDate && classification.available && students.length > 0 && (
                   <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-xs text-slate-600 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">View</button>
                 )}

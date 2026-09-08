@@ -49,10 +49,12 @@ function LoginScreen() {
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-7">
-          <Logo size={68} />
-          <h1 className="mt-4 text-xl font-semibold text-slate-800 tracking-tight">Hiil Model School</h1>
-          <p className="text-sm text-slate-400 mt-1">School Management Portal</p>
+        <div className="rounded-2xl bg-brand-600 border-b-4 border-gold-400 px-6 py-7 mb-4 flex flex-col items-center text-center shadow-sm">
+          <div className="bg-white rounded-2xl p-2 shadow-sm">
+            <Logo size={60} />
+          </div>
+          <h1 className="mt-3 text-xl font-bold text-white tracking-tight">Hiil Model School</h1>
+          <p className="text-xs text-gold-200 mt-1 font-medium uppercase tracking-wide">Center of Excellence</p>
         </div>
 
         <Card className="p-6 shadow-sm">
@@ -70,22 +72,22 @@ function LoginScreen() {
             </Field>
             <div className="flex items-center justify-between mb-4 text-xs">
               <label className="flex items-center gap-1.5 text-slate-500">
-                <input type="checkbox" className="rounded border-slate-300 text-sky-600 focus:ring-sky-500" /> Remember me
+                <input type="checkbox" className="rounded border-slate-300 text-brand-600 focus:ring-brand-500" /> Remember me
               </label>
-              <button type="button" onClick={() => setMode("forgot")} className="text-sky-600 font-medium hover:text-sky-700">Forgot password?</button>
+              <button type="button" onClick={() => setMode("forgot")} className="text-brand-600 font-medium hover:text-brand-700">Forgot password?</button>
             </div>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" disabled={submitting} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            <button type="button" disabled={submitting} onClick={submit} className="w-full bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
               {submitting ? "Signing in…" : "Sign in"}
             </button>
           </div>
           <button onClick={() => setMode("register")} className="w-full mt-3 text-center text-xs text-slate-500 hover:text-slate-700">
-            New parent? <span className="text-sky-600 font-medium">Create an account</span>
+            New parent? <span className="text-brand-600 font-medium">Create an account</span>
           </button>
         </Card>
         <p className="mt-5 text-center text-[11px] text-slate-400">
           Powered by{" "}
-          <a href="https://www.hirgaliye.online/" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-sky-600 font-medium">
+          <a href="https://www.hirgaliye.online/" target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-brand-600 font-medium">
             Hirgaliye
           </a>
         </p>
@@ -174,7 +176,7 @@ function RegisterScreen({ onBack }) {
             <h2 className="text-base font-semibold text-slate-800 mb-1">Account created</h2>
             <p className="text-sm text-slate-400 mb-6">{done.message}</p>
             {done.pendingConfirmation && (
-              <button onClick={onBack} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+              <button onClick={onBack} className="w-full bg-brand-600 hover:bg-brand-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
             )}
           </Card>
         </div>
@@ -206,7 +208,7 @@ function RegisterScreen({ onBack }) {
             <Field label="Phone number" required><input value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} placeholder="+252 61..." /></Field>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="block text-xs font-medium text-slate-500">Children</span>
-              <button type="button" onClick={() => setChildren((c) => [...c, { studentId: "", status: null, error: "" }])} className="text-xs text-sky-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
+              <button type="button" onClick={() => setChildren((c) => [...c, { studentId: "", status: null, error: "" }])} className="text-xs text-brand-600 font-medium flex items-center gap-1"><Plus size={13} /> Add another child</button>
             </div>
             {children.map((c, i) => (
               <div key={i} className="mb-2">
@@ -224,7 +226,7 @@ function RegisterScreen({ onBack }) {
               </div>
             ))}
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2 mb-1">{error}</p>}
-            <button type="button" disabled={busy} onClick={submit} className="w-full mt-4 bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            <button type="button" disabled={busy} onClick={submit} className="w-full mt-4 bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
               {busy ? "Creating account…" : "Create account"}
             </button>
           </div>
@@ -269,7 +271,7 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
             <p className="text-xs text-slate-400 mb-3">Enter the email address on your account. We'll send a password reset link to it.</p>
             <Field label="Email" required><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && requestReset(e)} className={inputCls} placeholder="you@school.com" /></Field>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" disabled={submitting} onClick={requestReset} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
+            <button type="button" disabled={submitting} onClick={requestReset} className="w-full bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
               {submitting ? "Sending…" : "Send reset link"}
             </button>
           </Card>
@@ -280,7 +282,7 @@ function ForgotPasswordScreen({ onBack, initialEmail }) {
             <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
             <h2 className="text-base font-semibold text-slate-800 mb-1">Check your email</h2>
             <p className="text-sm text-slate-400 mb-6">If an account exists for {email}, a password reset link has been sent. Open it to choose a new password.</p>
-            <button onClick={onBack} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+            <button onClick={onBack} className="w-full bg-brand-600 hover:bg-brand-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
           </Card>
         )}
       </div>
@@ -330,7 +332,7 @@ function PasswordRecoveryScreen() {
             <div className="w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-4"><CheckCircle2 className="text-emerald-600" size={28} /></div>
             <h2 className="text-base font-semibold text-slate-800 mb-1">Password updated successfully</h2>
             <p className="text-sm text-slate-400 mb-6">Your password has been changed. You can now sign in with your new password.</p>
-            <button onClick={auth.finalizePasswordRecovery} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+            <button onClick={auth.finalizePasswordRecovery} className="w-full bg-brand-600 hover:bg-brand-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
           </Card>
         ) : (
           <Card className="p-6">
@@ -351,7 +353,7 @@ function PasswordRecoveryScreen() {
               </div>
             </Field>
             {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
-            <button type="button" disabled={busy} onClick={submit} className="w-full bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
+            <button type="button" disabled={busy} onClick={submit} className="w-full bg-brand-600 hover:bg-brand-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-medium">
               {busy ? "Saving…" : "Set new password"}
             </button>
             <button type="button" onClick={auth.cancelPasswordRecovery} className="w-full mt-2 text-center text-xs text-slate-500 hover:text-slate-700">Cancel</button>
@@ -378,7 +380,7 @@ function InvalidRecoveryLinkScreen() {
           <div className="w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-4"><CircleAlert className="text-amber-600" size={28} /></div>
           <h2 className="text-base font-semibold text-slate-800 mb-1">This link can't be used</h2>
           <p className="text-sm text-slate-400 mb-6">This password reset link is invalid or has expired. Please request a new one.</p>
-          <button onClick={auth.dismissInvalidRecoveryLink} className="w-full bg-sky-600 hover:bg-sky-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
+          <button onClick={auth.dismissInvalidRecoveryLink} className="w-full bg-brand-600 hover:bg-brand-700 text-white rounded-lg py-2.5 text-sm font-medium">Back to sign in</button>
         </Card>
       </div>
     </div>

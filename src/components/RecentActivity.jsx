@@ -43,9 +43,9 @@ function ActivityRow({ activity, onOpenActivity, today }) {
     : `${fmtDate(activity.createdAt)} · ${fmtTime(activity.createdAt)}`;
   const body = (
     <>
-      <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
+      <div className="w-1.5 h-1.5 rounded-full bg-brand-500 mt-1.5 shrink-0" />
       <div className="min-w-0">
-        <p className={`text-slate-600 leading-snug ${activity.navigation && onOpenActivity ? "group-hover:text-sky-700" : ""}`}>{activity.text}</p>
+        <p className={`text-slate-600 leading-snug ${activity.navigation && onOpenActivity ? "group-hover:text-brand-700" : ""}`}>{activity.text}</p>
         <ActorLine activity={activity} />
         <p className="text-slate-300 mt-0.5">{stamp}</p>
       </div>

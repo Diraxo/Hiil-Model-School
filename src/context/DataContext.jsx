@@ -4698,7 +4698,7 @@ function DataProvider({ children }) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="animate-spin text-sky-600" size={32} />
+          <Loader2 className="animate-spin text-brand-600" size={32} />
           <p className="text-slate-500 text-sm">Loading Hiil Model School…</p>
         </div>
       </div>
