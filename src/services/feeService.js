@@ -50,6 +50,10 @@ function mapSchedule(r) {
     // BLOCKER 6: null = every month of the academic year; otherwise the 'YYYY-MM-DD' month
     // anchors this fee is billed for.
     billedMonths: Array.isArray(r.billed_months) && r.billed_months.length ? r.billed_months.map((d) => String(d).slice(0, 10)) : null,
+    // BLOCKER 7: null = applies to every grade (legacy, and the norm for TRANSPORT/bus fees whose
+    // eligibility is uses_bus only); otherwise only students whose enrolment grade for this
+    // schedule's academic year is in the list see / are billed this fee.
+    applicableGrades: Array.isArray(r.applicable_grades) && r.applicable_grades.length ? r.applicable_grades.map(String) : null,
     createdAt: ts(r.created_at),
     updatedAt: ts(r.updated_at),
     createdBy: r.created_by || null,
@@ -163,7 +167,7 @@ export function createFeeService() {
     },
 
     /* ---------- fee_schedules + monthly installments ---------- */
-    async createSchedule({ feeTypeId, academicYearId, unitAmount, unitMonths, unitsPerYear, billedMonths, createdBy }) {
+    async createSchedule({ feeTypeId, academicYearId, unitAmount, unitMonths, unitsPerYear, billedMonths, applicableGrades, createdBy }) {
       const { data, error } = await supabase.from("fee_schedules").insert({
         fee_type_id: feeTypeId,
         academic_year_id: academicYearId,
@@ -171,6 +175,7 @@ export function createFeeService() {
         unit_months: Number(unitMonths) || 1,
         units_per_year: Number(unitsPerYear) || 1,
         billed_months: Array.isArray(billedMonths) && billedMonths.length ? billedMonths : null,
+        applicable_grades: Array.isArray(applicableGrades) && applicableGrades.length ? applicableGrades : null,
         created_by: createdBy || null,
       }).select().single();
       if (error) throw error;
@@ -195,6 +200,17 @@ export function createFeeService() {
       const { data, error } = await supabase.rpc("set_fee_schedule_billed_months", {
         p_fee_schedule_id: scheduleId,
         p_months: Array.isArray(months) ? months : [],
+      });
+      if (error) throw error;
+      return mapSchedule(Array.isArray(data) ? data[0] : data);
+    },
+    // BLOCKER 7: change which grades a rolled-out school fee is billed to. `grades` = ['Grade 9', ...].
+    // Widening adds obligations for newly-eligible students; narrowing drops obligations for
+    // now-excluded students (rejected server-side if any carry a non-voided payment or adjustment).
+    async setApplicableGrades(scheduleId, grades) {
+      const { data, error } = await supabase.rpc("set_fee_schedule_applicable_grades", {
+        p_fee_schedule_id: scheduleId,
+        p_grades: Array.isArray(grades) ? grades : [],
       });
       if (error) throw error;
       return mapSchedule(Array.isArray(data) ? data[0] : data);

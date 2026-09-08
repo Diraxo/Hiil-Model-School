@@ -229,11 +229,35 @@ function netOwedForObligation(dbLike, obligation) {
   if (!obligation) return 0;
   return Math.max(0, obligation.amountDue - adjustmentsTotal(dbLike, obligation.id) - allocationsTotal(dbLike, obligation.id));
 }
+// BLOCKER 7: a student's grade for one academic year — the enrollments row for that year if there
+// is one, else the denormalized "current" students.grade. This is the authoritative grade used for
+// school-fee eligibility (mirrors the server-side public.student_grade_for_year).
+function studentGradeForYear(dbLike, student, academicYearId) {
+  if (!student) return null;
+  const enr = (dbLike.enrollments || []).find((e) => e.studentId === student.id && e.academicYearId === academicYearId);
+  return (enr && enr.grade) || student.grade || null;
+}
+// BLOCKER 7: does this fee schedule apply to this student's grade? A schedule with no
+// applicableGrades (null) applies to every grade — the legacy default, and how TRANSPORT/bus fees
+// stay (their eligibility is `usesBus` only). A non-null list restricts to those grades.
+function scheduleAppliesToStudentGrade(dbLike, schedule, student, academicYearId) {
+  if (!schedule || !schedule.applicableGrades || schedule.applicableGrades.length === 0) return true;
+  const grade = studentGradeForYear(dbLike, student, academicYearId);
+  return !!grade && schedule.applicableGrades.includes(grade);
+}
 // A fee type only "applies" to a student for a given year once it's actually been rolled out
 // (has a feeSchedule) for that year — a catalog entry Finance forgot to roll out simply doesn't
 // appear, which is the intended consequence of obligations being materialized, not derived live.
+// BLOCKER 7: a rolled-out school fee whose applicableGrades doesn't include the student's grade for
+// this year is also excluded — a Grade 9 student never sees the Grade-11 or Grade-12 school fee.
 function feeTypesForStudentIn(dbLike, student, academicYearId) {
-  return dbLike.feeTypes.filter((ft) => !ft.archivedAt && (ft.category !== "TRANSPORT" || student.usesBus) && scheduleForFeeType(dbLike, ft.id, academicYearId));
+  return dbLike.feeTypes.filter((ft) => {
+    if (ft.archivedAt) return false;
+    if (ft.category === "TRANSPORT" && !student.usesBus) return false;
+    const schedule = scheduleForFeeType(dbLike, ft.id, academicYearId);
+    if (!schedule) return false;
+    return scheduleAppliesToStudentGrade(dbLike, schedule, student, academicYearId);
+  });
 }
 // A catalog feeType row carries no pricing (that lives on the schedule) — this merges in the
 // given year's unitAmount/unitMonths/unitsPerYear so every existing call site that reads those
@@ -1368,6 +1392,15 @@ function DataProvider({ children }) {
       const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
       return feeTypesForStudentIn(db, student, yearId);
     }
+    // BLOCKER 7 §7: for V1 a student should have exactly one applicable School (TUITION) fee for
+    // their grade in a year. If the config accidentally has two+ active school schedules that both
+    // cover this student's grade, DON'T silently combine them — return the conflicting fee types so
+    // the UI can block payment recording and show a clear configuration error.
+    function schoolFeeConflictForStudent(student, academicYearId) {
+      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const tuition = feeTypesForStudentIn(db, student, yearId).filter((ft) => ft.category === "TUITION");
+      return tuition.length > 1 ? tuition.map((ft) => feeTypeYearView(db, ft, yearId)) : [];
+    }
     // Same 4-field shape as before ({paid, remaining, amountOwed, status}) — now sourced from
     // materialized obligations/allocations instead of scanning db.payments, and generalized to
     // every fee category (not just TUITION) via the shared feeRowsForStudentIn engine.
@@ -1665,7 +1698,7 @@ function DataProvider({ children }) {
       db, getUser, getClass, classLabel, getStudent, studentFullName,
       studentIdentity, staffIdentity, userIdentity, leaveSubjectIdentity, announcementSenderLabel,
       parentsOfClass, parentsOfStudent,
-      feeTypesForStudent, balanceFor, studentPaymentSummary, installmentStatusForStudent, recordPaymentBatch, periodSchedule, availableSubjectsForSlot,
+      feeTypesForStudent, schoolFeeConflictForStudent, balanceFor, studentPaymentSummary, installmentStatusForStudent, recordPaymentBatch, periodSchedule, availableSubjectsForSlot,
       busFeeTypeForStudent, busScheduleForStudent, describePayment, familyGroups, dueStatusForFeeType, dueStatusForStudent, priorYearsOutstanding, monthlyFinanceReport, feeInstallmentRowsForStudent,
       paymentsForStudents, paymentMethodName,
       classifyAttendanceDay, classifySchoolDay, attendanceDateBounds, closureForDate, classifyStaffAttendanceDay, attendanceRosterForClass,
@@ -3292,10 +3325,17 @@ function DataProvider({ children }) {
           if (!ft || ft.archivedAt) return { ok: false, message: "Fee type not found or archived." };
           const existingYr = db.academicYears.find((y) => y.id === academicYearId);
           const anchor = feeMaterializeAnchor(existingYr, todayKeyStr());
+          const preOpts = _opts || {};
           const existing = db.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId);
           if (existing) {
             // Already rolled out — make sure months + obligations are fully materialized (safe to
-            // re-run) but never rewrite pricing.
+            // re-run) but never rewrite pricing. BLOCKER 7: a changed grade set is applied through
+            // the transactional RPC (adds/drops obligations safely).
+            if (ft.category !== "TRANSPORT" && Array.isArray(preOpts.applicableGrades)) {
+              const cur = (existing.applicableGrades || []).slice().sort().join("|");
+              const next = preOpts.applicableGrades.slice().sort().join("|");
+              if (next && next !== cur) await feeService.setApplicableGrades(existing.id, preOpts.applicableGrades);
+            }
             await feeService.generateMonthlyInstallments(existing.id);
             await feeService.materializeForSchedule(existing.id, anchor, "YEAR_ROLLOUT");
             await refetchFees();
@@ -3314,12 +3354,19 @@ function DataProvider({ children }) {
             ? opts.billedMonths.slice().sort()
             : null;
           const expectedCount = billedMonths ? billedMonths.length : monthsInYear;
+          // BLOCKER 7: school (TUITION) fees are grade-targeted; opts.applicableGrades is the grade
+          // list chosen at rollout. TRANSPORT/bus fees are never grade-targeted (eligibility is
+          // usesBus only) so their applicableGrades stays null.
+          const applicableGrades = ft.category !== "TRANSPORT" && Array.isArray(opts.applicableGrades) && opts.applicableGrades.length
+            ? opts.applicableGrades.slice().sort()
+            : null;
           const schedule = await feeService.createSchedule({
             feeTypeId, academicYearId,
             unitAmount: Number(opts.unitAmount) || 0,
             unitMonths: 1,
             unitsPerYear: expectedCount,
             billedMonths,
+            applicableGrades,
             createdBy: actorId,
           });
           const generated = await feeService.generateMonthlyInstallments(schedule.id);
@@ -3354,6 +3401,25 @@ function DataProvider({ children }) {
         } catch (e) {
           console.error("Failed to update fee schedule months", e);
           return { ok: false, message: financeErrorMessage(e, "Couldn't update the billed months.") };
+        }
+      },
+      // BLOCKER 7: change which grades an already-rolled-out school fee is billed to. Widening adds
+      // obligations for newly-eligible students; narrowing drops obligations for now-excluded
+      // students — rejected server-side (whole change rolled back) if any of those carry a
+      // non-voided payment or an adjustment.
+      async updateFeeScheduleGrades(scheduleId, grades) {
+        try {
+          const list = Array.isArray(grades) ? grades.filter(Boolean).slice().sort() : [];
+          if (list.length === 0) return { ok: false, message: "Select at least one grade for this fee." };
+          const updated = await feeService.setApplicableGrades(scheduleId, list);
+          await refetchFees();
+          const sched = db.feeSchedules.find((s) => s.id === scheduleId);
+          const ft = sched && db.feeTypes.find((f) => f.id === sched.feeTypeId);
+          if (ft) await logActivityFeed(`${ft.name} applicable grades were updated (${list.join(", ")}).`);
+          return { ok: true, schedule: updated };
+        } catch (e) {
+          console.error("Failed to update fee schedule grades", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't update the applicable grades.") };
         }
       },
       // A single installment's amount/dueDate/label stays editable only until the first obligation

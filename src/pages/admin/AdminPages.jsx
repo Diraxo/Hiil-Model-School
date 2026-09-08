@@ -5203,9 +5203,35 @@ function FeeSettingsModal({ open, onClose }) {
             <p className="text-xs text-slate-400">Fee types are a reusable catalog — roll each one out for an academic year to set its actual pricing and due dates.</p>
             <PrimaryButton icon={Plus} onClick={() => setEditing("new")}>Add Fee Type</PrimaryButton>
           </div>
+          {(() => {
+            // BLOCKER 7 §7: warn when two rolled-out school (TUITION) schedules both cover the same
+            // grade for the current year — that's the ambiguous config a payment can't be recorded
+            // against. A schedule with no applicable_grades counts as covering every grade.
+            if (!currentYear) return null;
+            const schoolScheds = db.feeSchedules
+              .filter((s) => s.academicYearId === currentYear.id)
+              .map((s) => ({ s, ft: db.feeTypes.find((f) => f.id === s.feeTypeId) }))
+              .filter((x) => x.ft && !x.ft.archivedAt && x.ft.category === "TUITION");
+            const overlaps = GRADES.map((g) => ({
+              g, hits: schoolScheds.filter((x) => !x.s.applicableGrades || x.s.applicableGrades.includes(g)),
+            })).filter((o) => o.hits.length > 1);
+            if (overlaps.length === 0) return null;
+            return (
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                <strong>Fee configuration conflict:</strong> more than one school fee is set up for the same grade this year
+                {overlaps.slice(0, 3).map((o) => ` — ${o.g}: ${o.hits.map((h) => h.ft.name).join(" + ")}`).join(";")}.
+                Payments can't be recorded for affected students until each grade has exactly one school fee.
+              </p>
+            );
+          })()}
           <div className="space-y-2">
             {db.feeTypes.filter((ft) => !ft.archivedAt).map((ft) => {
               const schedule = currentYear && db.feeSchedules.find((s) => s.feeTypeId === ft.id && s.academicYearId === currentYear.id);
+              const applicability = ft.category === "TRANSPORT"
+                ? "Bus students (all grades)"
+                : schedule
+                  ? (schedule.applicableGrades ? `Applies to: ${schedule.applicableGrades.join(", ")}` : "Applies to: all grades")
+                  : null;
               return (
                 <div key={ft.id} className="border border-slate-200 rounded-lg p-3 flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -5214,7 +5240,7 @@ function FeeSettingsModal({ open, onClose }) {
                       <Badge tone={ft.category === "TRANSPORT" ? "indigo" : "sky"}>{ft.category === "TRANSPORT" ? "Bus only" : ft.category === "TUITION" ? "School Fee" : "Other"}</Badge>
                       {currentYear && (schedule ? <Badge tone="green">Rolled out for {formatAcademicYearLabel(currentYear)}</Badge> : <Badge tone="amber">Not yet rolled out for {formatAcademicYearLabel(currentYear)}</Badge>)}
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5">Default {formatMoney(ft.defaultUnitAmount)} per month</p>
+                    <p className="text-xs text-slate-400 mt-0.5">Default {formatMoney(ft.defaultUnitAmount)} per month{applicability ? ` · ${applicability}` : ""}</p>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <GhostButton icon={CalendarDays} onClick={() => setRollingOut(ft)}>Roll Out for Year</GhostButton>
@@ -5286,11 +5312,16 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     ? db.feeInstallments.filter((i) => i.feeScheduleId === existingSchedule.id).map((i) => (i.periodMonth || i.dueDate || "").slice(0, 7) + "-01").filter((a) => a.length === 10)
     : [];
   const [billedAnchors, setBilledAnchors] = useState(() => monthAnchors.map((a) => a.anchor));
+  // BLOCKER 7: school (TUITION) fees are billed only to the grades chosen here. Bus/TRANSPORT fees
+  // are never grade-targeted (eligibility is "Uses Bus" only) so this grid is hidden for them.
+  const isSchoolFee = feeType.category !== "TRANSPORT";
+  const [gradeSel, setGradeSel] = useState([]);
 
   useEffect(() => {
     if (!open) return;
     setUnitAmount(String(feeType.defaultUnitAmount || ""));
     setBilledAnchors(existingSchedule && existingInstallmentAnchors.length ? existingInstallmentAnchors : monthAnchorsForYear(currentYear).map((a) => a.anchor));
+    setGradeSel(existingSchedule && Array.isArray(existingSchedule.applicableGrades) ? existingSchedule.applicableGrades.slice() : []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, feeType.id, existingSchedule?.id]);
 
@@ -5299,6 +5330,28 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   function toggleAnchor(anchor) {
     setBilledAnchors((prev) => prev.includes(anchor) ? prev.filter((a) => a !== anchor) : [...prev, anchor].sort());
   }
+  function toggleGrade(g) {
+    setGradeSel((prev) => prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]);
+  }
+  const GradeGrid = (
+    <Field label="Applicable grades">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[11px] text-slate-400">{gradeSel.length} selected — a student is only billed the school fee for their grade</span>
+        <button type="button" className="text-[11px] font-medium text-slate-400" onClick={() => setGradeSel([])}>None</button>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        {GRADES.map((g) => {
+          const on = gradeSel.includes(g);
+          return (
+            <label key={g} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-sky-300 bg-sky-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
+              <input type="checkbox" checked={on} onChange={() => toggleGrade(g)} className="rounded border-slate-300 text-sky-600" />
+              <span className="truncate">{g}</span>
+            </label>
+          );
+        })}
+      </div>
+    </Field>
+  );
   const MonthGrid = (
     <Field label="Months this fee applies to">
       <div className="flex items-center justify-between mb-1.5">
@@ -5328,26 +5381,42 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     const targetSet = new Set(billedAnchors);
     const toAdd = billedAnchors.filter((a) => !currentAnchorSet.has(a));
     const toRemove = existingInstallmentAnchors.filter((a) => !targetSet.has(a));
-    const dirty = toAdd.length > 0 || toRemove.length > 0;
+    const curGrades = (existingSchedule.applicableGrades || []).slice().sort().join("|");
+    const nextGrades = gradeSel.slice().sort().join("|");
+    const gradesDirty = isSchoolFee && nextGrades !== curGrades;
+    const droppedGrades = isSchoolFee ? (existingSchedule.applicableGrades || []).filter((g) => !gradeSel.includes(g)) : [];
+    const dirty = toAdd.length > 0 || toRemove.length > 0 || gradesDirty;
     function saveMonths() {
       if (billedAnchors.length === 0) { toast("Select at least one month.", "error"); return; }
+      if (gradesDirty && gradeSel.length === 0) { toast("Select at least one grade this fee applies to.", "error"); return; }
       run(async () => {
-        const res = await data.updateFeeScheduleMonths(existingSchedule.id, billedAnchors);
-        toast(res.ok ? "Billed months updated." : (res.message || "Couldn't update months."), res.ok ? "success" : "error");
-        if (res.ok) onClose();
-      }, { key: `edit-fee-months:${existingSchedule.id}` });
+        if (gradesDirty) {
+          const gr = await data.updateFeeScheduleGrades(existingSchedule.id, gradeSel);
+          if (!gr.ok) { toast(gr.message || "Couldn't update grades.", "error"); return; }
+        }
+        if (toAdd.length > 0 || toRemove.length > 0) {
+          const res = await data.updateFeeScheduleMonths(existingSchedule.id, billedAnchors);
+          if (!res.ok) { toast(res.message || "Couldn't update months.", "error"); return; }
+        }
+        toast("Fee updated.", "success");
+        onClose();
+      }, { key: `edit-fee-schedule:${existingSchedule.id}` });
     }
     return (
       <Modal open={open} onClose={onClose} title={`${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
         <div>
-          <p className="text-xs text-slate-400 mb-3">Rolled out for this year — {rows.length} monthly installment{rows.length === 1 ? "" : "s"} at {formatMoney(existingSchedule.unitAmount)}/month. Add or remove months below; a month with a recorded payment or adjustment can't be removed until those are voided. Per-student corrections still go through an adjustment on that student's balance.</p>
+          <p className="text-xs text-slate-400 mb-3">Rolled out for this year — {rows.length} monthly installment{rows.length === 1 ? "" : "s"} at {formatMoney(existingSchedule.unitAmount)}/month{isSchoolFee && existingSchedule.applicableGrades ? ` for ${existingSchedule.applicableGrades.join(", ")}` : ""}. Add or remove months/grades below; a month or grade with a recorded payment or adjustment can't be removed until those are voided. Per-student corrections still go through an adjustment on that student's balance.</p>
+          {isSchoolFee && GradeGrid}
+          {isSchoolFee && droppedGrades.length > 0 && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-1 mb-2">Removing grades: {droppedGrades.join(", ")} — those students' unpaid obligations for this fee will be deleted (blocked if any payment/adjustment exists).</p>
+          )}
           {MonthGrid}
           {toRemove.length > 0 && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-1">Removing: {toRemove.map((a) => monthLabel(a.slice(0, 7))).join(", ")} — their obligations will be deleted (blocked if any payment/adjustment exists).</p>
           )}
           <div className="flex justify-end gap-2 pt-3">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
-            <PrimaryButton type="button" onClick={saveMonths} icon={Check} disabled={!dirty} loading={busy} loadingText="Saving…">Save Months</PrimaryButton>
+            <PrimaryButton type="button" onClick={saveMonths} icon={Check} disabled={!dirty} loading={busy} loadingText="Saving…">Save Changes</PrimaryButton>
           </div>
         </div>
       </Modal>
@@ -5358,9 +5427,11 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     e && e.preventDefault && e.preventDefault();
     if (!unitAmount || Number(unitAmount) <= 0) { toast("Please enter the monthly amount.", "error"); return; }
     if (billedAnchors.length === 0) { toast("Select at least one month this fee applies to.", "error"); return; }
+    if (isSchoolFee && gradeSel.length === 0) { toast("Select at least one grade this school fee applies to.", "error"); return; }
     const billedMonths = billedAnchors.length === monthAnchors.length ? null : billedAnchors.slice().sort();
+    const applicableGrades = isSchoolFee ? gradeSel.slice().sort() : null;
     run(async () => {
-      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, { unitAmount: Number(unitAmount), billedMonths }, auth.realUser.id);
+      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, { unitAmount: Number(unitAmount), billedMonths, applicableGrades }, auth.realUser.id);
       toast(res.message || "Fee type rolled out for this year.", res.ok ? "success" : "error");
       if (res.ok) onClose();
     }, { key: `rollout-fee-type:${feeType.id}:${currentYear.id}` });
@@ -5375,6 +5446,7 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
         <Field label={`Amount per month (${CURRENCY})`} required>
           <input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} />
         </Field>
+        {isSchoolFee && GradeGrid}
         {monthAnchors.length > 0 && MonthGrid}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
@@ -5611,6 +5683,14 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     .map((id) => candidates.find((c) => c.id === id))
     .filter((stu) => stu && feeGroupsFor(stu).length === 0);
 
+  // BLOCKER 7 §7: selected students whose grade is covered by more than one active school fee —
+  // an ambiguous config we must not sum. Block recording for them and name the conflicting fees.
+  const conflictStudents = selectedIds
+    .map((id) => candidates.find((c) => c.id === id))
+    .filter(Boolean)
+    .map((stu) => ({ stu, fees: data.schoolFeeConflictForStudent(stu) }))
+    .filter((x) => x.fees.length > 1);
+
   function buildLines() {
     const lines = [];
     selectedIds.forEach((studentId) => {
@@ -5636,6 +5716,11 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!finalMethod) { toast("Please choose or enter a payment method.", "error"); return; }
+    if (conflictStudents.length > 0) {
+      const c = conflictStudents[0];
+      toast(`${data.studentFullName(c.stu)}'s grade is set up under more than one school fee (${c.fees.map((f) => f.name).join(", ")}). Fix this in Fee Settings before recording a payment.`, "error");
+      return;
+    }
     const lines = buildLines();
     if (lines.length === 0) {
       // §15: be explicit about the missing configuration rather than a vague "enter an amount".
@@ -5669,6 +5754,12 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     <>
       <Modal open={open && !receiptPages} onClose={closeAll} wide title={candidates.length > 1 ? "Record Family Payment" : `Record Payment — ${data.studentFullName(candidates[0])}`}>
         <div>
+          {conflictStudents.length > 0 && (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+              <strong>Fee configuration conflict.</strong> {conflictStudents.map((c) => `${data.studentFullName(c.stu)} (${c.stu.grade}) is set up under ${c.fees.map((f) => f.name).join(" + ")}`).join("; ")}.
+              A grade must have exactly one school fee — fix this in Fee Settings before recording a payment.
+            </div>
+          )}
           {candidates.length > 1 && (
             <Field label="Children included in this payment">
               <CheckboxList
@@ -5774,7 +5865,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
             <p className="text-sm font-semibold text-slate-700">Total: {formatMoney(previewTotal)}</p>
             <div className="flex gap-2">
               <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-              <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Recording…">Record Payment</PrimaryButton>
+              <PrimaryButton type="button" onClick={submit} icon={Check} disabled={conflictStudents.length > 0} loading={busy} loadingText="Recording…">Record Payment</PrimaryButton>
             </div>
           </div>
         </div>
