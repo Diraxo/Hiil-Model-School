@@ -2,6 +2,7 @@ import React, { useRef, useState } from "react";
 import { Printer } from "lucide-react";
 import { Logo, Modal } from "./ui";
 import cashierSignatureSrc from "../assets/cashier-signature.png";
+import schoolStampSrc from "../assets/school-stamp.png";
 import { downloadElementAsPdf } from "../utils/pdf";
 import { formatMoney } from "../utils/constants";
 
@@ -15,6 +16,22 @@ function CashierSignatureImage({ height = 44, className = "" }) {
       alt="Cashier's signature"
       className={`inline-block align-bottom object-contain pointer-events-none ${className}`}
       style={{ height }}
+    />
+  );
+}
+
+// The school's real round ink seal (src/assets/school-stamp.png — background removed, blue kept
+// exactly as stamped). Placed like an actual rubber-stamp impression on the physical pad: sitting
+// over the footer near the cashier's signature, slightly rotated, a touch translucent so any text
+// underneath still reads. Applied to every voucher, paid or not, the way the school stamps its
+// whole receipt pad.
+function SchoolStamp({ size = 132, className = "" }) {
+  return (
+    <img
+      src={schoolStampSrc}
+      alt="Hiil Model School official seal"
+      className={`pointer-events-none select-none ${className}`}
+      style={{ width: size, height: "auto", opacity: 0.82, transform: "rotate(-8deg)", mixBlendMode: "multiply" }}
     />
   );
 }
@@ -74,7 +91,10 @@ function CashReceiptVoucher({
   const isKnownMethod = VOUCHER_METHODS.slice(0, -1).some((m) => m.key === method);
 
   return (
-    <div className="bg-[#fdf9f0] text-slate-900 font-serif border border-slate-900 p-5 text-[13px] leading-tight max-w-[720px] mx-auto">
+    <div className="relative bg-[#fdf9f0] text-slate-900 font-serif border border-slate-900 p-5 text-[13px] leading-tight max-w-[720px] mx-auto">
+      {/* Official school seal — stamped in the lower-right like on the physical pad, just clear of
+          the cashier's signature so both stay legible */}
+      <SchoolStamp size={128} className="absolute right-[8.5rem] bottom-2 z-10" />
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <Logo size={64} />
