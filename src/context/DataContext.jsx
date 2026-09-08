@@ -251,17 +251,27 @@ function feeRowsForStudentIn(dbLike, student, feeType, academicYearId) {
   const schedule = scheduleForFeeType(dbLike, feeType.id, academicYearId);
   if (!schedule) return { schedule: null, installments: [], rows: [], currentIndex: -1 };
   const installments = installmentsForSchedule(dbLike, schedule.id);
-  const today = todayKeyStr();
-  const idx = installments.findIndex((inst) => inst.dueDate && inst.dueDate >= today);
-  const currentIndex = idx === -1 ? installments.length - 1 : idx;
-  const rows = installments.map((inst, i) => {
+  const todayMonth = todayKeyStr().slice(0, 7); // YYYY-MM
+  const baseRows = installments.map((inst) => {
     const ob = obligationForInstallment(dbLike, student.id, inst.id);
     if (!ob) return null;
     const remaining = netOwedForObligation(dbLike, ob);
     const paid = ob.amountDue - remaining;
     const status = remaining <= 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID";
-    return { installment: inst, amountDue: ob.amountDue, paid, remaining, status, isCurrent: i === currentIndex, obligationId: ob.id };
+    const instMonth = (inst.periodMonth || inst.dueDate || "").slice(0, 7);
+    return { installment: inst, amountDue: ob.amountDue, paid, remaining, status, obligationId: ob.id, instMonth };
   }).filter(Boolean);
+  // BLOCKER 6: "current" is the row for the current *calendar month* — a monthly fee's period is
+  // the whole month, not "any date before the 1st". If the student has no obligation for the
+  // current month (mid-year joiner, or the academic year has ended) fall back to the first future
+  // row, else the last. currentIndex indexes into the returned `rows`, so callers that slice
+  // `rows` by it (dueStatusForFeeType) stay correct for mid-year joiners too.
+  let currentIndex = baseRows.findIndex((r) => r.instMonth === todayMonth);
+  if (currentIndex === -1) {
+    const firstFuture = baseRows.findIndex((r) => r.instMonth > todayMonth);
+    currentIndex = firstFuture === -1 ? baseRows.length - 1 : firstFuture;
+  }
+  const rows = baseRows.map((r, i) => ({ ...r, isCurrent: i === currentIndex }));
   return { schedule, installments, rows, currentIndex };
 }
 // Resolves an allocation to its human-readable fee label ("School Fee September 2026", "Bus Fee –
@@ -399,6 +409,19 @@ function financeErrorMessage(e, fallback) {
     return "That file is too large — the maximum receipt size is 20 MB.";
   }
   return msg || fallback || "Something went wrong with that finance action.";
+}
+
+// BLOCKER 6: the date to anchor fee-obligation materialization at. Obligations begin at the later
+// of the academic year's start and the effective date (enrollment / rollout day), TRUNCATED to
+// the 1st of that month — so a fee rolled out on the 8th while the current month is billed still
+// creates that whole month's obligation (installments are due on the 1st), and a genuinely
+// mid-year rollout in November doesn't retroactively bill September/October. Never bills a month
+// before the academic year starts.
+function feeMaterializeAnchor(year, effectiveDateStr) {
+  const eff = effectiveDateStr || todayKeyStr();
+  const start = year && year.yearStart ? year.yearStart : eff;
+  const later = eff > start ? eff : start;
+  return `${later.slice(0, 7)}-01`;
 }
 
 // Whole months from one "YYYY-MM-DD" to another, inclusive of both endpoint months
@@ -655,9 +678,9 @@ function DataProvider({ children }) {
     return teacherAssignmentsRaw.map((ta) => ({ id: ta.id, teacherId: ta.teacherId, subject: nameById.get(ta.subjectId) || "", classId: ta.classId }));
   }, [teacherAssignmentsRaw, subjects]);
   const staffRaw = useMemo(() => {
-    const byId = new Map(staffDirectoryRaw.map((s) => [s.id, s]));
-    if (myStaffRaw) byId.set(myStaffRaw.id, { ...byId.get(myStaffRaw.id), ...myStaffRaw });
-    staffFullRaw.forEach((s) => byId.set(s.id, { ...byId.get(s.id), ...s }));
+    const byId = new Map(staffDirectoryRaw.filter((s) => s && s.id).map((s) => [s.id, s]));
+    if (myStaffRaw && myStaffRaw.id) byId.set(myStaffRaw.id, { ...byId.get(myStaffRaw.id), ...myStaffRaw });
+    staffFullRaw.forEach((s) => { if (s && s.id) byId.set(s.id, { ...byId.get(s.id), ...s }); });
     return [...byId.values()];
   }, [staffDirectoryRaw, staffFullRaw, myStaffRaw]);
   const payrollPaymentsRaw = useMemo(() => {
@@ -1335,10 +1358,15 @@ function DataProvider({ children }) {
     // Same 4-field shape as before ({paid, remaining, amountOwed, status}) — now sourced from
     // materialized obligations/allocations instead of scanning db.payments, and generalized to
     // every fee category (not just TUITION) via the shared feeRowsForStudentIn engine.
+    // BLOCKER 6: "no applicable fee obligation" is its own status ("NO_FEE"), never collapsed to
+    // "PAID" — a student the school has not billed anything has not "paid in full", there is simply
+    // nothing to pay. `!schedule` = the fee type was never rolled out for this year; `rows.length
+    // === 0` = it was rolled out but this student has no obligation for any of its installments
+    // (e.g. enrolled after the last one). Both surface as "No fee configured".
     function balanceFor(student, feeType, academicYearId) {
       const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
       const { schedule, rows } = feeRowsForStudentIn(db, student, feeType, yearId);
-      if (!schedule) return { paid: 0, remaining: 0, amountOwed: 0, status: "PAID" };
+      if (!schedule || rows.length === 0) return { paid: 0, remaining: 0, amountOwed: 0, status: "NO_FEE" };
       let paidUnitsSum = 0, amountOwed = 0;
       rows.forEach((r) => {
         amountOwed += r.remaining;
@@ -1352,8 +1380,13 @@ function DataProvider({ children }) {
       const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
       const balances = feeTypesForStudent(student, yearId).map((ft) => ({ feeType: feeTypeYearView(db, ft, yearId), ...balanceFor(student, ft, yearId) }));
       const totalOwed = balances.reduce((sum, b) => sum + b.amountOwed, 0);
-      const worstStatus = balances.some((b) => b.status === "UNPAID") ? "UNPAID" : balances.some((b) => b.status === "PARTIAL") ? "PARTIAL" : "PAID";
-      return { balances, totalOwed, status: balances.length ? worstStatus : "PAID" };
+      // BLOCKER 6: only count fee types that actually apply to this student when picking the worst
+      // status. If none apply (or the whole list is NO_FEE) the student's status is NO_FEE, not PAID.
+      const applicable = balances.filter((b) => b.status !== "NO_FEE");
+      const worstStatus = applicable.some((b) => b.status === "UNPAID") ? "UNPAID"
+        : applicable.some((b) => b.status === "PARTIAL") ? "PARTIAL"
+        : applicable.length ? "PAID" : "NO_FEE";
+      return { balances, totalOwed, status: worstStatus };
     }
     // Per-installment paid/partial/unpaid breakdown for the student's Tuition fee type this year —
     // same {feeType, rows, currentIndex} shape as before, now backed by feeRowsForStudentIn.
@@ -1363,6 +1396,19 @@ function DataProvider({ children }) {
       if (!feeType) return { feeType: null, rows: [], currentIndex: -1 };
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
       return { feeType: feeTypeYearView(db, feeType, yearId), rows, currentIndex };
+    }
+    // BLOCKER 6 §14: generic per-installment view for ANY applicable fee type (not just TUITION /
+    // TRANSPORT). Returns [] when the type isn't rolled out or the student has no obligation for it.
+    // Rows are normalized to { installmentId, label, dueDate, amountDue, paid, remaining, status,
+    // isCurrent } so one grid renders every fee category.
+    function feeInstallmentRowsForStudent(student, feeType, academicYearId) {
+      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      return {
+        feeType: feeTypeYearView(db, feeType, yearId),
+        rows: rows.map((r) => ({ installmentId: r.installment.id, label: r.installment.label, dueDate: r.installment.dueDate, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId })),
+        currentIndex,
+      };
     }
 
     function busFeeTypeForStudent(student, academicYearId) {
@@ -1388,6 +1434,8 @@ function DataProvider({ children }) {
     function dueStatusForFeeType(student, feeType, academicYearId) {
       const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      // BLOCKER 6: no obligations for this fee type/year → nothing is configured for this student.
+      if (rows.length === 0) return { owed: 0, paid: 0, remaining: 0, status: "NO_FEE" };
       let owed = 0, paid = 0;
       rows.slice(0, currentIndex + 1).forEach((r) => { owed += r.amountDue; paid += r.paid; });
       const remaining = Math.max(0, owed - paid);
@@ -1400,17 +1448,20 @@ function DataProvider({ children }) {
     // prepaid the rest of the school year".
     function dueStatusForStudent(student, academicYearId) {
       const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
-      let tuitionRemaining = 0, busRemaining = 0, otherRemaining = 0, totalPaid = 0, any = false;
+      let tuitionRemaining = 0, busRemaining = 0, otherRemaining = 0, totalPaid = 0, anyApplicable = false;
       feeTypesForStudent(student, yearId).forEach((ft) => {
         const dstat = dueStatusForFeeType(student, ft, yearId);
-        any = true;
+        // BLOCKER 6: a rolled-out fee type this student has no obligation for doesn't make them
+        // "unpaid" or "paid" — it simply doesn't apply to them.
+        if (dstat.status === "NO_FEE") return;
+        anyApplicable = true;
         if (ft.category === "TUITION") tuitionRemaining += dstat.remaining;
         else if (ft.category === "TRANSPORT") busRemaining += dstat.remaining;
         else otherRemaining += dstat.remaining;
         totalPaid += dstat.paid;
       });
       const totalRemaining = tuitionRemaining + busRemaining + otherRemaining;
-      const status = !any || totalRemaining <= 0 ? "PAID" : totalPaid > 0 ? "PARTIAL" : "UNPAID";
+      const status = !anyApplicable ? "NO_FEE" : totalRemaining <= 0 ? "PAID" : totalPaid > 0 ? "PARTIAL" : "UNPAID";
       return { tuitionRemaining, busRemaining, otherRemaining, totalRemaining, status };
     }
     // Locked Principle #7: prior-year balance stays visibly separate from current-year, never
@@ -1423,6 +1474,44 @@ function DataProvider({ children }) {
     }
     function describePayment(payment) {
       return describePaymentAllocations(db, payment);
+    }
+    // BLOCKER 6 §34: monthly financial report. Collections are summed from ACTUAL non-voided
+    // payment allocations, resolved allocation -> obligation -> installment.periodMonth and
+    // installment -> schedule -> feeType.category — never from expected obligations, never counting
+    // VOIDED payments. One row per calendar month that saw a collection, plus per-month outstanding
+    // and paid/partial/unpaid student counts against what's due through that month.
+    function monthlyFinanceReport(academicYearId) {
+      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const scheduleIds = new Set(db.feeSchedules.filter((s) => s.academicYearId === yearId).map((s) => s.id));
+      const instById = new Map(db.feeInstallments.map((i) => [i.id, i]));
+      const schedById = new Map(db.feeSchedules.map((s) => [s.id, s]));
+      const feeTypeById = new Map(db.feeTypes.map((f) => [f.id, f]));
+      const obById = new Map(db.studentFeeObligations.map((o) => [o.id, o]));
+      const paymentById = new Map(db.payments.map((p) => [p.id, p]));
+      const buckets = new Map(); // monthKey -> { school, bus, other, total }
+      db.paymentAllocations.forEach((a) => {
+        const p = paymentById.get(a.paymentId);
+        if (!p || p.status === "VOIDED") return;
+        const ob = obById.get(a.obligationId);
+        const inst = ob && instById.get(ob.feeInstallmentId);
+        if (!inst || !scheduleIds.has(inst.feeScheduleId)) return;
+        const sched = schedById.get(inst.feeScheduleId);
+        const ft = sched && feeTypeById.get(sched.feeTypeId);
+        const monthKey = (inst.periodMonth || inst.dueDate || "").slice(0, 7);
+        if (!monthKey) return;
+        if (!buckets.has(monthKey)) buckets.set(monthKey, { school: 0, bus: 0, other: 0, total: 0 });
+        const b = buckets.get(monthKey);
+        const cat = ft ? ft.category : "TUITION";
+        if (cat === "TRANSPORT") b.bus += a.amount;
+        else if (cat === "TUITION") b.school += a.amount;
+        else b.other += a.amount;
+        b.total += a.amount;
+      });
+      const rows = [...buckets.entries()]
+        .map(([monthKey, v]) => ({ monthKey, ...v }))
+        .sort((x, y) => x.monthKey.localeCompare(y.monthKey));
+      const totals = rows.reduce((acc, r) => ({ school: acc.school + r.school, bus: acc.bus + r.bus, other: acc.other + r.other, total: acc.total + r.total }), { school: 0, bus: 0, other: 0, total: 0 });
+      return { yearId, rows, totals };
     }
     // Every payments row that funds at least one obligation belonging to any of the given
     // students — a payment no longer carries studentId directly (one receipt can span several
@@ -1564,7 +1653,7 @@ function DataProvider({ children }) {
       studentIdentity, staffIdentity, userIdentity, leaveSubjectIdentity, announcementSenderLabel,
       parentsOfClass, parentsOfStudent,
       feeTypesForStudent, balanceFor, studentPaymentSummary, installmentStatusForStudent, recordPaymentBatch, periodSchedule, availableSubjectsForSlot,
-      busFeeTypeForStudent, busScheduleForStudent, describePayment, familyGroups, dueStatusForFeeType, dueStatusForStudent, priorYearsOutstanding,
+      busFeeTypeForStudent, busScheduleForStudent, describePayment, familyGroups, dueStatusForFeeType, dueStatusForStudent, priorYearsOutstanding, monthlyFinanceReport, feeInstallmentRowsForStudent,
       paymentsForStudents, paymentMethodName,
       classifyAttendanceDay, classifySchoolDay, attendanceDateBounds, closureForDate, classifyStaffAttendanceDay, attendanceRosterForClass,
 
@@ -1601,7 +1690,7 @@ function DataProvider({ children }) {
           await Promise.all([refetchStudents(), refetchEnrollments()]);
           if (year) {
             try {
-              await this._materializeObligationsForStudent(student, year.id, student.admissionDate || todayKeyStr(), "ENROLLMENT");
+              await this._materializeObligationsForStudent(student, year.id, feeMaterializeAnchor(year, student.admissionDate || todayKeyStr()), "ENROLLMENT");
               await refetchFees();
             } catch (obErr) {
               console.error("Student created, but fee obligations failed to materialize", obErr);
@@ -1636,7 +1725,7 @@ function DataProvider({ children }) {
             const year = currentAcademicYear(academicYears);
             if (year) {
               try {
-                await this._materializeObligationsForStudent(updated, year.id, todayKeyStr(), "BUS_OPT_IN");
+                await this._materializeObligationsForStudent(updated, year.id, feeMaterializeAnchor(year, todayKeyStr()), "BUS_OPT_IN");
                 await refetchFees();
               } catch (obErr) {
                 console.error("Student updated, but bus fee obligations failed to materialize", obErr);
@@ -3183,35 +3272,43 @@ function DataProvider({ children }) {
         try {
           const ft = db.feeTypes.find((f) => f.id === feeTypeId);
           if (!ft || ft.archivedAt) return { ok: false, message: "Fee type not found or archived." };
+          const existingYr = db.academicYears.find((y) => y.id === academicYearId);
+          const anchor = feeMaterializeAnchor(existingYr, todayKeyStr());
           const existing = db.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId);
           if (existing) {
             // Already rolled out — make sure months + obligations are fully materialized (safe to
             // re-run) but never rewrite pricing.
             await feeService.generateMonthlyInstallments(existing.id);
-            await feeService.materializeForSchedule(existing.id, todayKeyStr(), "YEAR_ROLLOUT");
+            await feeService.materializeForSchedule(existing.id, anchor, "YEAR_ROLLOUT");
             await refetchFees();
             return { ok: true, message: `${ft.name} was already rolled out for this year — monthly installments and obligations were re-checked, pricing was left unchanged. Edit an individual month below, or add an adjustment for an already-billed student.` };
           }
           const opts = _opts || {};
-          // Monthly model: one installment per calendar month of the academic year. unitMonths is
-          // always 1; unitsPerYear is the month count (year_start..year_end inclusive) so the
-          // "N of M months paid" display in balanceFor stays correct.
-          const yr = db.academicYears.find((y) => y.id === academicYearId);
+          // Monthly model: one installment per BILLED calendar month of the academic year.
+          // unitMonths is always 1; unitsPerYear is the billed-month count so the "N of M months
+          // paid" display in balanceFor stays correct. BLOCKER 6: opts.billedMonths (array of
+          // 'YYYY-MM-01' anchors) restricts which months are billed; omitted/empty = every month.
+          const yr = existingYr;
           const monthsInYear = (yr && yr.yearStart && yr.yearEnd)
             ? monthsBetweenInclusive(yr.yearStart, yr.yearEnd)
             : 12;
+          const billedMonths = Array.isArray(opts.billedMonths) && opts.billedMonths.length && opts.billedMonths.length < monthsInYear
+            ? opts.billedMonths.slice().sort()
+            : null;
+          const expectedCount = billedMonths ? billedMonths.length : monthsInYear;
           const schedule = await feeService.createSchedule({
             feeTypeId, academicYearId,
             unitAmount: Number(opts.unitAmount) || 0,
             unitMonths: 1,
-            unitsPerYear: monthsInYear,
+            unitsPerYear: expectedCount,
+            billedMonths,
             createdBy: actorId,
           });
           const generated = await feeService.generateMonthlyInstallments(schedule.id);
-          if (generated.length && generated.length !== monthsInYear) {
+          if (generated.length && generated.length !== expectedCount) {
             await feeService.updateSchedule(schedule.id, { unitsPerYear: generated.length });
           }
-          await feeService.materializeForSchedule(schedule.id, todayKeyStr(), "YEAR_ROLLOUT");
+          await feeService.materializeForSchedule(schedule.id, anchor, "YEAR_ROLLOUT");
           await refetchFees();
           {
             const yr2 = (db.academicYears || []).find((y) => y.id === academicYearId);
@@ -3221,6 +3318,24 @@ function DataProvider({ children }) {
         } catch (e) {
           console.error("Failed to roll out fee type", e);
           return { ok: false, message: financeErrorMessage(e, "Couldn't roll out this fee type.") };
+        }
+      },
+      // BLOCKER 6 §11/§41: change which months an already-rolled-out fee is billed for. Adds months
+      // (generate + materialize) and drops months only when no non-voided payment or adjustment
+      // exists against them — the server RPC enforces this and rolls the whole change back otherwise.
+      async updateFeeScheduleMonths(scheduleId, anchors) {
+        try {
+          const months = Array.isArray(anchors) ? anchors.slice().sort() : [];
+          if (months.length === 0) return { ok: false, message: "Select at least one month for this fee." };
+          const updated = await feeService.setBilledMonths(scheduleId, months);
+          await refetchFees();
+          const sched = db.feeSchedules.find((s) => s.id === scheduleId);
+          const ft = sched && db.feeTypes.find((f) => f.id === sched.feeTypeId);
+          if (ft) await logActivityFeed(`${ft.name} billed months were updated (${months.length} month${months.length === 1 ? "" : "s"}).`);
+          return { ok: true, schedule: updated };
+        } catch (e) {
+          console.error("Failed to update fee schedule months", e);
+          return { ok: false, message: financeErrorMessage(e, "Couldn't update the billed months.") };
         }
       },
       // A single installment's amount/dueDate/label stays editable only until the first obligation

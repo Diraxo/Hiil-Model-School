@@ -61,7 +61,9 @@ function usePresenceHeartbeat(userId) {
     }
     const channel = supabase.channel("presence:app", { config: { presence: { key: userId } } });
     const sync = () => presenceStore.set(readOnlineIds(channel));
-    const stamp = () => { supabase.rpc("touch_presence").catch(() => {}); };
+    // supabase.rpc(...) returns a PostgREST builder that is thenable but has no `.catch` — use the
+    // two-arg `.then` so a failed heartbeat can't surface as an unhandled error on every page.
+    const stamp = () => { supabase.rpc("touch_presence").then(undefined, () => {}); };
     const assert = () => {
       channel.track({ user_id: userId, online_at: new Date().toISOString() }).catch(() => {});
     };

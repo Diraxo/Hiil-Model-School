@@ -434,6 +434,8 @@ function DayStatusBanner({ dateKey, todayKey, counts }) {
 function PaymentStatusBadge({ status }) {
   if (status === "PAID") return <Badge tone="green">Paid in full</Badge>;
   if (status === "PARTIAL") return <Badge tone="amber">Partially paid</Badge>;
+  // BLOCKER 6: "no fee configured" must never read as "paid in full".
+  if (status === "NO_FEE") return <Badge tone="slate">No fee configured</Badge>;
   return <Badge tone="red">Unpaid</Badge>;
 }
 

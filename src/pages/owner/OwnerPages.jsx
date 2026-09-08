@@ -151,7 +151,7 @@ function AccountsPage() {
   const owner = db.users.find((u) => u.role === ROLES.OWNER);
   const directors = groupUsers(db.users.filter((u) => u.role === ROLES.ADMIN || u.role === ROLES.FINANCE))[0]?.items || [];
   // "View as" is staff-only — parents are never impersonable, so they're excluded from this list entirely.
-  const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && u.name.toLowerCase().includes(q.toLowerCase()));
+  const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && (u.name || "").toLowerCase().includes(q.toLowerCase()));
   const staffAccountGroups = groupUsers(staffAccounts);
 
   async function applyStatusChange() {
@@ -338,7 +338,7 @@ function StaffPage({ onOpen }) {
   const [endEmploymentTarget, setEndEmploymentTarget] = useState(null);
   const { isBusy, run } = useMutationGuard();
 
-  const filtered = db.staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
+  const filtered = db.staff.filter((s) => (s.name || "").toLowerCase().includes(q.toLowerCase()));
   const groups = groupStaff(filtered);
   const canAddAny = canManageDirectors(auth.realUser) || canManageTeachers(auth.realUser) || canManageOtherStaff(auth.realUser);
 
@@ -1055,7 +1055,7 @@ function PayrollPage({ onOpen }) {
   withStatus.forEach((w) => { counts[w.thisMonthStatus] = (counts[w.thisMonthStatus] || 0) + 1; });
 
   const byStatus = statusFilter === "ALL" ? withStatus : withStatus.filter((w) => w.thisMonthStatus === statusFilter);
-  const filtered = byStatus.filter((w) => w.staff.name.toLowerCase().includes(q.toLowerCase())).map((w) => w.staff);
+  const filtered = byStatus.filter((w) => (w.staff.name || "").toLowerCase().includes(q.toLowerCase())).map((w) => w.staff);
   const groups = groupStaff(filtered);
   const totalNetPay = db.staff.reduce((sum, s) => sum + (data.staffSalarySummary(s.id)?.outstanding || 0), 0);
 

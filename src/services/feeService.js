@@ -47,6 +47,9 @@ function mapSchedule(r) {
     unitAmount: num(r.unit_amount) || 0,
     unitMonths: num(r.unit_months) || 1,
     unitsPerYear: r.units_per_year || 1,
+    // BLOCKER 6: null = every month of the academic year; otherwise the 'YYYY-MM-DD' month
+    // anchors this fee is billed for.
+    billedMonths: Array.isArray(r.billed_months) && r.billed_months.length ? r.billed_months.map((d) => String(d).slice(0, 10)) : null,
     createdAt: ts(r.created_at),
     updatedAt: ts(r.updated_at),
     createdBy: r.created_by || null,
@@ -160,13 +163,14 @@ export function createFeeService() {
     },
 
     /* ---------- fee_schedules + monthly installments ---------- */
-    async createSchedule({ feeTypeId, academicYearId, unitAmount, unitMonths, unitsPerYear, createdBy }) {
+    async createSchedule({ feeTypeId, academicYearId, unitAmount, unitMonths, unitsPerYear, billedMonths, createdBy }) {
       const { data, error } = await supabase.from("fee_schedules").insert({
         fee_type_id: feeTypeId,
         academic_year_id: academicYearId,
         unit_amount: Number(unitAmount) || 0,
         unit_months: Number(unitMonths) || 1,
         units_per_year: Number(unitsPerYear) || 1,
+        billed_months: Array.isArray(billedMonths) && billedMonths.length ? billedMonths : null,
         created_by: createdBy || null,
       }).select().single();
       if (error) throw error;
@@ -185,6 +189,15 @@ export function createFeeService() {
       const { data, error } = await supabase.rpc("generate_monthly_fee_installments", { p_fee_schedule_id: scheduleId });
       if (error) throw error;
       return (data || []).map(mapInstallment);
+    },
+    // BLOCKER 6: change which months a rolled-out fee is billed for. `months` = ['YYYY-MM-01', ...].
+    async setBilledMonths(scheduleId, months) {
+      const { data, error } = await supabase.rpc("set_fee_schedule_billed_months", {
+        p_fee_schedule_id: scheduleId,
+        p_months: Array.isArray(months) ? months : [],
+      });
+      if (error) throw error;
+      return mapSchedule(Array.isArray(data) ? data[0] : data);
     },
     async updateInstallment(id, patch) {
       const row = {};

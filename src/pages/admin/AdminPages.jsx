@@ -1436,10 +1436,10 @@ function ParentsPage({ onOpen, onMessage }) {
                       {canPayments && (
                         <div className="flex items-center justify-between">
                           {paymentStatusBadge(summary.status)}
-                          {summary.status !== "PAID" ? (
+                          {["UNPAID", "PARTIAL"].includes(summary.status) ? (
                             <button onClick={() => setRecordFor(c)} className="text-[11px] text-sky-600 font-medium">Record Payment</button>
                           ) : (
-                            <span className="text-[11px] text-slate-300">Up to date</span>
+                            <span className="text-[11px] text-slate-300">{summary.status === "NO_FEE" ? "No fee configured" : "Up to date"}</span>
                           )}
                         </div>
                       )}
@@ -4836,6 +4836,8 @@ function CreateAnnouncementModal({ open, onClose, role }) {
 function paymentStatusBadge(status) {
   if (status === "PAID") return <Badge tone="green">Paid in full</Badge>;
   if (status === "PARTIAL") return <Badge tone="amber">Partially paid</Badge>;
+  // BLOCKER 6: distinct from "Unpaid" — there is no fee obligation to pay.
+  if (status === "NO_FEE") return <Badge tone="slate">No fee configured</Badge>;
   return <Badge tone="red">Unpaid</Badge>;
 }
 
@@ -4846,15 +4848,19 @@ function paymentStatusBadge(status) {
 // family that's caught up on what's currently due shows Paid instead of Unpaid just because they
 // haven't prepaid installments/months that aren't due yet.
 function familyFinancials(children, data) {
-  let tuitionOwed = 0, busOwed = 0, worst = "PAID";
+  let tuitionOwed = 0, busOwed = 0, worst = null;
   children.forEach((c) => {
     const due = data.dueStatusForStudent(c);
     tuitionOwed += due.tuitionRemaining;
     busOwed += due.busRemaining + due.otherRemaining;
+    // BLOCKER 6: rank UNPAID > PARTIAL > PAID > NO_FEE. A family where no child has any fee
+    // configured is NO_FEE, not PAID.
     if (due.status === "UNPAID") worst = "UNPAID";
     else if (due.status === "PARTIAL" && worst !== "UNPAID") worst = "PARTIAL";
+    else if (due.status === "PAID" && worst !== "UNPAID" && worst !== "PARTIAL") worst = "PAID";
+    else if (!worst) worst = "NO_FEE";
   });
-  return { tuitionOwed, busOwed, totalOwed: tuitionOwed + busOwed, status: worst };
+  return { tuitionOwed, busOwed, totalOwed: tuitionOwed + busOwed, status: worst || "NO_FEE" };
 }
 
 // Groups a family's payments into receipt rows for the expanded family card's Payment History —
@@ -4875,6 +4881,9 @@ const PAYMENT_SECTIONS = [
   { key: "UNPAID", label: "Unpaid", tone: "red" },
   { key: "PARTIAL", label: "Partial", tone: "amber" },
   { key: "PAID", label: "Paid", tone: "green" },
+  // BLOCKER 6: families whose children have no fee obligation yet are shown here, not hidden and
+  // not miscounted as "Paid".
+  { key: "NO_FEE", label: "No fee configured", tone: "slate" },
 ];
 
 function PaymentsPage({ onOpenStudent }) {
@@ -4887,6 +4896,8 @@ function PaymentsPage({ onOpenStudent }) {
   const [payFamily, setPayFamily] = useState(null);
   const [reminderTarget, setReminderTarget] = useState(null); // single student, or "ALL" for bulk
   const [receiptPaymentId, setReceiptPaymentId] = useState(null);
+  const [showMonthly, setShowMonthly] = useState(false);
+  const monthly = data.monthlyFinanceReport();
 
   const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
   const families = data.familyGroups().map((fam) => ({ ...fam, financials: familyFinancials(fam.children, data) }));
@@ -4903,11 +4914,13 @@ function PaymentsPage({ onOpenStudent }) {
 
   const totalCollected = db.payments.filter((p) => p.status !== "VOIDED").reduce((sum, p) => sum + p.amountTotal, 0);
   const totalOutstanding = activeStudents.reduce((sum, s) => sum + data.dueStatusForStudent(s).totalRemaining, 0);
-  const unpaidCount = activeStudents.filter((s) => data.dueStatusForStudent(s).status !== "PAID").length;
+  // BLOCKER 6: "unpaid" = actually behind on a configured fee. A student with no fee configured is
+  // neither paid nor unpaid and must not inflate this count.
+  const unpaidCount = activeStudents.filter((s) => ["UNPAID", "PARTIAL"].includes(data.dueStatusForStudent(s).status)).length;
 
   function unpaidParentIds() {
     const ids = new Set();
-    families.forEach((fam) => { if (fam.parent && fam.financials.status !== "PAID") ids.add(fam.parent.id); });
+    families.forEach((fam) => { if (fam.parent && ["UNPAID", "PARTIAL"].includes(fam.financials.status)) ids.add(fam.parent.id); });
     return [...ids];
   }
 
@@ -4929,6 +4942,55 @@ function PaymentsPage({ onOpenStudent }) {
         <StatCard label="Outstanding Balance (due now)" value={formatMoney(totalOutstanding)} icon={CircleAlert} tone="amber" />
         <StatCard label="Students With a Balance" value={unpaidCount} icon={Users} tone="red" />
       </div>
+
+      {/* BLOCKER 6 §34: monthly collections, summed from actual non-voided payments. */}
+      <Card className="mb-4 overflow-hidden">
+        <button type="button" onClick={() => setShowMonthly((v) => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-50">
+          <div className="flex items-center gap-2">
+            <CalendarDays size={15} className="text-slate-400" />
+            <h2 className="text-sm font-semibold text-slate-700">Monthly Collections Report</h2>
+          </div>
+          <ChevronDown size={16} className={`text-slate-400 transition-transform ${showMonthly ? "rotate-180" : ""}`} />
+        </button>
+        {showMonthly && (
+          <div className="border-t border-slate-100 px-4 py-3 overflow-x-auto">
+            {monthly.rows.length === 0 ? (
+              <p className="text-xs text-slate-400 py-2">No payments have been collected for this academic year yet.</p>
+            ) : (
+              <table className="w-full text-sm min-w-[28rem]">
+                <thead>
+                  <tr className="text-xs text-slate-400 text-left border-b border-slate-100">
+                    <th className="py-1.5 pr-3 font-medium">Month</th>
+                    <th className="py-1.5 px-3 font-medium text-right">School Fees</th>
+                    <th className="py-1.5 px-3 font-medium text-right">Bus Fees</th>
+                    <th className="py-1.5 px-3 font-medium text-right">Other</th>
+                    <th className="py-1.5 pl-3 font-medium text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthly.rows.map((r) => (
+                    <tr key={r.monthKey} className="border-b border-slate-50">
+                      <td className="py-1.5 pr-3 text-slate-600">{monthLabel(r.monthKey)}</td>
+                      <td className="py-1.5 px-3 text-right text-slate-600">{formatMoney(r.school)}</td>
+                      <td className="py-1.5 px-3 text-right text-slate-600">{formatMoney(r.bus)}</td>
+                      <td className="py-1.5 px-3 text-right text-slate-600">{r.other ? formatMoney(r.other) : "—"}</td>
+                      <td className="py-1.5 pl-3 text-right font-medium text-slate-700">{formatMoney(r.total)}</td>
+                    </tr>
+                  ))}
+                  <tr className="font-semibold text-slate-700">
+                    <td className="py-2 pr-3">All months</td>
+                    <td className="py-2 px-3 text-right">{formatMoney(monthly.totals.school)}</td>
+                    <td className="py-2 px-3 text-right">{formatMoney(monthly.totals.bus)}</td>
+                    <td className="py-2 px-3 text-right">{monthly.totals.other ? formatMoney(monthly.totals.other) : "—"}</td>
+                    <td className="py-2 pl-3 text-right">{formatMoney(monthly.totals.total)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+            <p className="text-[11px] text-slate-400 mt-2">Collections are actual money received (voided payments excluded), grouped by the fee month they were applied to — not by the date the payment was taken.</p>
+          </div>
+        )}
+      </Card>
 
       <Toolbar>
         <SearchInput value={q} onChange={setQ} placeholder="Search parent or student name/ID…" />
@@ -4985,7 +5047,7 @@ function PaymentsPage({ onOpenStudent }) {
                                 <div className="flex items-center gap-2 shrink-0">
                                   <p className="text-sm font-medium text-slate-700">{due.totalRemaining > 0 ? formatMoney(due.totalRemaining) : "—"}</p>
                                   {paymentStatusBadge(due.status)}
-                                  {due.status !== "PAID" && <GhostButton icon={BellRing} onClick={() => setReminderTarget(c)}>Remind</GhostButton>}
+                                  {["UNPAID", "PARTIAL"].includes(due.status) && <GhostButton icon={BellRing} onClick={() => setReminderTarget(c)}>Remind</GhostButton>}
                                 </div>
                               </div>
                             );
@@ -5184,6 +5246,11 @@ function FeeSettingsModal({ open, onClose }) {
 // year's real year_start / year_end (one row per calendar month, spanning two calendar years if
 // the year does) — never hand-entered, never quarterly, never browser-clock math.
 function monthsForYear(year) {
+  return monthAnchorsForYear(year).map((a) => a.label);
+}
+// BLOCKER 6: month anchors ([{ anchor: "YYYY-MM-01", label: "September 2026" }, ...]) for the
+// academic year — the source for both the rollout month picker and the fee-schedule billed_months.
+function monthAnchorsForYear(year) {
   if (!year || !year.yearStart || !year.yearEnd) return [];
   const [sy, sm] = String(year.yearStart).split("-").map(Number);
   const [ey, em] = String(year.yearEnd).split("-").map(Number);
@@ -5191,7 +5258,10 @@ function monthsForYear(year) {
   const out = [];
   let y = sy, m = sm;
   while (y < ey || (y === ey && m <= em)) {
-    out.push(new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" }));
+    out.push({
+      anchor: `${y}-${String(m).padStart(2, "0")}-01`,
+      label: new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" }),
+    });
     m += 1;
     if (m > 12) { m = 1; y += 1; }
     if (out.length > 24) break;
@@ -5208,32 +5278,76 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   const existingSchedule = currentYear ? db.feeSchedules.find((s) => s.feeTypeId === feeType.id && s.academicYearId === currentYear.id) : null;
   const [unitAmount, setUnitAmount] = useState(String(feeType.defaultUnitAmount || ""));
   const { busy, run } = useMutationGuard();
-  const months = monthsForYear(currentYear);
+  const monthAnchors = monthAnchorsForYear(currentYear);
+  const months = monthAnchors.map((a) => a.label);
+  // BLOCKER 6 §11: which months of the year this fee is billed for. Defaults to all for a new
+  // rollout; for an existing schedule, seeded from its current installment months.
+  const existingInstallmentAnchors = existingSchedule
+    ? db.feeInstallments.filter((i) => i.feeScheduleId === existingSchedule.id).map((i) => (i.periodMonth || i.dueDate || "").slice(0, 7) + "-01").filter((a) => a.length === 10)
+    : [];
+  const [billedAnchors, setBilledAnchors] = useState(() => monthAnchors.map((a) => a.anchor));
 
   useEffect(() => {
     if (!open) return;
     setUnitAmount(String(feeType.defaultUnitAmount || ""));
+    setBilledAnchors(existingSchedule && existingInstallmentAnchors.length ? existingInstallmentAnchors : monthAnchorsForYear(currentYear).map((a) => a.anchor));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, feeType.id]);
+  }, [open, feeType.id, existingSchedule?.id]);
 
   if (!currentYear) return null;
 
+  function toggleAnchor(anchor) {
+    setBilledAnchors((prev) => prev.includes(anchor) ? prev.filter((a) => a !== anchor) : [...prev, anchor].sort());
+  }
+  const MonthGrid = (
+    <Field label="Months this fee applies to">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[11px] text-slate-400">{billedAnchors.length} of {monthAnchors.length} selected</span>
+        <div className="flex gap-2">
+          <button type="button" className="text-[11px] font-medium text-sky-600" onClick={() => setBilledAnchors(monthAnchors.map((a) => a.anchor))}>All</button>
+          <button type="button" className="text-[11px] font-medium text-slate-400" onClick={() => setBilledAnchors([])}>None</button>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+        {monthAnchors.map((a) => {
+          const on = billedAnchors.includes(a.anchor);
+          return (
+            <label key={a.anchor} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-sky-300 bg-sky-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
+              <input type="checkbox" checked={on} onChange={() => toggleAnchor(a.anchor)} className="rounded border-slate-300 text-sky-600" />
+              <span className="truncate">{a.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </Field>
+  );
+
   if (existingSchedule) {
     const rows = db.feeInstallments.filter((i) => i.feeScheduleId === existingSchedule.id).sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+    const currentAnchorSet = new Set(existingInstallmentAnchors);
+    const targetSet = new Set(billedAnchors);
+    const toAdd = billedAnchors.filter((a) => !currentAnchorSet.has(a));
+    const toRemove = existingInstallmentAnchors.filter((a) => !targetSet.has(a));
+    const dirty = toAdd.length > 0 || toRemove.length > 0;
+    function saveMonths() {
+      if (billedAnchors.length === 0) { toast("Select at least one month.", "error"); return; }
+      run(async () => {
+        const res = await data.updateFeeScheduleMonths(existingSchedule.id, billedAnchors);
+        toast(res.ok ? "Billed months updated." : (res.message || "Couldn't update months."), res.ok ? "success" : "error");
+        if (res.ok) onClose();
+      }, { key: `edit-fee-months:${existingSchedule.id}` });
+    }
     return (
       <Modal open={open} onClose={onClose} title={`${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
         <div>
-          <p className="text-xs text-slate-400 mb-3">Already rolled out for this year — {rows.length} monthly installment{rows.length === 1 ? "" : "s"}. A month already billed to a student can only be corrected through an adjustment on that student's own balance, not edited here.</p>
-          <div className="space-y-1.5 max-h-64 overflow-y-auto">
-            {rows.map((r) => (
-              <div key={r.id} className="flex items-center justify-between border border-slate-100 rounded-lg px-3 py-2 text-sm">
-                <span className="text-slate-700">{r.label}</span>
-                <span className="text-slate-500">Due {fmtDateLong(r.dueDate)} • {formatMoney(r.amount)}</span>
-              </div>
-            ))}
-          </div>
-          <div className="flex justify-end pt-3">
+          <p className="text-xs text-slate-400 mb-3">Rolled out for this year — {rows.length} monthly installment{rows.length === 1 ? "" : "s"} at {formatMoney(existingSchedule.unitAmount)}/month. Add or remove months below; a month with a recorded payment or adjustment can't be removed until those are voided. Per-student corrections still go through an adjustment on that student's balance.</p>
+          {MonthGrid}
+          {toRemove.length > 0 && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-1">Removing: {toRemove.map((a) => monthLabel(a.slice(0, 7))).join(", ")} — their obligations will be deleted (blocked if any payment/adjustment exists).</p>
+          )}
+          <div className="flex justify-end gap-2 pt-3">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
+            <PrimaryButton type="button" onClick={saveMonths} icon={Check} disabled={!dirty} loading={busy} loadingText="Saving…">Save Months</PrimaryButton>
           </div>
         </div>
       </Modal>
@@ -5243,8 +5357,10 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
     if (!unitAmount || Number(unitAmount) <= 0) { toast("Please enter the monthly amount.", "error"); return; }
+    if (billedAnchors.length === 0) { toast("Select at least one month this fee applies to.", "error"); return; }
+    const billedMonths = billedAnchors.length === monthAnchors.length ? null : billedAnchors.slice().sort();
     run(async () => {
-      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, { unitAmount: Number(unitAmount) }, auth.realUser.id);
+      const res = await data.rolloutFeeTypeForYear(feeType.id, currentYear.id, { unitAmount: Number(unitAmount), billedMonths }, auth.realUser.id);
       toast(res.message || "Fee type rolled out for this year.", res.ok ? "success" : "error");
       if (res.ok) onClose();
     }, { key: `rollout-fee-type:${feeType.id}:${currentYear.id}` });
@@ -5254,16 +5370,12 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
     <Modal open={open} onClose={onClose} title={`Roll Out ${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
       <div>
         <p className="text-xs text-slate-400 -mt-1 mb-2">
-          {feeType.category === "TRANSPORT" ? "Charged monthly to students who use the bus." : "Charged monthly."} One installment is generated for every month of {formatAcademicYearLabel(currentYear)} ({months.length} month{months.length === 1 ? "" : "s"}: {months[0]} – {months[months.length - 1]}).
+          {feeType.category === "TRANSPORT" ? "Charged monthly to students who use the bus." : "Charged monthly."} One installment is generated for each month you select below ({formatAcademicYearLabel(currentYear)} runs {months[0]} – {months[months.length - 1]}).
         </p>
         <Field label={`Amount per month (${CURRENCY})`} required>
           <input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} />
         </Field>
-        {months.length > 0 && (
-          <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
-            {months.map((m) => <Badge key={m} tone="slate">{m}</Badge>)}
-          </div>
-        )}
+        {monthAnchors.length > 0 && MonthGrid}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
           <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Rolling out…">Roll Out</PrimaryButton>
@@ -5379,6 +5491,42 @@ function receiptForPayment(data, paymentId, restrictToStudentIds) {
   };
 }
 
+// BLOCKER 6: fee months are NOT dates. School fees and bus fees are both selected by month, and
+// several months can be selected at once. This grid renders one card per configured month of the
+// current academic year, each showing that month's configured amount and pay state. The payment-
+// received date (a real calendar date) is a separate field entirely — see the modal footer.
+// `rows` = [{ installmentId, label, remaining, status, isCurrent }] (school and bus normalized to
+// the same shape by the caller). `lines` = the selected subset [{ installmentId, amount }].
+function FeeMonthGrid({ rows, lines, onToggle, onAmount }) {
+  const byId = new Map(lines.map((l) => [l.installmentId, l]));
+  if (!rows || rows.length === 0) return <p className="text-xs text-slate-400 py-1">No months configured for this fee.</p>;
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {rows.map((r) => {
+        const line = byId.get(r.installmentId);
+        const on = !!line;
+        const fullyPaid = r.status === "PAID";
+        return (
+          <div key={r.installmentId} className={`rounded-lg border p-2 ${on ? "border-sky-300 bg-sky-50" : fullyPaid ? "border-slate-100 bg-slate-50" : "border-slate-200"}`}>
+            <label className={`flex items-start gap-1.5 ${fullyPaid ? "cursor-default" : "cursor-pointer"}`}>
+              <input type="checkbox" disabled={fullyPaid} checked={on} onChange={() => onToggle(r.installmentId)} className="mt-0.5 rounded border-slate-300 text-sky-600 shrink-0" />
+              <span className="min-w-0">
+                <span className="block text-xs font-medium text-slate-700 truncate">{r.label}{r.isCurrent ? " • now" : ""}</span>
+                <span className="block text-[11px] text-slate-400">{fullyPaid ? "Paid" : `${formatMoney(r.remaining)} due`}</span>
+              </span>
+            </label>
+            {on && (
+              <input type="number" min="0" max={r.remaining} inputMode="numeric"
+                className={inputCls + " mt-1.5 !py-1 !text-xs"} value={line.amount}
+                onChange={(e) => onAmount(r.installmentId, Math.min(Number(e.target.value) || 0, r.remaining))} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Single-student callers (student profile page) pass `student`; the family Fees & Payments
 // screen passes `students` (a parent's whole child list, still individually checkable/editable
 // below) so several children can be paid for and receipted in one transaction.
@@ -5388,7 +5536,9 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   const toast = useToast();
   const candidates = students && students.length ? students : (student ? [student] : []);
   const [selectedIds, setSelectedIds] = useState([]);
-  const [drafts, setDrafts] = useState({}); // studentId -> { installmentId, tuitionAmount, busLines: [{key, installmentId, amount}] }
+  // studentId -> { [feeTypeId]: [{installmentId, amount}] }  — one selectable month list per
+  // applicable fee type (§14: categories are whatever Fee Settings configured, not hard-coded).
+  const [drafts, setDrafts] = useState({});
   const [method, setMethod] = useState("");
   const [customMethod, setCustomMethod] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -5397,20 +5547,35 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   const [receiptNo, setReceiptNo] = useState("");
   const { busy, run } = useMutationGuard();
 
+  // Every fee type that applies to this student this year, each with its month rows normalized to
+  // { installmentId, label, remaining, status, isCurrent }. TRANSPORT is only included when the
+  // student uses the bus (feeTypesForStudent already enforces that). Ordered tuition/other first,
+  // transport last, for a stable layout.
+  function feeGroupsFor(stu) {
+    const types = data.feeTypesForStudent(stu) || [];
+    return types
+      .slice()
+      .sort((a, b) => (a.category === "TRANSPORT" ? 1 : 0) - (b.category === "TRANSPORT" ? 1 : 0))
+      .map((ft) => {
+        const g = data.feeInstallmentRowsForStudent(stu, ft);
+        return { feeType: g.feeType, rows: g.rows.map((r) => ({ installmentId: r.installmentId, label: r.label, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent })) };
+      })
+      .filter((g) => g.rows.length > 0);
+  }
+
   useEffect(() => {
     if (!open) return;
     setSelectedIds(candidates.map((c) => c.id));
     const nextDrafts = {};
     candidates.forEach((c) => {
-      const inst = data.installmentStatusForStudent(c);
-      const firstUnpaid = inst.rows.find((r) => r.status !== "PAID") || inst.rows[0];
-      const bus = c.usesBus ? data.busScheduleForStudent(c) : null;
-      const firstBusUnpaid = bus ? bus.rows.find((r) => r.status !== "PAID") : null;
-      nextDrafts[c.id] = {
-        installmentId: firstUnpaid ? firstUnpaid.installment.id : "",
-        tuitionAmount: firstUnpaid ? firstUnpaid.remaining : 0,
-        busLines: firstBusUnpaid ? [{ key: uid("busln"), installmentId: firstBusUnpaid.installmentId, amount: firstBusUnpaid.remaining }] : [],
+      // §37: preselect the current month if it has an unpaid balance — never auto-submit it.
+      const groups = feeGroupsFor(c);
+      const pick = (rows) => {
+        const cur = rows.find((r) => r.isCurrent && r.status !== "PAID");
+        const first = cur || rows.find((r) => r.status !== "PAID");
+        return first ? [{ installmentId: first.installmentId, amount: first.remaining }] : [];
       };
+      nextDrafts[c.id] = Object.fromEntries(groups.map((g) => [g.feeType.id, pick(g.rows)]));
     });
     setDrafts(nextDrafts);
     setMethod(data.db.paymentMethods.find((m) => m.active)?.name || "Cash");
@@ -5425,24 +5590,26 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   if (candidates.length === 0) return null;
   const finalMethod = method === "__custom__" ? customMethod.trim() : method;
 
-  function setDraft(studentId, patch) {
-    setDrafts((d) => ({ ...d, [studentId]: { ...d[studentId], ...patch } }));
-  }
-  function addBusLine(studentId, busSchedule) {
+  function toggleLine(studentId, feeTypeId, installmentId, remaining) {
     setDrafts((d) => {
       const draft = d[studentId] || {};
-      const usedIds = new Set((draft.busLines || []).map((bl) => bl.installmentId));
-      const next = busSchedule.rows.find((r) => r.status !== "PAID" && !usedIds.has(r.installmentId));
-      if (!next) return d;
-      return { ...d, [studentId]: { ...draft, busLines: [...(draft.busLines || []), { key: uid("busln"), installmentId: next.installmentId, amount: next.remaining }] } };
+      const list = draft[feeTypeId] || [];
+      const exists = list.some((l) => l.installmentId === installmentId);
+      const next = exists ? list.filter((l) => l.installmentId !== installmentId) : [...list, { installmentId, amount: remaining }];
+      return { ...d, [studentId]: { ...draft, [feeTypeId]: next } };
     });
   }
-  function updateBusLine(studentId, key, patch) {
-    setDrafts((d) => ({ ...d, [studentId]: { ...d[studentId], busLines: (d[studentId]?.busLines || []).map((bl) => (bl.key === key ? { ...bl, ...patch } : bl)) } }));
+  function setLineAmount(studentId, feeTypeId, installmentId, amount) {
+    setDrafts((d) => {
+      const draft = d[studentId] || {};
+      return { ...d, [studentId]: { ...draft, [feeTypeId]: (draft[feeTypeId] || []).map((l) => (l.installmentId === installmentId ? { ...l, amount } : l)) } };
+    });
   }
-  function removeBusLine(studentId, key) {
-    setDrafts((d) => ({ ...d, [studentId]: { ...d[studentId], busLines: (d[studentId]?.busLines || []).filter((bl) => bl.key !== key) } }));
-  }
+
+  // Selected students with no applicable fee configured at all — §15.
+  const noFeeStudents = selectedIds
+    .map((id) => candidates.find((c) => c.id === id))
+    .filter((stu) => stu && feeGroupsFor(stu).length === 0);
 
   function buildLines() {
     const lines = [];
@@ -5450,26 +5617,16 @@ function RecordPaymentModal({ open, onClose, student, students }) {
       const stu = candidates.find((c) => c.id === studentId);
       const draft = drafts[studentId];
       if (!stu || !draft) return;
-      const inst = data.installmentStatusForStudent(stu);
-      const row = inst.rows.find((r) => r.installment.id === draft.installmentId);
-      // Capped at this installment's own remaining balance — a payment tagged to one month's
-      // installmentId only ever counts toward that month (installmentStatusForStudent looks up
-      // payments by installmentId, not by date or overall balance), so letting the entered amount
-      // exceed what's due here would make that month's row disagree with the family's aggregate
-      // balance: the aggregate (balanceFor) would show "paid in full" from the total amount received
-      // while this month and the untouched later months still show unpaid.
-      const tuitionAmount = row ? Math.min(Number(draft.tuitionAmount) || 0, row.remaining) : 0;
-      if (inst.feeType && draft.installmentId && tuitionAmount > 0) {
-        lines.push({ studentId, installmentId: draft.installmentId, amount: tuitionAmount, method: finalMethod, date, note });
-      }
-      if (stu.usesBus) {
-        const bus = data.busScheduleForStudent(stu);
-        (draft.busLines || []).forEach((bl) => {
-          const busRow = bus.rows.find((r) => r.installmentId === bl.installmentId);
-          const amount = busRow ? Math.min(Number(bl.amount) || 0, busRow.remaining) : 0;
-          if (bl.installmentId && amount > 0) lines.push({ studentId, installmentId: bl.installmentId, amount, method: finalMethod, date, note });
+      // Each line stays capped at that month's own remaining balance — a payment tagged to one
+      // month's installmentId only ever counts toward that month, so an over-cap amount would make
+      // that month's row disagree with the aggregate balance.
+      feeGroupsFor(stu).forEach((g) => {
+        (draft[g.feeType.id] || []).forEach((l) => {
+          const row = g.rows.find((r) => r.installmentId === l.installmentId);
+          const amount = row ? Math.min(Number(l.amount) || 0, row.remaining) : 0;
+          if (amount > 0) lines.push({ studentId, installmentId: l.installmentId, amount, method: finalMethod, date, note });
         });
-      }
+      });
     });
     return lines;
   }
@@ -5480,7 +5637,15 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     e && e.preventDefault && e.preventDefault();
     if (!finalMethod) { toast("Please choose or enter a payment method.", "error"); return; }
     const lines = buildLines();
-    if (lines.length === 0) { toast("Enter at least one amount to record.", "error"); return; }
+    if (lines.length === 0) {
+      // §15: be explicit about the missing configuration rather than a vague "enter an amount".
+      if (noFeeStudents.length === selectedIds.length && selectedIds.length > 0) {
+        toast("No fee has been configured for this student yet. Set up the fee in Fee Settings first.", "error");
+      } else {
+        toast("Select at least one month to pay.", "error");
+      }
+      return;
+    }
     // Financial mutation: guard hard against double-submit. The key encodes this exact
     // intentional action (who/how-much/when/how) so a rapid second click or repeated Enter
     // is dropped, while a genuinely separate later payment for the same family still runs.
@@ -5519,10 +5684,9 @@ function RecordPaymentModal({ open, onClose, student, students }) {
               const stu = candidates.find((c) => c.id === studentId);
               const draft = drafts[studentId];
               if (!stu || !draft) return null;
-              const inst = data.installmentStatusForStudent(stu);
-              const busSchedule = data.busScheduleForStudent(stu);
-              const tuitionNow = draft.installmentId ? (Number(draft.tuitionAmount) || 0) : 0;
-              const busNow = (draft.busLines || []).reduce((s, bl) => s + (Number(bl.amount) || 0), 0);
+              const groups = feeGroupsFor(stu);
+              const perGroupNow = groups.map((g) => ({ g, now: (draft[g.feeType.id] || []).reduce((s, l) => s + (Number(l.amount) || 0), 0) }));
+              const studentNow = perGroupNow.reduce((s, x) => s + x.now, 0);
               return (
                 <Card key={studentId} className="p-3.5">
                   <div className="flex items-center gap-2.5 mb-2.5">
@@ -5536,68 +5700,32 @@ function RecordPaymentModal({ open, onClose, student, students }) {
                     </div>
                   </div>
 
-                  {inst.feeType && (
-                    <div className="grid sm:grid-cols-2 gap-x-3">
-                      <Field label="School Fee month">
-                        <select className={inputCls} value={draft.installmentId} onChange={(e) => {
-                          const row = inst.rows.find((r) => r.installment.id === e.target.value);
-                          setDraft(studentId, { installmentId: e.target.value, tuitionAmount: row ? row.remaining : 0 });
-                        }}>
-                          <option value="">— Don't pay school fee now —</option>
-                          {inst.rows.map((r) => (
-                            <option key={r.installment.id} value={r.installment.id}>{inst.feeType.name} {r.installment.label}{r.isCurrent ? " — Current" : ""} (Due {fmtDateLong(r.installment.dueDate)}) — {r.status === "PAID" ? "Paid" : `${formatMoney(r.remaining)} owed`}</option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label="School Fee amount now">
-                        <input type="number" min="0" max={inst.rows.find((r) => r.installment.id === draft.installmentId)?.remaining || 0}
-                          className={inputCls} value={draft.installmentId ? draft.tuitionAmount : 0} disabled={!draft.installmentId}
-                          onChange={(e) => {
-                            const row = inst.rows.find((r) => r.installment.id === draft.installmentId);
-                            const capped = row ? Math.min(Number(e.target.value) || 0, row.remaining) : 0;
-                            setDraft(studentId, { tuitionAmount: capped });
-                          }} />
-                      </Field>
-                    </div>
+                  {groups.length === 0 && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2">
+                      No fee has been configured for this student yet. Set up the fee in Fee Settings before recording a payment.
+                    </p>
                   )}
 
-                  {stu.usesBus && busSchedule.feeType && (
-                    <div className="mt-2 border-t border-slate-100 pt-2">
-                      <p className="text-xs text-slate-500 mb-1.5">Bus months ({formatMoney(busSchedule.feeType.unitAmount)}/mo)</p>
-                      {(draft.busLines || []).length === 0 && <p className="text-xs text-slate-400 mb-1.5">No bus month selected — this student's bus fee won't be included in this payment.</p>}
-                      <div className="space-y-2">
-                        {(draft.busLines || []).map((bl) => {
-                          const busRow = busSchedule.rows.find((r) => r.installmentId === bl.installmentId);
-                          return (
-                            <div key={bl.key} className="grid sm:grid-cols-[1fr,120px,auto] gap-x-2 items-end">
-                              <Field label="Month">
-                                <select className={inputCls} value={bl.installmentId} onChange={(e) => {
-                                  const row = busSchedule.rows.find((r) => r.installmentId === e.target.value);
-                                  updateBusLine(studentId, bl.key, { installmentId: e.target.value, amount: row ? row.remaining : 0 });
-                                }}>
-                                  {busSchedule.rows.map((r) => (
-                                    <option key={r.installmentId} value={r.installmentId}>{r.label}{r.isCurrent ? " — Current" : ""} — {r.status === "PAID" ? "Paid" : `${formatMoney(r.remaining)} owed`}</option>
-                                  ))}
-                                </select>
-                              </Field>
-                              <Field label="Amount">
-                                <input type="number" min="0" max={busRow?.remaining || 0} className={inputCls} value={bl.amount}
-                                  onChange={(e) => { const capped = busRow ? Math.min(Number(e.target.value) || 0, busRow.remaining) : 0; updateBusLine(studentId, bl.key, { amount: capped }); }} />
-                              </Field>
-                              <button type="button" onClick={() => removeBusLine(studentId, bl.key)} className="h-9 px-2 text-xs text-red-500 font-medium">Remove</button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <button type="button" onClick={() => addBusLine(studentId, busSchedule)} className="mt-1.5 text-xs font-medium text-sky-600 hover:text-sky-700">+ Add another bus month</button>
+                  {groups.map((g, gi) => (
+                    <div key={g.feeType.id} className={gi > 0 ? "mt-2 border-t border-slate-100 pt-2" : "mb-2"}>
+                      <p className="text-xs font-medium text-slate-600 mb-1.5">
+                        {g.feeType.name}{g.feeType.unitAmount ? ` (${formatMoney(g.feeType.unitAmount)}/mo)` : ""} — pick the month(s) being paid
+                      </p>
+                      <FeeMonthGrid
+                        rows={g.rows}
+                        lines={draft[g.feeType.id] || []}
+                        onToggle={(instId) => toggleLine(studentId, g.feeType.id, instId, g.rows.find((r) => r.installmentId === instId)?.remaining || 0)}
+                        onAmount={(instId, amt) => setLineAmount(studentId, g.feeType.id, instId, amt)}
+                      />
+                    </div>
+                  ))}
+
+                  {groups.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-slate-100 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
+                      {perGroupNow.map(({ g, now }) => <span key={g.feeType.id}>{g.feeType.name}: {formatMoney(now)}</span>)}
+                      <span className="font-medium text-slate-700">This student: {formatMoney(studentNow)}</span>
                     </div>
                   )}
-
-                  <div className="mt-2 pt-2 border-t border-slate-100 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
-                    {inst.feeType && <span>School Fee due: {formatMoney(inst.rows.find((r) => r.installment.id === draft.installmentId)?.remaining || 0)}</span>}
-                    {stu.usesBus && <span>Bus due now: {formatMoney(busNow)}</span>}
-                    <span className="font-medium text-slate-700">Paying now: {formatMoney(tuitionNow + busNow)}</span>
-                  </div>
                 </Card>
               );
             })}
@@ -5610,12 +5738,37 @@ function RecordPaymentModal({ open, onClose, student, students }) {
                 <option value="__custom__">Other (type below)…</option>
               </select>
             </Field>
-            <Field label="Date"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+            <Field label="Payment received on">
+              <input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} />
+              <p className="text-[11px] text-slate-400 mt-1">The date the money was received — separate from the fee months selected above.</p>
+            </Field>
           </div>
           {method === "__custom__" && (
             <Field label="Method name" required><input className={inputCls} value={customMethod} onChange={(e) => setCustomMethod(e.target.value)} placeholder="e.g. Sahal Pay" /></Field>
           )}
           <Field label="Note"><textarea className={inputCls} rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" /></Field>
+
+          {/* §51: a plain-language review of exactly what is about to be recorded. */}
+          {previewTotal > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 space-y-1">
+              <p className="font-medium text-slate-700">Review this payment</p>
+              <p>Payment received on {fmtDateLong(date)} · {finalMethod || "no method"}</p>
+              {selectedIds.map((sid) => {
+                const stu = candidates.find((c) => c.id === sid);
+                const draft = drafts[sid];
+                if (!stu || !draft) return null;
+                const parts = [];
+                feeGroupsFor(stu).forEach((g) => {
+                  (draft[g.feeType.id] || []).forEach((l) => {
+                    const r = g.rows.find((x) => x.installmentId === l.installmentId);
+                    if (r && Number(l.amount) > 0) parts.push(`${g.feeType.name} ${r.label} ${formatMoney(Math.min(Number(l.amount), r.remaining))}`);
+                  });
+                });
+                if (parts.length === 0) return null;
+                return <p key={sid}><span className="font-medium text-slate-700">{data.studentFullName(stu)}:</span> {parts.join(" · ")}</p>;
+              })}
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100">
             <p className="text-sm font-semibold text-slate-700">Total: {formatMoney(previewTotal)}</p>
@@ -5654,7 +5807,7 @@ function ReminderModal({ open, onClose, mode, student, bulkParentIds, bulkCount 
     if (!open) return;
     if (mode === "single" && student) {
       const summary = data.studentPaymentSummary(student);
-      const owedList = summary.balances.filter((b) => b.status !== "PAID").map((b) => `${b.feeType.name}: ${formatMoney(b.amountOwed)}`).join(", ");
+      const owedList = summary.balances.filter((b) => ["UNPAID", "PARTIAL"].includes(b.status)).map((b) => `${b.feeType.name}: ${formatMoney(b.amountOwed)}`).join(", ");
       setMessage(`Dear parent, this is a friendly reminder that ${student.firstName}'s school fees are outstanding (${owedList}). Please arrange payment at your earliest convenience. Thank you.`);
     } else {
       setMessage("Dear parent, this is a friendly reminder that your child's school fees are currently outstanding. Please arrange payment at your earliest convenience. Thank you for your support.");

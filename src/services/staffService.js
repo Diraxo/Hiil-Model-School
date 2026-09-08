@@ -134,7 +134,11 @@ export function createStaffService() {
     async myRecord() {
       const { data, error } = await supabase.rpc("my_staff_record");
       if (error) throw error;
-      return data ? mapStaff(data) : null;
+      // `my_staff_record()` returns `public.staff` (a single composite), so for a caller with no
+      // staff row (Owner / Finance Director) PostgREST hands back a row of all-NULLs rather than
+      // nothing. Treat "no id" as "no record" — otherwise this NULL row is merged into db.staff and
+      // every `staff.name.toLowerCase()` (Staff page, Payroll page) throws.
+      return data && data.id ? mapStaff(data) : null;
     },
     async create(payload) {
       const row = {
