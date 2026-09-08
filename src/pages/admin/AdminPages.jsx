@@ -4897,6 +4897,12 @@ function PaymentsPage({ onOpenStudent }) {
   const [reminderTarget, setReminderTarget] = useState(null); // single student, or "ALL" for bulk
   const [receiptPaymentId, setReceiptPaymentId] = useState(null);
   const [showMonthly, setShowMonthly] = useState(false);
+  // Additive reporting only (see "bus user fee segmentation" blocker): lets Owner/Finance see how
+  // many students in a grade use the school bus. Reads the canonical student `usesBus` field and
+  // filters the already-loaded roster in memory — it does not touch any fee/payment calculation.
+  const [showSegment, setShowSegment] = useState(false);
+  const [segBus, setSegBus] = useState("all"); // "all" | "bus" | "nonbus"
+  const [segGrade, setSegGrade] = useState(""); // "" = every grade
   const monthly = data.monthlyFinanceReport();
 
   const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
@@ -4925,6 +4931,30 @@ function PaymentsPage({ onOpenStudent }) {
   }
 
   const receipt = receiptPaymentId ? receiptForPayment(data, receiptPaymentId, null) : null;
+
+  // --- Bus-user / grade segmentation (presentation only) ---------------------------------------
+  const segGradeOpts = data.gradeOptions();
+  const gradeBreakdown = segGradeOpts.map((g) => {
+    const inGrade = activeStudents.filter((s) => s.grade === g);
+    const bus = inGrade.filter((s) => s.usesBus).length;
+    return { grade: g, bus, nonBus: inGrade.length - bus, total: inGrade.length };
+  });
+  const busTotals = {
+    bus: activeStudents.filter((s) => s.usesBus).length,
+    nonBus: activeStudents.filter((s) => !s.usesBus).length,
+    total: activeStudents.length,
+  };
+  const segmentStudents = activeStudents
+    .filter((s) => {
+      if (segBus === "bus" && !s.usesBus) return false;
+      if (segBus === "nonbus" && s.usesBus) return false;
+      if (segGrade && s.grade !== segGrade) return false;
+      return true;
+    })
+    .sort((a, b) => (segGradeOpts.indexOf(a.grade) - segGradeOpts.indexOf(b.grade)) || data.studentFullName(a).localeCompare(data.studentFullName(b)));
+  const segBusLabel = segBus === "bus" ? "Bus Users" : segBus === "nonbus" ? "Non-Bus Users" : "All Students";
+  const segGradeLabel = segGrade || "All Grades";
+  const segBtnCls = (active) => `px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${active ? "border-sky-500 bg-sky-50 text-sky-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`;
 
   return (
     <div>
@@ -4988,6 +5018,95 @@ function PaymentsPage({ onOpenStudent }) {
               </table>
             )}
             <p className="text-[11px] text-slate-400 mt-2">Collections are actual money received (voided payments excluded), grouped by the fee month they were applied to — not by the date the payment was taken.</p>
+          </div>
+        )}
+      </Card>
+
+      {/* Bus-user segmentation — a reporting view over the existing student `usesBus` field.
+          Does not change any fee, obligation, payment or outstanding calculation. */}
+      <Card className="mb-4 overflow-hidden">
+        <button type="button" onClick={() => setShowSegment((v) => !v)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-50">
+          <div className="flex items-center gap-2">
+            <Bus size={15} className="text-slate-400" />
+            <h2 className="text-sm font-semibold text-slate-700">Bus Users by Grade</h2>
+            <Badge tone="sky">{busTotals.bus} of {busTotals.total}</Badge>
+          </div>
+          <ChevronDown size={16} className={`text-slate-400 transition-transform ${showSegment ? "rotate-180" : ""}`} />
+        </button>
+        {showSegment && (
+          <div className="border-t border-slate-100 px-4 py-3 space-y-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[22rem]">
+                <thead>
+                  <tr className="text-xs text-slate-400 text-left border-b border-slate-100">
+                    <th className="py-1.5 pr-3 font-medium">Grade</th>
+                    <th className="py-1.5 px-3 font-medium text-right">Bus Users</th>
+                    <th className="py-1.5 px-3 font-medium text-right">Non-Bus Users</th>
+                    <th className="py-1.5 pl-3 font-medium text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gradeBreakdown.map((r) => (
+                    <tr key={r.grade} className="border-b border-slate-50">
+                      <td className="py-1.5 pr-3 text-slate-600">{r.grade}</td>
+                      <td className="py-1.5 px-3 text-right text-slate-600">{r.bus}</td>
+                      <td className="py-1.5 px-3 text-right text-slate-600">{r.nonBus}</td>
+                      <td className="py-1.5 pl-3 text-right font-medium text-slate-700">{r.total}</td>
+                    </tr>
+                  ))}
+                  <tr className="font-semibold text-slate-700">
+                    <td className="py-2 pr-3">All grades</td>
+                    <td className="py-2 px-3 text-right">{busTotals.bus}</td>
+                    <td className="py-2 px-3 text-right">{busTotals.nonBus}</td>
+                    <td className="py-2 pl-3 text-right">{busTotals.total}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-medium text-slate-400 mr-1">Bus status</span>
+                <button type="button" className={segBtnCls(segBus === "all")} onClick={() => setSegBus("all")}>All Students</button>
+                <button type="button" className={segBtnCls(segBus === "bus")} onClick={() => setSegBus("bus")}>Bus Users</button>
+                <button type="button" className={segBtnCls(segBus === "nonbus")} onClick={() => setSegBus("nonbus")}>Non-Bus Users</button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-medium text-slate-400 mr-1">Grade</span>
+                <button type="button" className={segBtnCls(segGrade === "")} onClick={() => setSegGrade("")}>All Grades</button>
+                {segGradeOpts.map((g) => (
+                  <button key={g} type="button" className={segBtnCls(segGrade === g)} onClick={() => setSegGrade(g)}>{g}</button>
+                ))}
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600">
+              Showing <span className="font-semibold text-slate-800">{segmentStudents.length}</span> {segmentStudents.length === 1 ? "student" : "students"}
+              <span className="text-slate-400"> · {segBusLabel} · {segGradeLabel}</span>
+            </p>
+
+            {segmentStudents.length === 0 ? (
+              <p className="text-xs text-slate-400 py-1.5">No students match this segment.</p>
+            ) : (
+              <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                {segmentStudents.map((s) => {
+                  const due = data.dueStatusForStudent(s);
+                  return (
+                    <button key={s.id} type="button" onClick={() => onOpenStudent(s.id)} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Avatar name={data.studentFullName(s)} photo={s.photo} size={28} />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-700 truncate">{data.studentFullName(s)}</p>
+                          <p className="text-xs text-slate-400">{s.grade}{s.section} • {s.usesBus ? "Bus User" : "Non-Bus User"}</p>
+                        </div>
+                      </div>
+                      <div className="shrink-0">{paymentStatusBadge(due.status)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-[11px] text-slate-400">Bus status comes from each student's registration. This view filters and counts only — it does not change fees, payments or balances.</p>
           </div>
         )}
       </Card>
