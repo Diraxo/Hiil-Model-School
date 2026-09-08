@@ -3305,7 +3305,7 @@ function DataProvider({ children }) {
         try {
           const ft = await feeService.updateFeeType(id, patch);
           await refetchFees();
-          await logActivityFeed(`${ft.name} was updated.`);
+          await logActivityFeed(`${ft.name} fee type configuration was updated.`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update fee type", e);
@@ -3521,7 +3521,7 @@ function DataProvider({ children }) {
           await paymentService.voidPayment(paymentId, trimmedReason, actorId, actorRole || actor?.role || null, actor?.name || null);
           await Promise.all([refetchPayments(), refetchFees()]);
           await logActivityFeed(
-            `${formatMoney(payment?.amountTotal || 0)} payment for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment?.receiptNo || "—"}) was voided by ${actor?.name || "an admin"}.`,
+            `Payment voided — ${formatMoney(payment?.amountTotal || 0)} for ${joinWithAnd(studentNames) || "a student"} (receipt #${payment?.receiptNo || "—"}). Reason: ${trimmedReason}`,
             { page: "payments", studentId: studentIds[0] || null, paymentId, receiptNo: payment?.receiptNo },
           );
           return { ok: true, message: "" };

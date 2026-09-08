@@ -20,6 +20,13 @@ function mapActivity(row) {
     navigation: row.navigation || null,
     visibility: row.visibility || "STAFF",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
+    // Actor snapshot (migration 20260908060000). NULL on rows written before that migration --
+    // the feed UI renders "Actor information unavailable" for those rather than guessing. For
+    // new rows the actor is stamped server-side by log_activity from auth.uid(), so it cannot be
+    // spoofed by the client.
+    actorId: row.actor_id || null,
+    actorName: row.actor_name || null,
+    actorRole: row.actor_role || null,
   };
 }
 

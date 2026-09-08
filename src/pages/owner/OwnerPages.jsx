@@ -16,6 +16,7 @@ import {
 } from "../../components/ui";
 import { DocumentViewerModal, inferFileType } from "../../components/DocumentViewer";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
+import { RecentActivityFeed } from "../../components/RecentActivity";
 import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
 import { useAuth } from "../../context/AuthContext";
@@ -114,21 +115,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
           <h3 className="text-sm font-semibold text-slate-700">Recent Activity</h3>
           <button onClick={() => setPage("auditLog")} className="text-xs font-medium text-sky-600 hover:text-sky-700">Full Audit Log →</button>
         </div>
-        <div className="space-y-3.5 max-h-80 overflow-y-auto">
-          {db.activities.slice(0, 10).map((a) => (
-            a.navigation ? (
-              <button key={a.id} type="button" onClick={() => onOpenActivity && onOpenActivity(a.navigation)} className="w-full flex gap-3 text-xs text-left hover:bg-slate-50 rounded-lg -mx-1 px-1 py-0.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                <div><p className="text-slate-600 leading-snug hover:text-sky-700">{a.text}</p><p className="text-slate-300 mt-0.5">{timeAgo(a.createdAt)}</p></div>
-              </button>
-            ) : (
-              <div key={a.id} className="flex gap-3 text-xs">
-                <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                <div><p className="text-slate-600 leading-snug">{a.text}</p><p className="text-slate-300 mt-0.5">{timeAgo(a.createdAt)}</p></div>
-              </div>
-            )
-          ))}
-        </div>
+        <RecentActivityFeed activities={db.activities} onOpenActivity={onOpenActivity} />
       </Card>
 
       <AnnouncementsPreviewCard announcements={db.announcements} />
@@ -1449,7 +1436,10 @@ function AuditLogPage() {
   const data = useData();
   const { db } = data;
   const [q, setQ] = useState("");
-  const filtered = db.activities.filter((a) => a.text.toLowerCase().includes(q.toLowerCase()));
+  const filtered = db.activities.filter((a) => {
+    const hay = `${a.text} ${a.actorName || ""} ${ROLE_LABEL[a.actorRole] || ""}`.toLowerCase();
+    return hay.includes(q.toLowerCase());
+  });
 
   return (
     <div>
@@ -1462,7 +1452,15 @@ function AuditLogPage() {
             {filtered.map((a) => (
               <div key={a.id} className="flex gap-3 text-sm border-b border-slate-50 pb-3 last:border-0">
                 <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                <div><p className="text-slate-600 leading-snug">{a.text}</p><p className="text-xs text-slate-300 mt-0.5">{fmtDate(a.createdAt)} · {timeAgo(a.createdAt)}</p></div>
+                <div>
+                  <p className="text-slate-600 leading-snug">{a.text}</p>
+                  {a.actorName ? (
+                    <p className="text-xs text-slate-400 mt-0.5"><span className="font-semibold text-slate-500">{a.actorName}</span>{(ROLE_LABEL[a.actorRole] || a.actorRole) ? ` · ${ROLE_LABEL[a.actorRole] || a.actorRole}` : ""}</p>
+                  ) : (
+                    <p className="text-xs text-slate-300 italic mt-0.5">Actor information unavailable</p>
+                  )}
+                  <p className="text-xs text-slate-300 mt-0.5">{fmtDate(a.createdAt)} · {timeAgo(a.createdAt)}</p>
+                </div>
               </div>
             ))}
           </div>

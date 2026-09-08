@@ -1,12 +1,21 @@
 import React from "react";
 import { Wallet, AlertTriangle, Banknote, Receipt as ReceiptIcon } from "lucide-react";
 import { formatMoney } from "../../utils/constants";
-import { Card, StatCard, EmptyState } from "../../components/ui";
+import { Card, StatCard } from "../../components/ui";
+import { RecentActivityFeed } from "../../components/RecentActivity";
 import { useData } from "../../context/DataContext";
+
+// A financial activity: mentions money movement in its text, or deep-links to a finance page.
+const FINANCIAL_ACTIVITY_RE = /payment|salary|expense|payroll|fee|receipt|advance|void|reminder/i;
+function isFinancialActivity(a) {
+  return FINANCIAL_ACTIVITY_RE.test(a.text || "")
+    || ["payments", "payroll", "expenses"].includes(a.navigation?.page);
+}
 
 function FinanceDashboard({ setPage, onOpenActivity }) {
   const data = useData();
   const { db } = data;
+  const financialActivities = db.activities.filter(isFinancialActivity);
   const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
   const totalCollected = db.payments.filter((p) => p.status !== "VOIDED").reduce((sum, p) => sum + p.amountTotal, 0);
   const totalOutstanding = activeStudents.reduce((sum, s) => sum + data.studentPaymentSummary(s).totalOwed, 0);
@@ -28,23 +37,7 @@ function FinanceDashboard({ setPage, onOpenActivity }) {
       </div>
       <Card className="p-5">
         <h3 className="text-sm font-semibold text-slate-700 mb-4">Recent Financial Activity</h3>
-        {db.activities.filter((a) => /payment|salary|expense|payroll/i.test(a.text)).length === 0 ? <EmptyState title="No financial activity yet" /> : (
-          <div className="space-y-3 max-h-72 overflow-y-auto">
-            {db.activities.filter((a) => /payment|salary|expense|payroll/i.test(a.text)).slice(0, 10).map((a) => (
-              a.navigation ? (
-                <button key={a.id} type="button" onClick={() => onOpenActivity && onOpenActivity(a.navigation)} className="w-full flex gap-3 text-xs text-left hover:bg-slate-50 rounded-lg -mx-1 px-1 py-0.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                  <p className="text-slate-600 leading-snug hover:text-sky-700">{a.text}</p>
-                </button>
-              ) : (
-                <div key={a.id} className="flex gap-3 text-xs">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                  <p className="text-slate-600 leading-snug">{a.text}</p>
-                </div>
-              )
-            ))}
-          </div>
-        )}
+        <RecentActivityFeed activities={financialActivities} onOpenActivity={onOpenActivity} maxHeight="max-h-72" />
       </Card>
     </div>
   );

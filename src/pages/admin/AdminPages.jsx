@@ -38,6 +38,7 @@ import { useActiveChild, ChildSwitcher } from "../parent/ParentPages";
 import { PeriodAttendanceModal } from "../teacher/TeacherPages";
 import { teacherLabel, homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../components/homework";
 import { ReportCardModal } from "../../components/ReportCard";
+import { RecentActivityFeed } from "../../components/RecentActivity";
 import { LeaveRequestHistoryList, RejectLeaveModal } from "../../components/leave";
 import { AnnouncementDetailModal, audienceLabel, AnnouncementAttachmentField, AnnouncementAttachmentChip, isAnnouncementLive, announcementReadStats } from "../../components/announcements";
 import { computeBreakRange, suggestSemester2, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel, defaultAcademicCalendar, addDays } from "../../utils/academicCalendar";
@@ -157,27 +158,7 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
       <div className="grid lg:grid-cols-2 gap-4">
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-4">Recent Activity</h3>
-          <div className="space-y-3.5 max-h-80 overflow-y-auto">
-            {visibleActivities.slice(0, 10).map((a) => (
-              a.navigation ? (
-                <button key={a.id} type="button" onClick={() => onOpenActivity && onOpenActivity(a.navigation)} className="w-full flex gap-3 text-xs text-left hover:bg-slate-50 rounded-lg -mx-1 px-1 py-0.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                  <div>
-                    <p className="text-slate-600 leading-snug hover:text-sky-700">{a.text}</p>
-                    <p className="text-slate-300 mt-0.5">{timeAgo(a.createdAt)}</p>
-                  </div>
-                </button>
-              ) : (
-                <div key={a.id} className="flex gap-3 text-xs">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
-                  <div>
-                    <p className="text-slate-600 leading-snug">{a.text}</p>
-                    <p className="text-slate-300 mt-0.5">{timeAgo(a.createdAt)}</p>
-                  </div>
-                </div>
-              )
-            ))}
-          </div>
+          <RecentActivityFeed activities={visibleActivities} onOpenActivity={onOpenActivity} />
         </Card>
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-4">Recent Behavior Incidents</h3>
