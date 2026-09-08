@@ -1271,7 +1271,20 @@ function DataProvider({ children }) {
       classSubjects,
       // Storage-path -> signed-URL resolution for every user-uploaded image/file, so each
       // consumer keeps reading a plain `photo` / `fileDataUrl` / `attachment.dataUrl` string.
-      students: studentsRaw.map((s) => (isStoragePath(s.photo) ? { ...s, photo: signMedia("student-photos", s.photo), photoPath: s.photo } : s)),
+      // classId self-heal: a student registered before their class row existed was stored with
+      // classId = null (createStudent silently fell through). Every consumer that keys off classId
+      // -- attendance rosters, homework delivery, class counts -- would then drop that student.
+      // Resolve a missing classId from grade+section here so the app is correct even before the
+      // one-time backfill migration lands; the mutators below also derive it reliably now.
+      students: studentsRaw.map((s) => {
+        let out = s;
+        if (!s.classId) {
+          const cls = classesRaw.find((c) => c.grade === s.grade && (c.section || "") === (s.section || ""));
+          if (cls) out = { ...out, classId: cls.id };
+        }
+        if (isStoragePath(out.photo)) out = { ...out, photo: signMedia("student-photos", out.photo), photoPath: out.photo };
+        return out;
+      }),
       enrollments: enrollmentsRaw,
       studentDocuments: studentDocumentsRaw.map((d) => (
         isStoragePath(d.storagePath || d.fileDataUrl)
@@ -1684,7 +1697,7 @@ function DataProvider({ children }) {
           // existing academic_years / enrollments model — no second academic-year concept.
           const year = (fields.academicYearId && academicYears.find((y) => y.id === fields.academicYearId))
             || currentAcademicYear(academicYears);
-          const cls = classesRaw.find((c) => c.grade === fields.grade && c.section === fields.section);
+          const cls = classesRaw.find((c) => c.grade === fields.grade && (c.section || "") === (fields.section || ""));
           const student = await studentService.create({ ...fields, classId: cls ? cls.id : null, status: "ACTIVE" });
           await syncStudentEnrollment(student, year ? year.id : null);
           await Promise.all([refetchStudents(), refetchEnrollments()]);
@@ -1714,8 +1727,13 @@ function DataProvider({ children }) {
           // them per feeTypesForStudentIn's usesBus filter.
           const busOptIn = patch.usesBus === true && s.usesBus !== true;
           const fields = { ...patch };
-          if (patch.grade || patch.section) {
-            const cls = classesRaw.find((c) => c.grade === (patch.grade || s.grade) && c.section === (patch.section || s.section));
+          // Always re-derive classId from the effective grade+section, not only when the caller
+          // changed one — this also repairs a student stored with a null classId (registered
+          // before their class row existed).
+          {
+            const g = patch.grade || s.grade;
+            const sec = patch.section !== undefined ? patch.section : s.section;
+            const cls = classesRaw.find((c) => c.grade === g && (c.section || "") === (sec || ""));
             if (cls) fields.classId = cls.id;
           }
           const updated = await studentService.update(id, fields);
@@ -1791,7 +1809,7 @@ function DataProvider({ children }) {
           if (!s || !year) return { ok: false, message: "Student or academic year not found." };
           const nextGrade = grade || s.grade;
           const nextSection = section !== undefined ? section : s.section;
-          const cls = classesRaw.find((c) => c.grade === nextGrade && c.section === nextSection);
+          const cls = classesRaw.find((c) => c.grade === nextGrade && (c.section || "") === (nextSection || ""));
           const updated = await studentService.update(studentId, { grade: nextGrade, section: nextSection, classId: cls ? cls.id : null, status: "ACTIVE", suspension: null });
           await syncStudentEnrollment(updated, academicYearId);
           await Promise.all([refetchStudents(), refetchEnrollments()]);
