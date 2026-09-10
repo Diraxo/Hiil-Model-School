@@ -610,6 +610,7 @@ function CreateHomeworkModal({ open, onClose, classes, presetClassId, presetSubj
     const cls = classes.find((c) => c.id === form.classId);
     if (!cls) { toast("Please select a class.", "error"); return; }
     if (!isEdit && (!form.subject || !availableSubjects.includes(form.subject))) { toast("Please select a subject you teach in this class.", "error"); return; }
+    if (form.dueDate && form.dueDate < todayKeyStr()) { toast("The due date can't be in the past.", "error"); return; }
     run(async () => {
       if (isEdit) {
         const res = await data.updateHomework(editing.id, { subject: form.subject, grade: cls.grade, section: cls.section, title: form.title, description: form.description, dueDate: form.dueDate });

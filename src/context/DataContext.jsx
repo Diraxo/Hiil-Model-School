@@ -2514,6 +2514,9 @@ function DataProvider({ children }) {
         if (!calendar.available) {
           return { ok: false, message: calendar.message || `${calendar.label} — homework can't be published today.` };
         }
+        if (data.dueDate && data.dueDate < today) {
+          return { ok: false, message: "The due date can't be in the past." };
+        }
         const teacherUser = db.users.find((u) => u.id === data.teacherId);
         const teacherStaffRec = db.staff.find((s) => s.userId === data.teacherId);
         const myRecordToday = teacherStaffRec && db.staffAttendance.find((a) => a.staffId === teacherStaffRec.id && a.date === today);
@@ -2568,6 +2571,9 @@ function DataProvider({ children }) {
           const staffRec = db.staff.find((s) => s.userId === hw.teacherId);
           const myRecordToday = staffRec && db.staffAttendance.find((a) => a.staffId === staffRec.id && a.date === today);
           if (!canTeacherAct(editor, myRecordToday)) return { ok: false, message: `You're marked ${myRecordToday.status.toLowerCase()} today — homework can't be edited until this is corrected or a substitute is assigned.` };
+        }
+        if (patch.dueDate !== undefined && patch.dueDate && patch.dueDate < todayKeyStr()) {
+          return { ok: false, message: "The due date can't be in the past." };
         }
         const servicePatch = {};
         if (patch.title !== undefined) servicePatch.title = patch.title;
