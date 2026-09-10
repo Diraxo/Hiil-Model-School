@@ -468,6 +468,10 @@ function DataProvider({ children }) {
   // shows a spinner instead of an empty dashboard. Every other domain streams in progressively
   // afterwards exactly as it already did under network latency.
   const [ready, setReady] = useState(false);
+  // Tracks the authenticated Supabase user id (null when logged out). Declared up here — ahead of
+  // every domain's refetch wiring — so the auth listener can flip it and nothing fetches RLS-
+  // protected data before there's a session. Set by the auth-scoped effect further below.
+  const [sessionUserId, setSessionUserId] = useState(null);
   const toast = useToast();
 
   // Academic years: Supabase-backed (academicYearService). Each domain lives as its own state +
@@ -500,7 +504,10 @@ function DataProvider({ children }) {
     setSubjects(rows);
     return rows;
   }, [subjectService]);
-  useEffect(() => { refetchSubjects().catch((e) => console.error("Failed to load subjects", e)); }, [refetchSubjects]);
+  // NOTE: every domain below (subjects, classes, students, parents, staff, …) is hydrated centrally
+  // by the auth-scoped effect near the bottom of this provider — it runs the full refetch set the
+  // moment a session is known and again on every account switch. Per-domain mount effects were
+  // removed so nothing queries RLS-protected tables before login (which only produced 401 noise).
 
   // Classes + curriculum: Supabase-backed. `classesRaw`/`classSubjectsRaw` are the real rows
   // (classId/subjectId); `classSubjects` below resolves each subjectId to a subject NAME so every
@@ -516,7 +523,6 @@ function DataProvider({ children }) {
     setClassSubjectsRaw(curriculum);
     return rows;
   }, [classService]);
-  useEffect(() => { refetchClasses().catch((e) => console.error("Failed to load classes", e)); }, [refetchClasses]);
   const classSubjects = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return classSubjectsRaw.map((cs) => ({ id: cs.id, classId: cs.classId, subject: nameById.get(cs.subjectId) || "" }));
@@ -548,11 +554,6 @@ function DataProvider({ children }) {
     setStudentDocumentsRaw(rows);
     return rows;
   }, [studentService]);
-  useEffect(() => {
-    refetchStudents().catch((e) => console.error("Failed to load students", e));
-    refetchEnrollments().catch((e) => console.error("Failed to load enrollments", e));
-    refetchStudentDocuments().catch((e) => console.error("Failed to load student documents", e));
-  }, [refetchStudents, refetchEnrollments, refetchStudentDocuments]);
   // Mirrors studentService.syncEnrollment's signature against a live student object -- shared by
   // every mutator below that changes a student's current grade/section/classId/status/suspension
   // (create/update/archive/suspend/promote), so the "only set enrollmentDate on first insert"
@@ -587,10 +588,6 @@ function DataProvider({ children }) {
     setParentLinksRaw(rows);
     return rows;
   }, [parentService]);
-  useEffect(() => {
-    refetchParents().catch((e) => console.error("Failed to load parents", e));
-    refetchParentLinks().catch((e) => console.error("Failed to load parent-student links", e));
-  }, [refetchParents, refetchParentLinks]);
   const childIdsByParent = useMemo(() => {
     const map = new Map();
     parentLinksRaw.forEach((l) => {
@@ -685,16 +682,6 @@ function DataProvider({ children }) {
     setMySalaryAdvancesRaw(mine);
     return full;
   }, [payrollService]);
-  useEffect(() => {
-    refetchTeacherAccounts().catch((e) => console.error("Failed to load teacher accounts", e));
-    refetchDirectorAccounts().catch((e) => console.error("Failed to load director accounts", e));
-    refetchOwnerAccounts().catch((e) => console.error("Failed to load owner account", e));
-    refetchTeacherAssignments().catch((e) => console.error("Failed to load teacher assignments", e));
-    refetchStaff().catch((e) => console.error("Failed to load staff", e));
-    refetchStaffAttendance().catch((e) => console.error("Failed to load staff attendance", e));
-    refetchPayrollPayments().catch((e) => console.error("Failed to load payroll payments", e));
-    refetchSalaryAdvances().catch((e) => console.error("Failed to load salary advances", e));
-  }, [refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance, refetchPayrollPayments, refetchSalaryAdvances]);
   // teacher_assignments.subject_id is a real FK -- resolved to a subject NAME here, same bridging
   // pattern classSubjects (above) uses.
   const teacherAssignments = useMemo(() => {
@@ -747,10 +734,6 @@ function DataProvider({ children }) {
     setSchoolClosuresRaw(rows);
     return rows;
   }, [closureService]);
-  useEffect(() => {
-    refetchTimetable().catch((e) => console.error("Failed to load timetable", e));
-    refetchClosures().catch((e) => console.error("Failed to load school closures", e));
-  }, [refetchTimetable, refetchClosures]);
   const timetableEntries = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return timetableEntriesRaw.map((e) => ({
@@ -794,10 +777,6 @@ function DataProvider({ children }) {
     setOwnerLeaveLogRaw(ownerLog);
     return rows;
   }, [leaveService]);
-  useEffect(() => {
-    refetchAttendance().catch((e) => console.error("Failed to load attendance", e));
-    refetchLeaveRequests().catch((e) => console.error("Failed to load leave requests", e));
-  }, [refetchAttendance, refetchLeaveRequests]);
 
   // Student behavior / discipline: Supabase-backed (behavior_records). RLS: read = Owner/ED + a
   // Teacher for a class they teach/head + a Parent for their own child (Finance never); write =
@@ -809,7 +788,6 @@ function DataProvider({ children }) {
     setBehaviorRecordsRaw(rows);
     return rows;
   }, [behaviorService]);
-  useEffect(() => { refetchBehavior().catch((e) => console.error("Failed to load behavior records", e)); }, [refetchBehavior]);
 
   // Homework: Supabase-backed (`homework` table) -- same independent-state pattern as every
   // domain. `homework` below resolves the real subject_id to a subject NAME (like classSubjects/
@@ -822,7 +800,6 @@ function DataProvider({ children }) {
     setHomeworkRaw(rows);
     return rows;
   }, [homeworkService]);
-  useEffect(() => { refetchHomework().catch((e) => console.error("Failed to load homework", e)); }, [refetchHomework]);
   const homework = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return homeworkRaw.map((h) => ({ ...h, subject: nameById.get(h.subjectId) || "" }));
@@ -887,12 +864,6 @@ function DataProvider({ children }) {
     setExamAnnouncementsRaw(rows);
     return rows;
   }, [examService]);
-  useEffect(() => {
-    refetchResults().catch((e) => console.error("Failed to load results", e));
-    refetchResultEvidence().catch((e) => console.error("Failed to load result evidence", e));
-    refetchExamAnnouncements().catch((e) => console.error("Failed to load exam announcements", e));
-    refetchReportCards().catch((e) => console.error("Failed to load report cards", e));
-  }, [refetchResults, refetchResultEvidence, refetchExamAnnouncements, refetchReportCards]);
   const results = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return resultsRaw.map((r) => {
@@ -984,11 +955,6 @@ function DataProvider({ children }) {
     return rows;
   }, [expenseService]);
 
-  useEffect(() => {
-    refetchFees().catch((e) => console.error("Failed to load fees", e));
-    refetchPayments().catch((e) => console.error("Failed to load payments", e));
-    refetchExpenses().catch((e) => console.error("Failed to load expenses", e));
-  }, [refetchFees, refetchPayments, refetchExpenses]);
 
   // Fold the short-lived signed receipt URL onto each expense so the expenses UI stays synchronous
   // (`e.receiptImage` used to be a base64 data URI; it is now a signed URL to the private object,
@@ -1024,7 +990,6 @@ function DataProvider({ children }) {
   const [conversationsRaw, setConversationsRaw] = useState([]);
   const [activitiesRaw, setActivitiesRaw] = useState([]);
   const [announcementReadStatsById, setAnnouncementReadStatsById] = useState(() => ({}));
-  const [sessionUserId, setSessionUserId] = useState(null);
 
   const refetchNotifications = useCallback(async () => {
     const rows = await notificationService.list().catch(() => []);
@@ -1053,12 +1018,6 @@ function DataProvider({ children }) {
     } catch { setAnnouncementReadStatsById({}); }
     return rows;
   }, [announcementService]);
-  useEffect(() => {
-    refetchNotifications().catch((e) => console.error("Failed to load notifications", e));
-    refetchAnnouncements().catch((e) => console.error("Failed to load announcements", e));
-    refetchMessages().catch((e) => console.error("Failed to load messages", e));
-    refetchActivities().catch((e) => console.error("Failed to load activity feed", e));
-  }, [refetchNotifications, refetchAnnouncements, refetchMessages, refetchActivities]);
 
   // ---------------------------------------------------------------------
   // Storage media -> signed URLs. Every user-uploaded image/file (profile & student photos,
@@ -1221,9 +1180,18 @@ function DataProvider({ children }) {
       lastUid = uid;
       setSessionUserId(uid);
       establish(uid);
-      Promise.allSettled(allRefetchRef.current.map((fn) => fn())).catch(() => {});
+      // Only hydrate the domain data when there's actually a session — every table below is
+      // RLS-protected, so firing these while logged out just produces 401 console noise on the
+      // login screen. Stale in-memory copies from a previous session are never rendered (the app
+      // shows <LoginScreen/> and every gated view checks the session) and are overwritten by the
+      // full refetch on the next sign-in.
+      if (uid) {
+        Promise.allSettled(allRefetchRef.current.map((fn) => fn())).catch(() => {});
+      }
     };
-    supabase.auth.getUser().then(({ data }) => onAuth(data?.user?.id ?? null)).catch(() => onAuth(null));
+    // getSession() is a local read (no network round-trip), so a returning logged-in user's data
+    // starts loading on the same tick as first paint — no empty-state flash.
+    supabase.auth.getSession().then(({ data }) => onAuth(data?.session?.user?.id ?? null)).catch(() => onAuth(null));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       onAuth(session?.user?.id ?? null);
     });
