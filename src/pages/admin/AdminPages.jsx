@@ -6598,9 +6598,12 @@ function ReportsPage() {
   const data = useData();
   const { db } = data;
   const todayKey = todayKeyStr();
+  // null (rendered as "—") when no attendance exists for today at all — a non-school-day, a day
+  // before the year starts, or simply "not taken yet". Showing a flat "0%" in those states reads
+  // as "everyone was absent", which is wrong, and disagrees with the dashboard's "—".
   const attendanceRate = (() => {
     const t = db.attendance.filter((a) => a.date === todayKey);
-    return t.length ? Math.round((t.filter((a) => a.status === "Present").length / t.length) * 100) : 0;
+    return t.length ? Math.round((t.filter((a) => a.status === "Present").length / t.length) * 100) : null;
   })();
   const avgResult = (() => {
     const withTotals = db.results.map((r) => resultTotals(r)).filter((t) => t.count > 0 && t.pct !== null);
@@ -6622,7 +6625,7 @@ function ReportsPage() {
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Reports</h1>
       <p className="text-sm text-slate-400 mb-4">School-wide performance and activity summaries.</p>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <StatCard label="Attendance Today" value={`${attendanceRate}%`} icon={ClipboardCheck} tone="emerald" />
+        <StatCard label="Attendance Today" value={attendanceRate !== null ? `${attendanceRate}%` : "—"} icon={ClipboardCheck} tone="emerald" />
         <StatCard label="Average Academic Result" value={avgResult !== null ? `${avgResult}%` : "—"} icon={FileBarChart} tone="sky" />
         <StatCard label="Homework Assigned" value={homeworkAssigned} icon={ClipboardList} tone="indigo" />
         <StatCard label="Behavior Incidents" value={db.behaviorRecords.length} icon={AlertTriangle} tone="amber" />
@@ -6634,11 +6637,11 @@ function ReportsPage() {
             {db.classes.map((c) => {
               const students = db.students.filter((s) => s.classId === c.id);
               const att = db.attendance.filter((a) => a.classId === c.id && a.date === todayKey);
-              const pct = att.length ? Math.round((att.filter((a) => a.status === "Present").length / att.length) * 100) : 0;
+              const pct = att.length ? Math.round((att.filter((a) => a.status === "Present").length / att.length) * 100) : null;
               return (
                 <div key={c.id}>
-                  <div className="flex justify-between text-xs mb-1"><span className="text-slate-500">{c.grade}{c.section} ({students.length} students)</span><span className="font-medium text-slate-700">{pct}%</span></div>
-                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-emerald-500 rounded-full" style={{ width: `${pct}%` }} /></div>
+                  <div className="flex justify-between text-xs mb-1"><span className="text-slate-500">{c.grade}{c.section} ({students.length} students)</span><span className="font-medium text-slate-700">{pct !== null ? `${pct}%` : "—"}</span></div>
+                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-emerald-500 rounded-full" style={{ width: `${pct || 0}%` }} /></div>
                 </div>
               );
             })}
