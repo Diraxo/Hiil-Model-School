@@ -6258,6 +6258,11 @@ function MessagesPage({ target, clearTarget }) {
   const auth = useAuth();
   const { db } = data;
   const myId = auth.currentUser.id;
+  // "View as" is a read-only lens: the Supabase session/RLS stays the real Owner, so any attempt
+  // to open or post a conversation as the impersonated staff member is rejected by the DB
+  // (get_or_create_conversation: "You may only create a conversation you participate in"). Rather
+  // than fire a doomed request on every directory click, messaging is disabled while impersonating.
+  const impersonating = !!auth.viewingAsUser;
   const myConvos = db.conversations.filter((c) => c.participantIds.includes(myId));
   const [activeConv, setActiveConv] = useState(null);
   const [text, setText] = useState("");
@@ -6268,6 +6273,7 @@ function MessagesPage({ target, clearTarget }) {
 
   useEffect(() => {
     if (target) {
+      if (impersonating) { clearTarget(); return; }
       let cancelled = false;
       Promise.resolve(data.getOrCreateConversation(myId, target)).then((convId) => {
         if (!cancelled) setActiveConv(convId);
@@ -6287,7 +6293,7 @@ function MessagesPage({ target, clearTarget }) {
 
   function send(e) {
     e && e.preventDefault && e.preventDefault();
-    if (!text.trim() || !activeConv) return;
+    if (impersonating || !text.trim() || !activeConv) return;
     const body = text.trim();
     setText("");
     notifyStopTyping();
@@ -6331,14 +6337,20 @@ function MessagesPage({ target, clearTarget }) {
                   </button>
                 );
               })}
-              <div className="px-3 py-2 border-t border-slate-100 mt-1">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Start new</p>
-                {directory.filter((u) => !myConvos.some((c) => c.participantIds.includes(u.id))).slice(0, 6).map((u) => (
-                  <button key={u.id} onClick={() => Promise.resolve(data.getOrCreateConversation(myId, u.id)).then(setActiveConv)} className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-slate-50 rounded-lg">
-                    <Avatar name={u.name} photo={u.photo} size={26} /><span className="text-xs text-slate-600">{u.name}</span>
-                  </button>
-                ))}
-              </div>
+              {impersonating ? (
+                <div className="px-3 py-3 border-t border-slate-100 mt-1">
+                  <p className="text-xs text-slate-400">Messaging is disabled while viewing as {auth.viewingAsUser.name}. Return to your own account to send messages.</p>
+                </div>
+              ) : (
+                <div className="px-3 py-2 border-t border-slate-100 mt-1">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Start new</p>
+                  {directory.filter((u) => !myConvos.some((c) => c.participantIds.includes(u.id))).slice(0, 6).map((u) => (
+                    <button key={u.id} onClick={() => Promise.resolve(data.getOrCreateConversation(myId, u.id)).then(setActiveConv)} className="w-full flex items-center gap-2 px-1 py-1.5 text-left hover:bg-slate-50 rounded-lg">
+                      <Avatar name={u.name} photo={u.photo} size={26} /><span className="text-xs text-slate-600">{u.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div className={`flex-1 flex-col ${activeConv ? "flex" : "hidden sm:flex"}`}>
@@ -6378,10 +6390,14 @@ function MessagesPage({ target, clearTarget }) {
                   )}
                   <div ref={bottomRef} />
                 </div>
-                <div className="p-3 border-t border-slate-100 flex items-center gap-2">
-                  <input value={text} onChange={(e) => { setText(e.target.value); notifyTyping(); }} onKeyDown={(e) => { if (e.key === "Enter") send(e); }} placeholder="Type a message…" className={inputCls} />
-                  <button type="button" onClick={send} className="bg-brand-600 hover:bg-brand-700 text-white rounded-lg p-2.5 shrink-0"><Send size={16} /></button>
-                </div>
+                {impersonating ? (
+                  <div className="p-3 border-t border-slate-100 text-xs text-slate-400">Messaging is disabled while viewing as another user.</div>
+                ) : (
+                  <div className="p-3 border-t border-slate-100 flex items-center gap-2">
+                    <input value={text} onChange={(e) => { setText(e.target.value); notifyTyping(); }} onKeyDown={(e) => { if (e.key === "Enter") send(e); }} placeholder="Type a message…" className={inputCls} />
+                    <button type="button" onClick={send} className="bg-brand-600 hover:bg-brand-700 text-white rounded-lg p-2.5 shrink-0"><Send size={16} /></button>
+                  </div>
+                )}
               </>
             )}
           </div>
