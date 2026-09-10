@@ -1013,11 +1013,26 @@ function DataProvider({ children }) {
   const refetchAnnouncements = useCallback(async () => {
     const rows = await announcementService.list().catch(() => []);
     setAnnouncementsRaw(rows);
-    try {
-      setAnnouncementReadStatsById(await announcementService.readStats(rows.map((a) => a.id)));
-    } catch { setAnnouncementReadStatsById({}); }
+    // announcement_read_stats() is an author/staff oversight read and raises for a Parent caller
+    // ("Not authorized to read announcement statistics"). Only staff sessions (owner / director /
+    // teacher) ever render read counts, so call it only for them rather than fire a doomed 400 on
+    // every parent dashboard load.
+    // The RPC allows every role EXCEPT Parent. A parent session is never in any staff account
+    // list (owner / director[ADMIN|FINANCE] / teacher), so that's the signal to skip the call.
+    const isStaffSession = !!sessionUserId && (
+      ownerAccountsRaw.some((u) => u.id === sessionUserId) ||
+      directorAccountsRaw.some((u) => u.id === sessionUserId) ||
+      teacherAccountsRaw.some((u) => u.id === sessionUserId)
+    );
+    if (isStaffSession) {
+      try {
+        setAnnouncementReadStatsById(await announcementService.readStats(rows.map((a) => a.id)));
+      } catch { setAnnouncementReadStatsById({}); }
+    } else {
+      setAnnouncementReadStatsById({});
+    }
     return rows;
-  }, [announcementService]);
+  }, [announcementService, sessionUserId, ownerAccountsRaw, directorAccountsRaw, teacherAccountsRaw]);
 
   // ---------------------------------------------------------------------
   // Storage media -> signed URLs. Every user-uploaded image/file (profile & student photos,
