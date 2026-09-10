@@ -2781,8 +2781,11 @@ function DataProvider({ children }) {
           const res = await leaveService.decide(id, approvalStatus, reason);
           await Promise.all([refetchLeaveRequests(), refetchAttendance(), refetchStaffAttendance()]);
           if (res && res.noop) return { ok: true };
-          const liveReq = (db.leaveRequests || []).find((r) => r.id === id)
-            || { ...req, approvalStatus, decidedBy, decidedAt: Date.now(), rejectionReason: approvalStatus === "REJECTED" ? reason.trim() : null };
+          // `db` is captured from this render's closure — the refetch above updates React state,
+          // not this local `db`, so a lookup here still returns the PENDING row and the decision
+          // notification would read "declined" for every approval. Build the decided row from the
+          // known-correct arguments instead (the unchanged fields come from `req`).
+          const liveReq = { ...req, approvalStatus, decidedBy, decidedAt: Date.now(), rejectionReason: approvalStatus === "REJECTED" ? (reason || "").trim() : null };
           await logActivityFeed(`A leave request was ${approvalStatus.toLowerCase()}.`);
           // Phase 6: notify_leave_decided sends the decision to the requester (server-checked via
           // can_decide_leave, idempotent via leave_requests.decision_notified).
