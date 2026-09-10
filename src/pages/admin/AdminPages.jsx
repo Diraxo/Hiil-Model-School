@@ -62,7 +62,11 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
   // those stale counts as *today's* attendance once the calendar no longer agrees it's a school day.
   const todaysAttendance = todayInfo.available ? db.attendance.filter((a) => a.date === todayKey) : [];
   const present = todaysAttendance.filter((a) => a.status === "Present").length;
-  const attendancePct = todaysAttendance.length ? Math.round((present / todaysAttendance.length) * 100) : 0;
+  // Rate counts Present + Late as attended — matches data.studentAttendanceRate() (the canonical
+  // figure on every student profile and the parent portal). Late-only was making this card
+  // disagree with the rest of the app whenever a class had a late arrival.
+  const attendedToday = todaysAttendance.filter((a) => a.status === "Present" || a.status === "Late").length;
+  const attendancePct = todaysAttendance.length ? Math.round((attendedToday / todaysAttendance.length) * 100) : 0;
   const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "ARCHIVED");
   const teachers = db.users.filter((u) => u.role === ROLES.TEACHER && u.status !== "INACTIVE" && u.status !== "DISABLED");
   const parents = db.users.filter((u) => u.role === ROLES.PARENT);
@@ -90,7 +94,7 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
         <StatCard label="Active Teachers" value={teachers.length} icon={UserCog} tone="indigo" />
         <StatCard label="Parents" value={parents.length} icon={Users} tone="emerald" />
         <StatCard label="Classes" value={db.classes.length} icon={School} tone="sky" />
-        <StatCard label="Today's Attendance" value={todayInfo.available ? `${attendancePct}%` : "—"} icon={ClipboardCheck} tone="emerald" sub={todayInfo.available ? `${present}/${todaysAttendance.length} present` : todayInfo.label} />
+        <StatCard label="Today's Attendance" value={todayInfo.available ? `${attendancePct}%` : "—"} icon={ClipboardCheck} tone="emerald" sub={todayInfo.available ? `${attendedToday}/${todaysAttendance.length} present or late` : todayInfo.label} />
         <StatCard label="Pending Issues" value={pendingIssues} icon={AlertTriangle} tone="amber" sub="last 7 days" />
       </div>
 
@@ -6606,9 +6610,13 @@ function ReportsPage() {
   // null (rendered as "—") when no attendance exists for today at all — a non-school-day, a day
   // before the year starts, or simply "not taken yet". Showing a flat "0%" in those states reads
   // as "everyone was absent", which is wrong, and disagrees with the dashboard's "—".
+  // "Present-like" = Present OR Late — matches data.studentAttendanceRate() (the canonical rate
+  // shown on every student profile and the parent portal). Counting only "Present" here made
+  // Reports disagree with the rest of the app for any class that had a late arrival.
+  const isPresentLike = (a) => a.status === "Present" || a.status === "Late";
   const attendanceRate = (() => {
     const t = db.attendance.filter((a) => a.date === todayKey);
-    return t.length ? Math.round((t.filter((a) => a.status === "Present").length / t.length) * 100) : null;
+    return t.length ? Math.round((t.filter(isPresentLike).length / t.length) * 100) : null;
   })();
   const avgResult = (() => {
     const withTotals = db.results.map((r) => resultTotals(r)).filter((t) => t.count > 0 && t.pct !== null);
@@ -6642,7 +6650,7 @@ function ReportsPage() {
             {db.classes.map((c) => {
               const students = db.students.filter((s) => s.classId === c.id);
               const att = db.attendance.filter((a) => a.classId === c.id && a.date === todayKey);
-              const pct = att.length ? Math.round((att.filter((a) => a.status === "Present").length / att.length) * 100) : null;
+              const pct = att.length ? Math.round((att.filter(isPresentLike).length / att.length) * 100) : null;
               return (
                 <div key={c.id}>
                   <div className="flex justify-between text-xs mb-1"><span className="text-slate-500">{c.grade}{c.section} ({students.length} students)</span><span className="font-medium text-slate-700">{pct !== null ? `${pct}%` : "—"}</span></div>
