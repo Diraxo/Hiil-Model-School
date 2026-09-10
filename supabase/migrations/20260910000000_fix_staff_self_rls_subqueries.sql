@@ -68,3 +68,22 @@ create policy staff_attendance_select on public.staff_attendance
     public.can_edit_staff_attendance_for(staff_id)
     or public.owns_staff_row(staff_attendance.staff_id)
   );
+
+-- --------------------------------------------------------------------------------------------
+-- parent_students_select: let the Finance & Operations Director read the links.
+--
+-- Finance owns billing for every family: the Fees page groups obligations by family, shows a
+-- per-family "Remind" action, and notify_payment_reminder takes a Finance-picked parent-id list.
+-- With the links invisible to Finance the Fees list labels every family "no parent account
+-- linked" (wrong for any student who has one) and the Remind button resolves to an empty
+-- recipient set. Finance already sees every student, every obligation and every family grouping,
+-- so the parent-account link is a natural part of that same billing view. (Teachers are
+-- intentionally NOT added — their student-profile copy was already softened in the app.)
+drop policy if exists parent_students_select on public.parent_students;
+create policy parent_students_select on public.parent_students
+  for select
+  using (
+    parent_id = auth.uid()
+    or public.is_owner_or_admin()
+    or public.is_finance()
+  );
