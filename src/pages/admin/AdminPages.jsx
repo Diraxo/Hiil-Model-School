@@ -6795,16 +6795,6 @@ function SettingsPage({ role }) {
         </Card>
       )}
 
-      <Card className="p-5 mb-4">
-        <h3 className="text-sm font-semibold text-slate-700 mb-3">Notification Preferences</h3>
-        {["Homework updates", "Attendance alerts", "Exam results", "Announcements", "Messages"].map((p) => (
-          <label key={p} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
-            <span className="text-sm text-slate-600">{p}</span>
-            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-brand-600" />
-          </label>
-        ))}
-      </Card>
-
     </div>
   );
 }
