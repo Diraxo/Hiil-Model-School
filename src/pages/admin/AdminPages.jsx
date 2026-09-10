@@ -939,7 +939,12 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
               {canEdit && <button type="button" onClick={() => setEditOpen(true)} className="text-xs text-brand-600 font-medium">Edit</button>}
             </div>
             {parents.length === 0 ? (
-              <p className="text-xs text-slate-400 mb-2">No parent account connected yet.</p>
+              // A subject/head teacher can't read parent_students (RLS is Owner/Admin + the parent
+              // themselves), so `parents` is always empty for them — don't assert "no account
+              // connected", which is often wrong. The school office manages portal linkage.
+              isTeacher
+                ? <p className="text-xs text-slate-400 mb-2">Parent portal account is managed by the school office. Use the family contact below or Messages to reach the parent.</p>
+                : <p className="text-xs text-slate-400 mb-2">No parent account connected yet.</p>
             ) : parents.map((p) => (
               <div key={p.id} className="flex items-center gap-2.5 mb-2">
                 <Avatar name={p.name} photo={p.photo} size={30} />
