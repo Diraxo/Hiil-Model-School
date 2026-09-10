@@ -6581,7 +6581,7 @@ function NotificationsPage({ onOpen }) {
 function ReportsPage() {
   const data = useData();
   const { db } = data;
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = todayKeyStr();
   const attendanceRate = (() => {
     const t = db.attendance.filter((a) => a.date === todayKey);
     return t.length ? Math.round((t.filter((a) => a.status === "Present").length / t.length) * 100) : 0;
@@ -6591,7 +6591,13 @@ function ReportsPage() {
     if (!withTotals.length) return null;
     return Math.round(withTotals.reduce((a, t) => a + t.pct, 0) / withTotals.length);
   })();
-  const homeworkCompletion = 87; // TODO: placeholder — not yet wired to a real homework-completion metric
+  // There is no per-student homework-submission record in the data model (homework is assigned
+  // per class, not tracked per student), so a real "completion %" can't be computed. Report the
+  // honest figure we do have: homework assigned in the current academic year.
+  const homeworkAssigned = (() => {
+    const year = currentAcademicYear(db.academicYears);
+    return db.homework.filter((h) => !year || !h.academicYearId || h.academicYearId === year.id).length;
+  })();
   const behaviorByType = BEHAVIOR_TYPES.map((t) => ({ label: t, value: db.behaviorRecords.filter((b) => b.type === t).length })).filter((x) => x.value > 0);
   const maxB = Math.max(...behaviorByType.map((b) => b.value), 1);
 
@@ -6602,7 +6608,7 @@ function ReportsPage() {
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <StatCard label="Attendance Today" value={`${attendanceRate}%`} icon={ClipboardCheck} tone="emerald" />
         <StatCard label="Average Academic Result" value={avgResult !== null ? `${avgResult}%` : "—"} icon={FileBarChart} tone="sky" />
-        <StatCard label="Homework Completion" value={`${homeworkCompletion}%`} icon={ClipboardList} tone="indigo" />
+        <StatCard label="Homework Assigned" value={homeworkAssigned} icon={ClipboardList} tone="indigo" />
         <StatCard label="Behavior Incidents" value={db.behaviorRecords.length} icon={AlertTriangle} tone="amber" />
       </div>
       <div className="grid lg:grid-cols-2 gap-4">
