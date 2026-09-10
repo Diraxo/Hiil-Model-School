@@ -9,6 +9,14 @@
 -- is done here with owner privileges. Every statement is guarded / pattern-scoped, so on a
 -- database without the scaffolding each is a harmless no-op.
 
+-- Some FK cascades below legitimately SET NULL a guarded column: notifications.payment_id when a
+-- test payment is deleted, and leave_requests.decided_by if a ZZTEST user ever decided one. The
+-- notifications_update_guard / leave_requests_update_guard BEFORE-UPDATE triggers exist to stop
+-- an app client rewriting that history -- they are not meant to fire during an owner-run cleanup.
+-- Suspend them for this transaction only (transactional DDL: auto-restored on rollback too).
+alter table public.notifications  disable trigger notifications_update_guard;
+alter table public.leave_requests disable trigger leave_requests_update_guard;
+
 do $$
 declare
   v_students     uuid[];
@@ -112,6 +120,9 @@ begin
     delete from auth.users where id = any (v_test_users);
   end if;
 end $$;
+
+alter table public.notifications  enable trigger notifications_update_guard;
+alter table public.leave_requests enable trigger leave_requests_update_guard;
 
 -- Receipt / payslip / expense sequences are shared with the school's real numbering. The ZZTEST
 -- run consumed payment receipts #0013–#0015, payslip SAL-2026-09-0001 and expense #0001. The
