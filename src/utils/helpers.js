@@ -64,6 +64,51 @@ function initials(name = "") {
 function fullName(first, middle, last) {
   return [first, middle, last].map((p) => (p || "").trim()).filter(Boolean).join(" ");
 }
+// Inverse of fullName(): splits one typed "Full Name" string into the existing
+// first/middle/last columns without inventing or dropping any part. 2 words -> no last name
+// (never fabricated); 4+ words -> the interior words are folded into middleName so
+// fullName(first, middle, last) reconstructs the original string exactly.
+function splitFullName(value) {
+  const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: "", middleName: "", lastName: "" };
+  if (parts.length === 1) return { firstName: parts[0], middleName: "", lastName: "" };
+  if (parts.length === 2) return { firstName: parts[0], middleName: parts[1], lastName: "" };
+  return { firstName: parts[0], middleName: parts.slice(1, -1).join(" "), lastName: parts[parts.length - 1] };
+}
+// Deterministic, explainable "how complete is this student record" checklist — derived purely
+// from existing student fields (never stored) so it can never go stale. Deliberately leaves out
+// system metadata (student_id is generated, not entered) and anything computed (age comes from
+// dob, never a field of its own). Full name/grade are always true for any saved student (both are
+// required at creation) — they still appear so the checklist reads as a complete picture, not just
+// a "what's missing" list.
+function studentProfileCompletion(s) {
+  const sections = s ? [
+    { title: "Identity", items: [
+      { key: "fullName", label: "Full name", done: !!fullName(s.firstName, s.middleName, s.lastName) },
+      { key: "grade", label: "Grade", done: !!s.grade },
+      { key: "gender", label: "Gender", done: !!s.gender },
+      { key: "dob", label: "Date of birth", done: !!s.dob },
+    ] },
+    { title: "Contact", items: [
+      { key: "guardianName", label: "Guardian name", done: !!s.guardianName },
+      { key: "guardianPhone", label: "Guardian phone", done: !!s.guardianPhone },
+      { key: "guardianRelationship", label: "Guardian relationship", done: !!s.guardianRelationship },
+      { key: "emergencyContact", label: "Emergency contact", done: !!s.emergencyContact },
+    ] },
+    { title: "Profile", items: [
+      { key: "photo", label: "Student photo", done: !!s.photo },
+      { key: "homeAddress", label: "Home address", done: !!s.homeAddress },
+      { key: "previousSchool", label: "Previous school", done: !!s.previousSchool },
+    ] },
+  ] : [];
+  const items = sections.flatMap((sec) => sec.items);
+  const done = items.filter((i) => i.done).length;
+  const total = items.length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const state = pct === 100 ? "complete" : pct === 0 ? "empty" : "partial";
+  const stateLabel = { complete: "Profile complete", partial: "Information incomplete", empty: "Information not completed" }[state];
+  return { pct, done, total, sections, items, state, stateLabel };
+}
 // Plain inclusive calendar-day count between two "YYYY-MM-DD" date keys — deliberately NOT
 // the weekday/holiday-skipping count used for attendance auto-fill; a leave display should
 // read "24 Aug - 30 Aug = 7 days" regardless of weekends inside the range.
@@ -188,6 +233,6 @@ function joinWithAnd(items) {
 }
 
 export {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, ageFromDob, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
   numberToWords, amountInWords, joinWithAnd, monthLabel,
 };

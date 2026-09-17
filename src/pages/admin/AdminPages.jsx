@@ -19,7 +19,7 @@ import {
   SEMESTERS, SEMESTER_LABEL, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, ageFromDob, computePeriodSchedule,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
   leaveDurationLabel, amountInWords, monthLabel,
 } from "../../utils/helpers";
 import {
@@ -397,14 +397,15 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
       {isEdit && (
         <Field label="Profile photo">
           <div className="flex items-center gap-3">
-            <Avatar name={`${form.firstName || ""} ${form.lastName || ""}`} photo={form.photo} size={44} />
+            <Avatar name={form.fullName || fullName(form.firstName, form.middleName, form.lastName)} photo={form.photo} size={44} />
             <button type="button" onClick={onPickPhoto} className="text-xs text-brand-600 font-medium border border-brand-100 rounded-lg px-3 py-2 hover:bg-brand-50">Change Photo</button>
           </div>
         </Field>
       )}
-      <Field label="First name" required error={errors.firstName}><input className={fieldCls("firstName")} value={form.firstName} onChange={(e) => set("firstName", e.target.value)} /></Field>
-      <Field label="Middle name" required error={errors.middleName}><input className={fieldCls("middleName")} value={form.middleName} onChange={(e) => set("middleName", e.target.value)} /></Field>
-      <Field label="Last name" required error={errors.lastName}><input className={fieldCls("lastName")} value={form.lastName} onChange={(e) => set("lastName", e.target.value)} /></Field>
+      <Field label="Full name" required error={errors.fullName}>
+        <input className={fieldCls("fullName")} value={form.fullName ?? ""} onChange={(e) => set("fullName", e.target.value)} placeholder="Mohamed Hassan" />
+        <span className="block text-xs text-slate-400 mt-1">A last name isn't required — e.g. "Mohamed Hassan" is complete.</span>
+      </Field>
       <Field label="Gender">
         <select className={inputCls} value={form.gender || ""} onChange={(e) => set("gender", e.target.value)}>
           <option value="">Select gender</option>
@@ -483,7 +484,7 @@ function AddStudentModal({ open, onClose }) {
   const data = useData();
   const toast = useToast();
   const empty = {
-    firstName: "", middleName: "", lastName: "", gender: "", dob: "", grade: "", section: "",
+    fullName: "", gender: "", dob: "", grade: "", section: "",
     academicYearId: (currentAcademicYear(data.db.academicYears) || {}).id || "",
     admissionDate: new Date().toISOString().slice(0, 10),
     guardianName: "", guardianPhone: "", guardianRelationship: "", guardianRelationshipOther: "", custody: "",
@@ -514,9 +515,8 @@ function AddStudentModal({ open, onClose }) {
   async function submit(e) {
     e && e.preventDefault && e.preventDefault();
     const nextErrors = {};
-    if (!form.firstName.trim()) nextErrors.firstName = "First name is required.";
-    if (!form.middleName.trim()) nextErrors.middleName = "Middle name is required.";
-    if (!form.lastName.trim()) nextErrors.lastName = "Last name is required.";
+    const nameParts = (form.fullName || "").trim().split(/\s+/).filter(Boolean);
+    if (nameParts.length < 2) nextErrors.fullName = "Enter at least the student's first and second names.";
     if (!form.grade) nextErrors.grade = "Please select a grade.";
     if (Object.keys(nextErrors).length) {
       setErrors(nextErrors);
@@ -526,9 +526,7 @@ function AddStudentModal({ open, onClose }) {
     await run(async () => {
       const res = await data.createStudent({
         ...form,
-        firstName: form.firstName.trim(),
-        middleName: form.middleName.trim(),
-        lastName: form.lastName.trim(),
+        ...splitFullName(form.fullName),
       });
       if (!res.ok) { toast(res.message, "error"); return; }
       setCreatedId(res.studentId);
@@ -593,7 +591,7 @@ function ChangePhotoModal({ open, onClose, student }) {
   return (
     <Modal open={open} onClose={onClose} title="Change Profile Photo">
       <div className="flex flex-col items-center gap-4 py-2">
-        <Avatar name={`${student.firstName} ${student.lastName}`} photo={preview} size={96} />
+        <Avatar name={fullName(student.firstName, student.middleName, student.lastName)} photo={preview} size={96} />
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 border border-dashed border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-brand-300">
             <Camera size={15} /> {preview ? "Replace photo" : "Upload photo"}
@@ -737,6 +735,52 @@ function PromoteStudentModal({ open, onClose, student }) {
         <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Working…">Promote / Re-enroll</PrimaryButton>
       </div>
     </Modal>
+  );
+}
+
+// Compact, always-derived (never stored) profile-completion bar for the student header —
+// see studentProfileCompletion() in utils/helpers for the checklist itself. `onComplete` opens
+// the existing Edit Student flow; there is no second edit surface for this.
+function ProfileCompletionSummary({ student, onComplete }) {
+  const [open, setOpen] = useState(false);
+  const completion = studentProfileCompletion(student);
+  const barTone = completion.state === "complete" ? "bg-emerald-500" : completion.state === "partial" ? "bg-amber-500" : "bg-red-400";
+  const textTone = completion.state === "complete" ? "text-emerald-700" : completion.state === "partial" ? "text-amber-700" : "text-red-600";
+  const missing = completion.items.filter((i) => !i.done);
+  return (
+    <div className="mt-4 pt-3 border-t border-slate-100">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-[220px]">
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-medium text-slate-600">Profile completion — {completion.pct}%</span>
+            <span className={`font-medium ${textTone}`}>{completion.stateLabel}</span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-100 overflow-hidden" role="progressbar" aria-valuenow={completion.pct} aria-valuemin={0} aria-valuemax={100} aria-label={`Profile completion ${completion.pct}%, ${completion.stateLabel}`}>
+            <div className={`h-full rounded-full ${barTone}`} style={{ width: `${completion.pct}%` }} />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {missing.length > 0 && (
+            <button type="button" onClick={() => setOpen((o) => !o)} className="text-xs font-medium text-slate-500 hover:text-slate-700 inline-flex items-center gap-0.5">
+              What's missing? {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </button>
+          )}
+          {missing.length > 0 && onComplete && (
+            <GhostButton icon={Edit2} onClick={onComplete}>Complete Profile</GhostButton>
+          )}
+        </div>
+      </div>
+      {open && (
+        <div className="mt-3 grid sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs bg-slate-50 border border-slate-100 rounded-lg p-3">
+          {completion.items.map((i) => (
+            <div key={i.key} className={`flex items-center gap-1.5 ${i.done ? "text-slate-500" : "text-slate-400"}`}>
+              {i.done ? <CheckCircle2 size={13} className="text-emerald-500 shrink-0" /> : <CircleAlert size={13} className="text-amber-400 shrink-0" />}
+              {i.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -888,6 +932,8 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
             {!isViewingCurrentYear && <span className="text-xs text-amber-600">Viewing a past year — historical, read-only</span>}
           </div>
         )}
+
+        <ProfileCompletionSummary student={s} onComplete={canEdit ? () => setEditOpen(true) : null} />
       </Card>
 
       {isTeacher && studentStatusNotice(s) && (() => {
@@ -1272,15 +1318,30 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
 function EditStudentModal({ open, onClose, student }) {
   const data = useData();
   const toast = useToast();
-  const [form, setForm] = useState(student);
+  const [form, setForm] = useState(() => (student ? { ...student, fullName: fullName(student.firstName, student.middleName, student.lastName) } : student));
+  const [errors, setErrors] = useState({});
   const [photoOpen, setPhotoOpen] = useState(false);
   const { busy, run } = useMutationGuard();
-  useEffect(() => { setForm(student); }, [student]);
-  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  useEffect(() => { setForm(student ? { ...student, fullName: fullName(student.firstName, student.middleName, student.lastName) } : student); }, [student]);
+  function set(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+    setErrors((e) => (e[k] ? { ...e, [k]: undefined } : e));
+  }
+  function fieldCls(k) {
+    return errors[k]
+      ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-brand-500/40", "focus:ring-red-400/40").replace("focus:border-brand-400", "focus:border-red-400")
+      : inputCls;
+  }
   async function submit(e) {
     e && e.preventDefault && e.preventDefault();
+    const nameParts = (form.fullName || "").trim().split(/\s+/).filter(Boolean);
+    if (nameParts.length < 2) {
+      setErrors({ fullName: "Enter at least the student's first and second names." });
+      toast("Please complete the required fields.", "error");
+      return;
+    }
     await run(async () => {
-      const res = await data.updateStudent(student.id, form);
+      const res = await data.updateStudent(student.id, { ...form, ...splitFullName(form.fullName) });
       if (!res.ok) { toast(res.message, "error"); return; }
       toast("Student profile updated.", "success");
       onClose();
@@ -1297,7 +1358,7 @@ function EditStudentModal({ open, onClose, student }) {
             <span className="text-slate-500 font-mono">{student.studentId}</span>
             <span className="text-slate-500">{formatAcademicYearLabel(year)}</span>
           </div>
-          <StudentFormFields form={form} set={set} fieldCls={() => inputCls} errors={{}} mode="edit" gradeOptions={data.gradeOptions()} academicYears={data.db.academicYears} onPickPhoto={() => setPhotoOpen(true)} />
+          <StudentFormFields form={form} set={set} fieldCls={fieldCls} errors={errors} mode="edit" gradeOptions={data.gradeOptions()} academicYears={data.db.academicYears} onPickPhoto={() => setPhotoOpen(true)} />
           <div className="flex justify-end gap-2 pt-1">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
             <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Saving…">Save Changes</PrimaryButton>
