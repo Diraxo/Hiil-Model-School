@@ -1037,7 +1037,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
             <DetailRow label="Age" value={ageFromDob(s.dob) === null ? "" : `${ageFromDob(s.dob)} years`} />
             <DetailRow label="Home address" value={s.homeAddress} />
             <DetailRow label="Previous school" value={s.previousSchool} />
-            {!s.gender && !s.dob && !s.homeAddress && !s.previousSchool && <p className="text-xs text-slate-400">No additional information on record.</p>}
+            <DetailRow label="Uses Bus" value={s.usesBus ? "Yes" : "No"} />
           </Card>
         </div>
       )}
