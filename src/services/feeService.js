@@ -24,6 +24,32 @@ import { supabase } from "../lib/supabaseClient";
 const ts = (v) => (v ? new Date(v).getTime() : null);
 const num = (v) => (v == null ? null : Number(v));
 
+// BLOCKER 6 root cause: PostgREST (Supabase's data API) caps any single `.select()` response at the
+// project's configured max rows (1000 by default) and silently returns only that many -- it does NOT
+// error. `student_fee_obligations` passed 1000 rows as the roster grew, so a plain
+// `.select("*")` (no .range()) started dropping ~100+ real obligation rows from every fetch, for an
+// effectively arbitrary subset of students (whichever rows fell outside that request's unordered
+// window). Those students' obligations are correct in the database -- feeRowsForStudentIn just never
+// saw them client-side, so every fee type for that student resolved 0 rows -> "No fee configured",
+// even though nothing about their grade, enrollment or the fee schedule itself was wrong.
+// `pageThrough` fetches a table to completion regardless of size by walking `.range()` pages ordered
+// by the primary key (a stable, unique sort is required for `.range()` paging to be gap/overlap free
+// -- an unordered `.select()` can return duplicate or missing rows across pages).
+const PAGE_SIZE = 1000;
+async function pageThrough(table, { select = "*", orderBy = "id" } = {}) {
+  let rows = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from(table).select(select).order(orderBy, { ascending: true }).range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows = rows.concat(data || []);
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return rows;
+}
+
 function mapFeeType(r) {
   return {
     id: r.id,
@@ -100,30 +126,23 @@ function mapAdjustment(r) {
 export function createFeeService() {
   return {
     async listFeeTypes() {
-      const { data, error } = await supabase.from("fee_types").select("*").order("created_at");
-      if (error) throw error;
-      return (data || []).map(mapFeeType);
+      return (await pageThrough("fee_types", { orderBy: "created_at" })).map(mapFeeType);
     },
     async listSchedules() {
-      const { data, error } = await supabase.from("fee_schedules").select("*").order("created_at");
-      if (error) throw error;
-      return (data || []).map(mapSchedule);
+      return (await pageThrough("fee_schedules", { orderBy: "created_at" })).map(mapSchedule);
     },
     async listInstallments() {
-      const { data, error } = await supabase
-        .from("fee_installments").select("*").order("fee_schedule_id").order("sequence_index");
-      if (error) throw error;
-      return (data || []).map(mapInstallment);
+      return (await pageThrough("fee_installments", { orderBy: "sequence_index" })).map(mapInstallment);
     },
+    // BLOCKER 6: this is the table that actually crossed the 1000-row default cap live -- see
+    // pageThrough's comment above. Paging it (ordered by the uuid primary key, so pages neither
+    // overlap nor gap) is the fix; the other four are paged too so none of them silently truncates
+    // the same way once the roster grows further in future years.
     async listObligations() {
-      const { data, error } = await supabase.from("student_fee_obligations").select("*");
-      if (error) throw error;
-      return (data || []).map(mapObligation);
+      return (await pageThrough("student_fee_obligations")).map(mapObligation);
     },
     async listAdjustments() {
-      const { data, error } = await supabase.from("fee_obligation_adjustments").select("*").order("created_at");
-      if (error) throw error;
-      return (data || []).map(mapAdjustment);
+      return (await pageThrough("fee_obligation_adjustments", { orderBy: "created_at" })).map(mapAdjustment);
     },
 
     /* ---------- fee_types ---------- */
