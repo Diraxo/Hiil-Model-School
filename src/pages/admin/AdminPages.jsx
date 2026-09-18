@@ -4974,6 +4974,13 @@ function PaymentsPage({ onOpenStudent }) {
   // BLOCKER 6: "unpaid" = actually behind on a configured fee. A student with no fee configured is
   // neither paid nor unpaid and must not inflate this count.
   const unpaidCount = activeStudents.filter((s) => ["UNPAID", "PARTIAL"].includes(data.dueStatusForStudent(s).status)).length;
+  // Blocker 7: name this card after the actual current fee month (never a hardcoded month) so it
+  // reads as "what's due as of <this month>" instead of the ambiguous "Outstanding Balance". The
+  // underlying figure is unchanged (dueStatusForStudent's "due now" total, current month and
+  // earlier only — never future months).
+  const [curMonthYear, curMonthNum] = todayKeyStr().slice(0, 7).split("-").map(Number);
+  const currentMonthName = new Date(curMonthYear, curMonthNum - 1, 1).toLocaleDateString("en-US", { month: "long" });
+  const currentMonthOutstandingLabel = totalOutstanding > 0 ? `${currentMonthName} Outstanding` : `${currentMonthName} — Fully Paid`;
 
   function unpaidParentIds() {
     const ids = new Set();
@@ -5020,7 +5027,7 @@ function PaymentsPage({ onOpenStudent }) {
 
       <div className="grid sm:grid-cols-3 gap-3 mb-4">
         <StatCard label="Collected (all time)" value={formatMoney(totalCollected)} icon={Wallet} tone="emerald" />
-        <StatCard label="Outstanding Balance (due now)" value={formatMoney(totalOutstanding)} icon={CircleAlert} tone="amber" />
+        <StatCard label={currentMonthOutstandingLabel} value={formatMoney(totalOutstanding)} icon={CircleAlert} tone="amber" />
         <StatCard label="Students With a Balance" value={unpaidCount} icon={Users} tone="red" />
       </div>
 
@@ -5731,6 +5738,71 @@ function receiptForPayment(data, paymentId, restrictToStudentIds) {
     pages, receiptNo: payment.receiptNo, date: payment.date, method: pm?.name || "", cashierName: data.getUser(payment.recordedBy)?.name || "",
     voidedLines, allVoided: payment.status === "VOIDED",
   };
+}
+
+// Blocker 7: student name(s) for a payment row, same allocation → obligation → student traversal
+// voidPayment (DataContext) and allocationDetail (above) already use — no new lookup logic.
+function paymentStudentNames(data, payment) {
+  const allocs = data.db.paymentAllocations.filter((a) => a.paymentId === payment.id);
+  const names = [...new Set(allocs.map((a) => allocationDetail(data, a).studentName))];
+  return names.length ? names.join(", ") : "Unknown student";
+}
+
+// Blocker 7: "Recent Payments" — the latest 5 payment RECORDS (payments is the source of truth,
+// no new table/cache), newest recorded first. Actor attribution (recorded by) is resolved the
+// same way the printed receipt's cashier name already is (data.getUser(recordedBy).name) — the
+// Recent Activity feed's separate actor-snapshot system is untouched. Opening a row reuses the
+// exact receiptForPayment/CashReceiptModal pair every other "View Receipt" entry point uses.
+function RecentPaymentsCard() {
+  const data = useData();
+  const { db } = data;
+  const [receiptPaymentId, setReceiptPaymentId] = useState(null);
+  const recent = [...db.payments].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 5);
+  const receipt = receiptPaymentId ? receiptForPayment(data, receiptPaymentId, null) : null;
+
+  return (
+    <Card className="p-5">
+      <h3 className="text-sm font-semibold text-slate-700 mb-4">Recent Payments</h3>
+      {recent.length === 0 ? (
+        <EmptyState icon={ReceiptIcon} title="No payments recorded yet." />
+      ) : (
+        <div className="space-y-1">
+          {recent.map((p) => {
+            const voided = p.status === "VOIDED";
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setReceiptPaymentId(p.id)}
+                className="group w-full flex items-start justify-between gap-3 text-left text-xs hover:bg-slate-50 rounded-lg -mx-1 px-1 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-700 truncate group-hover:text-brand-700">{paymentStudentNames(data, p)}</p>
+                  <p className="text-slate-400 mt-0.5">Receipt #{p.receiptNo} · {data.getUser(p.recordedBy)?.name || "Unknown"}</p>
+                  <p className="text-slate-300 mt-0.5">{fmtDate(p.createdAt)} · {fmtTime(p.createdAt)}</p>
+                </div>
+                <div className="text-right shrink-0 space-y-1">
+                  <p className={`font-semibold ${voided ? "text-slate-400 line-through" : "text-slate-800"}`}>{formatMoney(p.amountTotal)}</p>
+                  {voided && <Badge tone="red">VOIDED</Badge>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <CashReceiptModal
+        open={!!receipt}
+        onClose={() => setReceiptPaymentId(null)}
+        pages={receipt?.pages || []}
+        receiptNo={receipt?.receiptNo || ""}
+        date={receipt ? fmtDate(receipt.date) : ""}
+        method={receipt?.method || ""}
+        cashierName={receipt?.cashierName || ""}
+        voidedLines={receipt?.voidedLines || []}
+        allVoided={receipt?.allVoided || false}
+      />
+    </Card>
+  );
 }
 
 // BLOCKER 6: fee months are NOT dates. School fees and bus fees are both selected by month, and
@@ -6878,5 +6950,5 @@ export {
   AnnounceExamModal, SubjectSemesterResultsEditor, BehaviorAdminPage, AnnouncementsPage,
   CreateAnnouncementModal, PaymentsPage, FeeSettingsModal, RecordPaymentModal, ReminderModal,
   ParentPaymentsPage, MessagesPage, NotificationsPage, ReportsPage, SettingsPage, ReportCardsPage,
-  PayslipModal,
+  PayslipModal, RecentPaymentsCard,
 };

@@ -4,6 +4,7 @@ import { formatMoney } from "../../utils/constants";
 import { Card, StatCard } from "../../components/ui";
 import { RecentActivityFeed } from "../../components/RecentActivity";
 import { useData } from "../../context/DataContext";
+import { currentAcademicYear } from "../../utils/academicCalendar";
 
 // A financial activity: mentions money movement in its text, or deep-links to a finance page.
 const FINANCIAL_ACTIVITY_RE = /payment|salary|expense|payroll|fee|receipt|advance|void|reminder/i;
@@ -18,7 +19,12 @@ function FinanceDashboard({ setPage, onOpenActivity }) {
   const financialActivities = db.activities.filter(isFinancialActivity);
   const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
   const totalCollected = db.payments.filter((p) => p.status !== "VOIDED").reduce((sum, p) => sum + p.amountTotal, 0);
+  // Blocker 7: same full-academic-year figure as the Owner dashboard (see studentPaymentSummary
+  // in DataContext) — labeled with the active academic year so it isn't mistaken for the Fees &
+  // Payments page's smaller "due now" figure.
   const totalOutstanding = activeStudents.reduce((sum, s) => sum + data.studentPaymentSummary(s).totalOwed, 0);
+  const activeYear = currentAcademicYear(db.academicYears);
+  const outstandingLabel = activeYear ? `Annual Outstanding — ${activeYear.gcLabel} Academic Year` : "Annual Outstanding";
   const payrollNetPay = db.staff.reduce((sum, s) => sum + (data.staffSalarySummary(s.id)?.outstanding || 0), 0);
   const thisMonthKey = new Date().toISOString().slice(0, 7);
   const expensesThisMonth = db.expenses.filter((e) => e.date?.slice(0, 7) === thisMonthKey).reduce((sum, e) => sum + e.totalAmount, 0);
@@ -31,7 +37,7 @@ function FinanceDashboard({ setPage, onOpenActivity }) {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="School Fee Collected" value={formatMoney(totalCollected)} icon={Wallet} tone="emerald" />
-        <StatCard label="School Fee Outstanding" value={formatMoney(totalOutstanding)} icon={AlertTriangle} tone="amber" />
+        <StatCard label={outstandingLabel} value={formatMoney(totalOutstanding)} icon={AlertTriangle} tone="amber" />
         <StatCard label="Payroll Net Pay" value={formatMoney(payrollNetPay)} icon={Banknote} tone="amber" />
         <StatCard label="Expenses This Month" value={formatMoney(expensesThisMonth)} icon={ReceiptIcon} tone="sky" />
       </div>

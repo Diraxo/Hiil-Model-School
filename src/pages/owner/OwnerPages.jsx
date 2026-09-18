@@ -20,13 +20,14 @@ import { RecentActivityFeed } from "../../components/RecentActivity";
 import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
 import { useAuth } from "../../context/AuthContext";
-import { StaffLeaveRequestForm, TodaysJournalSummaryCard } from "../admin/AdminPages";
+import { StaffLeaveRequestForm, TodaysJournalSummaryCard, RecentPaymentsCard } from "../admin/AdminPages";
 import {
   canManageDirectors, canManageTeachers, canManageOtherStaff, canManageStaffGroup, manageablePositions,
 } from "../../utils/staffPermissions";
 import { canRecordAdvance, canViewPayroll, canSetSalary, canEditDirectorFinancials } from "../../utils/payrollPermissions";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
+import { currentAcademicYear } from "../../utils/academicCalendar";
 
 const STAFF_GROUPS = ["Directors", "Teachers", "Other Staff"];
 // Every screen that lists staff (Staff, Payroll, Staff Attendance) groups the same way — this is
@@ -50,7 +51,7 @@ function groupUsers(userList) {
     .filter((g) => g.items.length > 0);
 }
 
-/* ============================== OWNER DASHBOARD ============================== */
+/* ============================== SCHOOL DASHBOARD (Owner) ============================== */
 
 function OwnerDashboard({ setPage, onOpenActivity }) {
   const data = useData();
@@ -60,7 +61,13 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
   // member with a disabled account but ongoing employment still counts here.
   const activeStaffCount = db.staff.filter((s) => employmentActiveOn(s, todayKeyStr())).length;
   const totalCollected = db.payments.filter((p) => p.status !== "VOIDED").reduce((sum, p) => sum + p.amountTotal, 0);
+  // Blocker 7: this is the true full-academic-year outstanding figure (every unpaid installment
+  // for the whole year, including months not yet due) — see studentPaymentSummary/balanceFor in
+  // DataContext. Labeled explicitly with the active academic year so it isn't mistaken for the
+  // smaller "due now" figure the Fees & Payments page shows via dueStatusForStudent.
   const totalOutstanding = activeStudents.reduce((sum, s) => sum + data.studentPaymentSummary(s).totalOwed, 0);
+  const activeYear = currentAcademicYear(db.academicYears);
+  const outstandingLabel = activeYear ? `Annual Outstanding — ${activeYear.gcLabel} Academic Year` : "Annual Outstanding";
   const payrollNetPay = db.staff.reduce((sum, s) => sum + (data.staffSalarySummary(s.id)?.outstanding || 0), 0);
   const thisMonthKey = new Date().toISOString().slice(0, 7);
   const expensesThisMonth = db.expenses.filter((e) => e.date?.slice(0, 7) === thisMonthKey).reduce((sum, e) => sum + e.totalAmount, 0);
@@ -75,7 +82,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2"><Crown size={20} className="text-amber-500" /> Owner Overview</h1>
+        <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2"><Crown size={20} className="text-amber-500" /> School Dashboard</h1>
         <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — school-wide financial and operational position.</p>
       </div>
 
@@ -85,7 +92,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
         <StatCard label="Students" value={activeStudents.length} icon={GraduationCap} tone="sky" />
         <StatCard label="Active Staff" value={activeStaffCount} icon={UserCog} tone="indigo" />
         <StatCard label="School Fee Collected" value={formatMoney(totalCollected)} icon={Wallet} tone="emerald" />
-        <StatCard label="School Fee Outstanding" value={formatMoney(totalOutstanding)} icon={AlertTriangle} tone="amber" />
+        <StatCard label={outstandingLabel} value={formatMoney(totalOutstanding)} icon={AlertTriangle} tone="amber" />
         <StatCard label="Net Position" value={formatMoney(netPosition)} icon={Banknote} tone={netPosition >= 0 ? "emerald" : "red"} />
       </div>
 
@@ -117,6 +124,8 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
         </div>
         <RecentActivityFeed activities={db.activities} onOpenActivity={onOpenActivity} />
       </Card>
+
+      <RecentPaymentsCard />
 
       <AnnouncementsPreviewCard announcements={db.announcements} />
     </div>
