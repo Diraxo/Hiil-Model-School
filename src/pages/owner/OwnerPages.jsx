@@ -144,7 +144,7 @@ function AccountsPage() {
   const [confirmStatus, setConfirmStatus] = useState(null); // { user, next }
   const { isBusy, run } = useMutationGuard();
 
-  const owner = db.users.find((u) => u.role === ROLES.OWNER);
+  const owners = db.users.filter((u) => u.role === ROLES.OWNER);
   const directors = groupUsers(db.users.filter((u) => u.role === ROLES.ADMIN || u.role === ROLES.FINANCE))[0]?.items || [];
   // "View as" is staff-only — parents and other Owners are never impersonable, so they're excluded from this list entirely.
   const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && u.role !== ROLES.OWNER &&(u.name || "").toLowerCase().includes(q.toLowerCase()));
@@ -174,20 +174,22 @@ function AccountsPage() {
           </div>
         </div>
 
-        {owner && (
+        {owners.length > 0 && (
           <div className="mb-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Owner</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{owners.length > 1 ? "Owners" : "Owner"}</p>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <Card className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2.5">
-                    <Avatar name={owner.name} size={36} />
-                    <div><p className="text-sm font-semibold text-slate-700">{owner.name}</p><p className="text-xs text-slate-400">{ROLE_LABEL[owner.role]}</p></div>
+              {owners.map((owner) => (
+                <Card key={owner.id} className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={owner.name} size={36} />
+                      <div><p className="text-sm font-semibold text-slate-700">{owner.name}</p><p className="text-xs text-slate-400">{ROLE_LABEL[owner.role]}</p></div>
+                    </div>
+                    <Badge tone={owner.status === "ACTIVE" ? "green" : owner.status === "SUSPENDED" ? "amber" : "red"}>{owner.status || "ACTIVE"}</Badge>
                   </div>
-                  <Badge tone={owner.status === "ACTIVE" ? "green" : owner.status === "SUSPENDED" ? "amber" : "red"}>{owner.status || "ACTIVE"}</Badge>
-                </div>
-                <p className="text-xs text-slate-400">{owner.email}</p>
-              </Card>
+                  <p className="text-xs text-slate-400">{owner.email}</p>
+                </Card>
+              ))}
             </div>
           </div>
         )}
