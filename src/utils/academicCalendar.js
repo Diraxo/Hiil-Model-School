@@ -31,7 +31,9 @@ function isWeekendDate(dateKey) {
 }
 
 const DEFAULT_BREAK_DAYS = 15;
-const DEFAULT_RESULT_FINALIZATION_GRACE_DAYS = 14;
+// School policy: results stay correctable for 15 days after a semester ends. The live value is a
+// per-academic-year setting (academic_years.result_finalization_grace_days); this is only the default.
+const DEFAULT_RESULT_FINALIZATION_GRACE_DAYS = 15;
 
 // Sensible out-of-the-box calendar for a school year starting on `start` (a Date, defaults to the
 // current September-to-September school year) — used both to seed the very first academic year
@@ -202,7 +204,8 @@ function classifySemesterResultLock(semester, cal, todayKey) {
           : `${semLabel} is locked — ${semLabel} ended on ${fmtDateLong(cal.sem2End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.`,
       };
     }
-    return { locked: false, phase: todayKey <= cal.sem2End ? "active" : "grace_period", message: "" };
+    if (todayKey <= cal.sem2End) return { locked: false, phase: "active", message: "" };
+    return graceWindow(semLabel, todayKey, ceiling);
   }
 
   // S1
@@ -216,7 +219,26 @@ function classifySemesterResultLock(semester, cal, todayKey) {
   if (todayKey > ceiling) {
     return { locked: true, phase: "grace_expired", message: `${semLabel} is locked — ${semLabel} ended on ${fmtDateLong(cal.sem1End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.` };
   }
-  return { locked: false, phase: todayKey <= cal.sem1End ? "active" : "grace_period", message: "" };
+  if (todayKey <= cal.sem1End) return { locked: false, phase: "active", message: "" };
+  return graceWindow(semLabel, todayKey, ceiling);
+}
+
+// The semester has ended but its correction window is still open: edits are allowed, and the UI
+// shows how long is left (counting today, so the last allowed day reads "1 day remaining").
+function graceWindow(semLabel, todayKey, ceiling) {
+  const daysRemaining = daysBetween(todayKey, ceiling) + 1;
+  return {
+    locked: false, phase: "grace_period", windowEnds: ceiling, daysRemaining,
+    message: `${semLabel} has ended. Correction window: ${daysLabel(daysRemaining)} remaining.`,
+  };
+}
+
+// The semester teachers/parents should land on: Semester 2 as soon as it has started, Semester 1
+// before that (including during the S1 correction window, which runs until S2 begins at the latest).
+// Never derived from a hard-coded date — only from the year's own configured calendar.
+function currentResultSemester(cal, todayKey) {
+  if (!cal) return "S1";
+  return todayKey >= cal.sem2Start ? "S2" : "S1";
 }
 
 // The earliest date attendance could ever be recorded for — used as the DateNav lower bound.
@@ -248,6 +270,7 @@ export {
   classifyAttendanceDate,
   isAttendanceDateAvailable,
   classifySemesterResultLock,
+  currentResultSemester,
   isWeekendDate,
   earliestAttendanceDate,
   latestAttendanceDate,

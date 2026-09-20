@@ -13,7 +13,7 @@ import {
   todayDayName, academicYearStart, addMonthsFloat, feeCoverage,
   SUBJECTS, GRADES, SECTIONS, sectionLabel,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
-  BRAND, LOGO_DATA_URI, ASSESSMENT_COMPONENT_LABEL, computeSemesterResult,
+  BRAND, LOGO_DATA_URI, computeSemesterResult,
 } from "../utils/constants";
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor,
@@ -127,13 +127,19 @@ function AttendanceSaveBar({ marked, total, dirty, busy, onCancel, onSave }) {
   );
 }
 
-// Computes a student's semester-result totals against the fixed-weight schema (Midterm 1/2,
-// Student Book, Final Exam — 20/20/10/50, summing to 100) via the shared `computeSemesterResult`.
-// Kept as `resultTotals` (same name/shape as the retired bookmark/midterm/final version) so the
-// handful of screens that only read `.pct`/`.count` don't all need touching.
+// Computes a student's semester-result totals against the assessment structure the record is
+// pinned to (record.assessments — whatever the school configured, always summing to 100) via the
+// shared `computeSemesterResult`. Kept as `resultTotals` (same name/shape as before) so the
+// handful of screens that only read `.pct`/`.count` don't all need touching. `entered` /
+// `enteredWeight` / `remainingWeight` describe a partly-entered result ("59 of 100 entered,
+// 50 still to come"); `total`/`pct` stay null until EVERY assessment has a score.
 function resultTotals(record) {
   const r = computeSemesterResult(record);
-  return { total: r.total, totalMax: 100, pct: r.total, count: r.completedCount, completionStatus: r.completionStatus };
+  return {
+    total: r.total, totalMax: r.totalWeight || 100, pct: r.total, count: r.completedCount,
+    completionStatus: r.completionStatus, requiredCount: r.requiredCount,
+    entered: r.entered, enteredWeight: r.enteredWeight, remainingWeight: r.remainingWeight,
+  };
 }
 
 // Shared audit-trail list for one result record: old -> new value, the acting user (masked per
@@ -156,6 +162,52 @@ function SemesterLockBanner({ lockInfo }) {
   );
 }
 
+// One line of state for a semester's Results, from utils/academicCalendar.js
+// classifySemesterResultLock's phase (semesterResultLockInfo): active semesters say nothing (except
+// via the chip), a semester in its correction window says how many days are left, and an ended
+// semester says it is locked/read-only. `semesterLabel` is "Semester 1"/"Semester 2".
+function semesterPhaseChip(lockInfo) {
+  if (!lockInfo) return null;
+  if (lockInfo.phase === "active") return { label: "Active", tone: "green" };
+  if (lockInfo.phase === "grace_period") return { label: "Correction window", tone: "amber" };
+  if (lockInfo.phase === "before_semester") return { label: "Not started", tone: "slate" };
+  return { label: "Locked", tone: "red" };
+}
+function SemesterStatusBanner({ lockInfo, semesterLabel }) {
+  if (!lockInfo || lockInfo.phase === "active") return null;
+  if (lockInfo.phase === "grace_period") {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3.5 mb-4 flex items-start gap-2.5">
+        <Info size={18} className="shrink-0 mt-0.5 text-amber-500" />
+        <div>
+          <p className="text-sm font-semibold text-amber-800">{semesterLabel} ended.</p>
+          <p className="text-xs mt-0.5 text-amber-700">Correction window: {lockInfo.daysRemaining} day{lockInfo.daysRemaining === 1 ? "" : "s"} remaining. Every change is recorded in the change history.</p>
+        </div>
+      </div>
+    );
+  }
+  if (lockInfo.phase === "before_semester") {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3.5 mb-4 flex items-start gap-2.5">
+        <Info size={18} className="shrink-0 mt-0.5 text-slate-400" />
+        <div>
+          <p className="text-sm font-semibold text-slate-700">{semesterLabel} hasn't started yet.</p>
+          {lockInfo.message && <p className="text-xs mt-0.5 text-slate-500">{lockInfo.message}</p>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3.5 mb-4 flex items-start gap-2.5">
+      <Lock size={18} className="shrink-0 mt-0.5 text-amber-500" />
+      <div>
+        <p className="text-sm font-semibold text-amber-800">{semesterLabel} results are locked.</p>
+        <p className="text-xs mt-0.5 text-amber-700">{semesterLabel} has ended and its correction window has closed. Results are read-only{lockInfo.message ? ` — ${lockInfo.message.replace(/^Semester \d is locked — /, "")}` : "."}</p>
+      </div>
+    </div>
+  );
+}
+
 function ResultAuditTrail({ entries, viewerRole }) {
   if (!entries || entries.length === 0) return <p className="text-xs text-slate-400 py-2">No changes recorded yet.</p>;
   return (
@@ -167,7 +219,7 @@ function ResultAuditTrail({ entries, viewerRole }) {
             <span className="text-slate-400 shrink-0" title={`${fmtDate(e.at)} ${fmtTime(e.at)}`}>{timeAgo(e.at)}</span>
           </div>
           <p className="text-slate-500 mt-0.5">
-            {e.component && `${ASSESSMENT_COMPONENT_LABEL[e.component] || e.component}: `}
+            {(e.assessmentName || e.component) && `${e.assessmentName || e.component}: `}
             {e.action === "PUBLISHED" && "Published"}
             {e.action === "LOCKED" && "Locked"}
             {e.action === "UNLOCKED" && "Unlocked"}
@@ -660,6 +712,6 @@ export {
   CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
-  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, PaymentStatusBadge, MonthCalendarGrid,
+  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, MonthCalendarGrid,
   CheckboxList, FeeScheduleList,
 };

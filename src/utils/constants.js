@@ -99,30 +99,49 @@ const LOGO_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABDgAAAQxCAM
 
 const REPORT_CARD_STATUS = ["DRAFT", "READY", "GENERATED", "PUBLISHED", "LOCKED"];
 
-// Results model: Student → Subject → Semester → Assessment Component → Score. Semesters are
-// independent 100%-scale containers (no gating between them); weights are fixed school policy,
-// not customizable per subject/class.
+// Results model: Student → Subject → Semester → Assessment → Score. Semesters are independent
+// 100-point containers (no gating between them). The assessment structure itself (names, weights,
+// Test/Non-test) is NOT defined here — the Owner/Educational Director configures it per academic
+// year + semester + grade in Results Settings (result_configurations); the only universal rule is
+// that a structure's weights total RESULT_TOTAL_WEIGHT.
 const SEMESTERS = ["S1", "S2"];
 const SEMESTER_LABEL = { S1: "Semester 1", S2: "Semester 2" };
-const ASSESSMENT_COMPONENTS = ["midterm1", "midterm2", "studentBook", "finalExam"];
-const ASSESSMENT_COMPONENT_LABEL = { midterm1: "Midterm 1", midterm2: "Midterm 2", studentBook: "Student Book", finalExam: "Final Exam" };
-const ASSESSMENT_COMPONENT_WEIGHT = { midterm1: 20, midterm2: 20, studentBook: 10, finalExam: 50 };
+const RESULT_TOTAL_WEIGHT = 100;
+const ASSESSMENT_KIND = { TEST: "TEST", NON_TEST: "NON_TEST" };
+const ASSESSMENT_KIND_LABEL = { TEST: "Test", NON_TEST: "Non-test" };
 const RESULT_PUBLISH_STATUS = ["DRAFT", "PUBLISHED", "LOCKED"];
 // Component scores accept decimals (e.g. 15.5) for partial credit. Rounding to 2 decimal places
 // clears binary floating-point noise (0.1 + 0.2 style artifacts) from summed/averaged scores
 // without discarding any precision a teacher would realistically enter.
 function round2(n) { return Math.round(n * 100) / 100; }
 // A semester result is "Incomplete" (no total, never a partial percentage) until every
-// assessment component has a score — the total is always derived, never hand-typed. `record`
-// may be null/undefined (no result saved yet for this student+subject+semester).
+// assessment of ITS configured structure has a score — the total is always derived, never
+// hand-typed, and a missing score is never treated as 0. `record` may be null/undefined (no result
+// saved yet for this student+subject+semester). `record.assessments` is the structure the record
+// is pinned to ([{ id, name, weight, kind }], attached by DataContext) and `record.components` maps
+// assessment id -> { score, ... }, so this works for ANY configuration totalling 100.
+// `entered`/`enteredWeight` describe partial progress ("59 of 100 points entered so far").
 function computeSemesterResult(record) {
-  const requiredCount = ASSESSMENT_COMPONENTS.length;
-  if (!record) return { completionStatus: "INCOMPLETE", total: null, completedCount: 0, requiredCount };
-  const comps = ASSESSMENT_COMPONENTS.map((c) => record.components?.[c]);
-  const completedCount = comps.filter((c) => c && c.score !== null && c.score !== undefined).length;
+  const assessments = record && Array.isArray(record.assessments) ? record.assessments : [];
+  const requiredCount = assessments.length;
+  const totalWeight = round2(assessments.reduce((sum, a) => sum + a.weight, 0));
+  if (!record || requiredCount === 0) {
+    return { completionStatus: "INCOMPLETE", total: null, completedCount: 0, requiredCount, entered: 0, enteredWeight: 0, totalWeight, remainingWeight: totalWeight };
+  }
+  const scored = assessments.filter((a) => {
+    const c = record.components?.[a.id];
+    return c && c.score !== null && c.score !== undefined;
+  });
+  const completedCount = scored.length;
+  const entered = round2(scored.reduce((sum, a) => sum + record.components[a.id].score, 0));
+  const enteredWeight = round2(scored.reduce((sum, a) => sum + a.weight, 0));
   const completionStatus = completedCount === requiredCount ? "COMPLETE" : "INCOMPLETE";
-  const total = completionStatus === "COMPLETE" ? round2(comps.reduce((sum, c) => sum + c.score, 0)) : null;
-  return { completionStatus, total, completedCount, requiredCount };
+  return {
+    completionStatus,
+    total: completionStatus === "COMPLETE" ? entered : null,
+    completedCount, requiredCount, entered, enteredWeight, totalWeight,
+    remainingWeight: round2(totalWeight - enteredWeight),
+  };
 }
 
 export {
@@ -134,6 +153,6 @@ export {
   MIN_PERIODS, MAX_PERIODS, DEFAULT_TIMETABLE_CONFIG,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI, REPORT_CARD_STATUS,
-  SEMESTERS, SEMESTER_LABEL, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
+  SEMESTERS, SEMESTER_LABEL, RESULT_TOTAL_WEIGHT, ASSESSMENT_KIND, ASSESSMENT_KIND_LABEL,
   RESULT_PUBLISH_STATUS, computeSemesterResult, round2,
 };

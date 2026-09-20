@@ -13,6 +13,7 @@ export { createAttendanceService } from "./attendanceService";
 export { createResultsService } from "./resultsService";
 export { createResultAuditService } from "./resultAuditService";
 export { createResultService } from "./resultService";
+export { createResultConfigService } from "./resultConfigService";
 export { createResultEvidenceService } from "./resultEvidenceService";
 export { createExamService } from "./examService";
 export { createBehaviorService } from "./behaviorService";

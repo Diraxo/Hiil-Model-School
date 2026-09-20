@@ -13,7 +13,7 @@
 //   - storage.objects RLS for bucket 'result-evidence' (20260827010000 + 20260901050000) mirrors
 //     the same rules per object, so createSignedUrl(s) fails closed for a path the caller may not
 //     read even if a stale metadata row leaked through.
-//   - the object key is ALWAYS <result_id>/<component>/<safe-name> built here from server-known
+//   - the object key is ALWAYS <result_id>/<assessment_id>/<safe-name> built here from server-known
 //     ids, never from client input -- filenames are sanitised, path separators stripped, so a
 //     client cannot escape its own result's folder.
 //   - uploaded_by is stamped server-side from auth.uid() (stamp_result_evidence_uploader trigger).
@@ -40,7 +40,8 @@ function mapRow(row) {
     studentId: row.student_id,
     classId: row.class_id || null,
     semester: row.semester,
-    component: row.component,
+    assessmentId: row.assessment_id || null,
+    component: row.component || null, // legacy enum key, only on pre-Blocker-11 rows
     academicYearId: row.academic_year_id,
     order: row.page_order == null ? 0 : row.page_order,
     storagePath: row.storage_path || null,
@@ -79,8 +80,8 @@ export function sanitizeEvidenceFileName(name) {
   return `${base}.${ext}`;
 }
 
-function buildPath(resultId, component, fileName) {
-  return `${resultId}/${component}/${Date.now()}-${sanitizeEvidenceFileName(fileName)}`;
+function buildPath(resultId, assessmentId, fileName) {
+  return `${resultId}/${assessmentId}/${Date.now()}-${sanitizeEvidenceFileName(fileName)}`;
 }
 
 export function createResultEvidenceService() {
@@ -112,7 +113,9 @@ export function createResultEvidenceService() {
 
     // Upload one evidence page: file -> Storage, then metadata row. On a metadata failure the
     // just-uploaded object is best-effort removed so a failed add leaves nothing behind.
-    async add({ resultId, studentId, classId, semester, component, academicYearId, file }) {
+    // student/class/semester/year on the row are derived by the write guard from the result itself;
+    // the guard also rejects anything but a TEST assessment of the result's own configuration.
+    async add({ resultId, assessmentId, file }) {
       const invalid = validateEvidenceFile(file);
       if (invalid) throw new Error(invalid);
 
@@ -120,13 +123,13 @@ export function createResultEvidenceService() {
         .from("result_evidence")
         .select("page_order")
         .eq("result_id", resultId)
-        .eq("component", component);
+        .eq("assessment_id", assessmentId);
       if (exErr) throw exErr;
       const nextOrder = existing && existing.length
         ? Math.max(...existing.map((e) => e.page_order || 0)) + 1
         : 0;
 
-      const path = buildPath(resultId, component, file.name);
+      const path = buildPath(resultId, assessmentId, file.name);
       const safeName = sanitizeEvidenceFileName(file.name);
       const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
         contentType: file.type || "application/octet-stream",
@@ -138,11 +141,7 @@ export function createResultEvidenceService() {
         .from("result_evidence")
         .insert({
           result_id: resultId,
-          student_id: studentId,
-          class_id: classId || null,
-          semester,
-          component,
-          academic_year_id: academicYearId,
+          assessment_id: assessmentId,
           page_order: nextOrder,
           storage_path: path,
           file_name: safeName,
@@ -166,7 +165,7 @@ export function createResultEvidenceService() {
       const invalid = validateEvidenceFile(file);
       if (invalid) throw new Error(invalid);
 
-      const path = buildPath(row.resultId, row.component, file.name);
+      const path = buildPath(row.resultId, row.assessmentId || row.component, file.name);
       const safeName = sanitizeEvidenceFileName(file.name);
       const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
         contentType: file.type || "application/octet-stream",

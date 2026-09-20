@@ -14,7 +14,7 @@ import {
   SUBJECTS, GRADES, SECTIONS, sectionLabel,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI,
-  SEMESTERS, SEMESTER_LABEL, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
+  SEMESTERS, SEMESTER_LABEL, ASSESSMENT_KIND,
 } from "../../utils/constants";
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor,
@@ -563,7 +563,8 @@ function performanceLabel(pct) {
 function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus }) {
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
-  const [semester, setSemester] = useState(SEMESTERS[0]);
+  // Open on the semester that is running (Semester 2 once it has started), from the academic calendar.
+  const [semester, setSemester] = useState(() => data.currentResultSemester());
   const [viewCard, setViewCard] = useState(false);
   const [evidenceView, setEvidenceView] = useState(null); // { title, files, initialIndex } | null
 
@@ -587,8 +588,11 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
     .filter((r) => r.publishStatus === "PUBLISHED" || r.publishStatus === "LOCKED")
     .map((r) => ({ ...r, totals: resultTotals(r) }))
     .filter((r) => r.totals.count > 0);
-  const overallPct = results.length ? Math.round(results.reduce((a, r) => a + (r.totals.pct || 0), 0) / results.length) : null;
-  const subjectAverages = results.map((r) => ({ subject: r.subject, avg: r.totals.pct }));
+  // Only COMPLETE results feed the averages: a subject that is still being entered has no total yet,
+  // and a missing score is never treated as 0.
+  const completeResults = results.filter((r) => r.totals.completionStatus === "COMPLETE");
+  const overallPct = completeResults.length ? Math.round(completeResults.reduce((a, r) => a + r.totals.pct, 0) / completeResults.length) : null;
+  const subjectAverages = completeResults.map((r) => ({ subject: r.subject, avg: r.totals.pct }));
   const strongest = subjectAverages.length ? subjectAverages.reduce((a, b) => (a.avg > b.avg ? a : b)) : null;
   const weakest = subjectAverages.length ? subjectAverages.reduce((a, b) => (a.avg < b.avg ? a : b)) : null;
 
@@ -606,40 +610,57 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
         </Card>
       )}
 
-      <div className="flex gap-1.5 mb-4">
-        {SEMESTERS.map((s) => (
-          <button key={s} onClick={() => setSemester(s)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${semester === s ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>{SEMESTER_LABEL[s]}</button>
-        ))}
+      <div className="flex gap-1.5 mb-4 flex-wrap">
+        {SEMESTERS.map((s) => {
+          // Which semester is running / over, from the academic calendar (never a hard-coded date).
+          const phase = data.semesterResultLockInfo(s).phase;
+          const stateLabel = phase === "active" ? "Current" : phase === "before_semester" ? "Upcoming" : "Ended";
+          return (
+            <button key={s} onClick={() => setSemester(s)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold border inline-flex items-center gap-1.5 ${semester === s ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>
+              {SEMESTER_LABEL[s]} <span className={`text-[10px] font-medium ${semester === s ? "text-slate-300" : "text-slate-400"}`}>· {stateLabel}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {results.length === 0 ? <EmptyState title="No published results yet" description="The school administers exams on paper — results appear here once the teacher publishes them." /> : (
+      {results.length === 0 ? <EmptyState title="Results are not available yet for this semester." description="Results appear here once the teacher publishes them." /> : (
         <>
           <div className="grid sm:grid-cols-3 gap-3 mb-4">
-            <StatCard label="Overall Average" value={`${overallPct}%`} icon={FileBarChart} tone="sky" />
+            {overallPct !== null && <StatCard label="Overall Average" value={`${overallPct}%`} icon={FileBarChart} tone="sky" />}
             {strongest && <StatCard label="Strongest Subject" value={strongest.subject} icon={TrendingUp} tone="emerald" sub={`${strongest.avg}%`} />}
             {weakest && <StatCard label="Focus Area" value={weakest.subject} icon={AlertTriangle} tone="amber" sub={`${weakest.avg}%`} />}
           </div>
           <Card className="divide-y divide-slate-100">
             {results.map((r) => {
-              const perf = performanceLabel(r.totals.pct);
+              const complete = r.totals.completionStatus === "COMPLETE";
+              const perf = complete ? performanceLabel(r.totals.pct) : null;
               return (
                 <div key={r.id} className="px-4 py-3">
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
                     <p className="text-sm font-medium text-slate-700">{r.subject}</p>
-                    <div className="text-right">
-                      <p className="text-sm font-semibold text-slate-700">{r.totals.total}%</p>
-                      <Badge tone={perf.tone}>{perf.label}</Badge>
+                    <div className="text-right shrink-0">
+                      {complete ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-700">{r.totals.total}%</p>
+                          <Badge tone={perf.tone}>{perf.label}</Badge>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-semibold text-slate-500">{r.totals.entered} / {r.totals.totalMax}</p>
+                          <Badge tone="amber">In progress</Badge>
+                        </>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-3 text-xs text-slate-400">
-                    {ASSESSMENT_COMPONENTS.map((c) => {
-                      const comp = r.components?.[c];
-                      const pages = comp?.sharedWithParents ? data.resultEvidenceFor(r.id, c) : [];
+                    {r.assessments.map((c) => {
+                      const comp = r.components?.[c.id];
+                      const pages = c.kind === ASSESSMENT_KIND.TEST && comp?.sharedWithParents ? data.resultEvidenceFor(r.id, c.id) : [];
                       return (
-                        <span key={c} className="inline-flex items-center gap-1">
-                          {ASSESSMENT_COMPONENT_LABEL[c]}: {comp?.score != null ? `${comp.score}/${ASSESSMENT_COMPONENT_WEIGHT[c]}` : "Not yet recorded"}
+                        <span key={c.id} className="inline-flex items-center gap-1">
+                          {c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "Not yet recorded"}
                           {pages.length > 0 && (
-                            <button onClick={() => setEvidenceView({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-brand-600 hover:text-brand-700"><Eye size={12} /></button>
+                            <button onClick={() => setEvidenceView({ title: `${r.subject} — ${c.name}`, files: pages })} className="text-brand-600 hover:text-brand-700"><Eye size={12} /></button>
                           )}
                         </span>
                       );

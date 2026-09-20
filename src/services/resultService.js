@@ -22,8 +22,11 @@
 //     actor_name are overwritten by a BEFORE INSERT trigger from auth.uid(), so the client value
 //     is advisory only and an entry can't be forged under another name.
 // This service forwards writes and lets Postgres reject what it must; DataContext turns the error
-// into a user-facing message. Calendar-derived semester auto-locking (academicCalendar.js) stays
-// a client-side gate for a friendly message -- RLS has no calendar concept, same as homework.
+// into a user-facing message. Blocker 11 (20260920000000_results_configuration.sql) moved the
+// semester lock / correction window, the score range, the assessment-belongs-to-configuration rule
+// and the evidence rule INTO the database (can_edit_result_component + guard triggers), so the
+// client-side gates in DataContext are only there for a friendlier message -- they are no longer
+// the enforcement. `result_components.max` and `updated_by` are stamped server-side.
 //
 // result_evidence is NOT touched here -- CP3 gave it its own resultEvidenceService.js (real
 // private Storage + signed URLs). This service still owns result_audit_log, so evidence
@@ -34,7 +37,8 @@ const ts = (v) => (v ? new Date(v).getTime() : null);
 
 function mapComponent(row) {
   return {
-    component: row.component,
+    assessmentId: row.assessment_id || null,
+    component: row.component || null, // legacy enum key, only ever set on pre-Blocker-11 rows
     score: row.score == null ? null : Number(row.score),
     max: Number(row.max),
     sharedWithParents: !!row.shared_with_parents,
@@ -51,6 +55,7 @@ function mapResult(row) {
     subjectId: row.subject_id,
     semester: row.semester,
     academicYearId: row.academic_year_id,
+    configurationId: row.configuration_id || null,
     publishStatus: row.publish_status,
     publishedAt: ts(row.published_at),
     publishedBy: row.published_by || null,
@@ -72,6 +77,8 @@ function mapAudit(row) {
     subjectId: row.subject_id,
     semester: row.semester,
     component: row.component || null,
+    assessmentId: row.assessment_id || null,
+    assessmentName: row.assessment_name || null,
     action: row.action,
     actorId: row.actor_id || null,
     actorRole: row.actor_role || null,
@@ -148,23 +155,23 @@ export function createResultService() {
       return { id: data.id, created: true };
     },
 
-    // Upserts one assessment component's full desired state (score + max + share flag) on the
-    // table's own unique(result_id, component) constraint -- the caller computes the next state
-    // from the previous one, so a share-only toggle still passes the current score through.
-    async saveComponent({ resultId, component, score, max, sharedWithParents, updatedBy }) {
+    // Upserts one assessment's score + share flag on the table's own unique(result_id,
+    // assessment_id) constraint (a double-click can never create a second row). The caller computes
+    // the next state from the previous one, so a share-only toggle still passes the current score
+    // through. `max` is sent only to satisfy NOT NULL -- the write guard overwrites it with the
+    // configured weight, and stamps updated_by/updated_at from auth.uid().
+    async saveComponent({ resultId, assessmentId, score, max, sharedWithParents }) {
       const { data, error } = await supabase
         .from("result_components")
         .upsert(
           {
             result_id: resultId,
-            component,
+            assessment_id: assessmentId,
             score: score == null ? null : score,
             max,
             shared_with_parents: !!sharedWithParents,
-            updated_at: new Date().toISOString(),
-            updated_by: updatedBy || null,
           },
-          { onConflict: "result_id,component" },
+          { onConflict: "result_id,assessment_id" },
         )
         .select()
         .single();
@@ -212,14 +219,14 @@ export function createResultService() {
       if (error) throw error;
     },
 
-    async addAudit({ resultId, studentId, classId, subjectId, semester, component, action, diff, reason }) {
+    async addAudit({ resultId, studentId, classId, subjectId, semester, assessmentId, action, diff, reason }) {
       const { error } = await supabase.from("result_audit_log").insert({
         result_id: resultId,
         student_id: studentId,
         class_id: classId || null,
         subject_id: subjectId || null,
         semester,
-        component: component || null,
+        assessment_id: assessmentId || null, // the audit trigger fills assessment_name from it
         action,
         diff: diff || [],
         reason: reason || null,

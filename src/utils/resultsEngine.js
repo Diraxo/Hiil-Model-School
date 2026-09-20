@@ -1,8 +1,8 @@
 // Single shared source for Total/Average/Rank/Class-Average/Top-Student calculations, so Results,
 // Student Profile, and any other consumer never disagree on what a student's average is (a past
 // bug class: each screen had its own inline mean-of-pct formula). Pure functions only — no `db`,
-// no React — callers (DataContext) supply plain arrays. Does NOT change assessment weighting or
-// the annual-blended Report Card average / S2-only Promotion reference average, which are
+// no React — callers (DataContext) supply plain arrays. Assessment weights are NOT known here — they come from each
+// record's configured structure via resultTotals. Does NOT change the annual-blended Report Card average / S2-only Promotion reference average, which are
 // legitimately different metrics from the per-semester numbers computed here.
 import { resultTotals } from "../components/ui";
 
@@ -68,9 +68,11 @@ function rankStudents(rows) {
 // passed in (rather than imported) so this stays a pure function — DataContext supplies its own
 // teacherAssignments-derived implementation, the same one Report Cards/Promotion already use, so
 // the subject list here never drifts from theirs.
-function computeClassSemesterResults({ db, classId, semester, requiredSubjectsForClass, academicYearId }) {
+function computeClassSemesterResults({ db, classId, semester, requiredSubjectsForClass, academicYearId, studentsForClassYear }) {
   const subjects = requiredSubjectsForClass(classId);
-  const students = db.students.filter((s) => s.classId === classId);
+  // The roster comes from the requested academic year (enrollments for a past year), not from
+  // whoever is in the class today.
+  const students = studentsForClassYear ? studentsForClassYear(classId, academicYearId) : db.students.filter((s) => s.classId === classId);
   const baseRows = students.map((s) => ({
     studentId: s.id,
     ...computeStudentSemesterAverage({ results: db.results, studentId: s.id, classId, subjects, semester, academicYearId }),

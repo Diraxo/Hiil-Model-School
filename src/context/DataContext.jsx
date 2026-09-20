@@ -5,8 +5,7 @@ import {
   SUBJECTS, GRADES, SECTIONS, sectionLabel, gradeSectionCompare,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI, MIN_PERIODS, MAX_PERIODS, DEFAULT_TIMETABLE_CONFIG,
-  staffGroupLabel, SEMESTERS, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
-  computeSemesterResult,
+  staffGroupLabel, SEMESTERS, SEMESTER_LABEL, ASSESSMENT_KIND, computeSemesterResult, round2,
 } from "../utils/constants";
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule,
@@ -39,6 +38,8 @@ import { createLeaveService } from "../services/leaveService";
 import { createBehaviorService } from "../services/behaviorService";
 import { createHomeworkService } from "../services/homeworkService";
 import { createResultService } from "../services/resultService";
+import { createResultConfigService } from "../services/resultConfigService";
+import { activeAssessments, activeConfigFor } from "../utils/resultConfig";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
 import { createExamService } from "../services/examService";
 import { createReportCardService } from "../services/reportCardService";
@@ -49,7 +50,7 @@ import { createProfilePhotoService } from "../services/profilePhotoService";
 import { signPaths as signStoragePaths, isStoragePath, uploadObject as uploadStorageObject, validateImageFile } from "../lib/storageMedia";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
-import { classifyAttendanceDate, classifySemesterResultLock, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, formatAcademicYearLabel } from "../utils/academicCalendar";
+import { classifyAttendanceDate, classifySemesterResultLock, currentResultSemester, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, formatAcademicYearLabel } from "../utils/academicCalendar";
 import { canTakeAttendance as canStudentTakeAttendance } from "../utils/studentPermissions";
 import { canTeacherPerformAcademicAction as canTeacherAct } from "../utils/staffPermissions";
 import { effectiveResultLock } from "../utils/permissions";
@@ -318,47 +319,31 @@ function describePaymentAllocations(dbLike, payment) {
   return labels.length ? labels.join(", ") : "Fee";
 }
 
-// Finds this student+class+subject+semester's result record for the CURRENT academic year,
-// creating a fresh DRAFT one (empty components, no evidence) if none exists yet. Shared by every
-// results mutator so "the record doesn't exist yet" and "the record exists but is empty" are the
-// same code path. Callers that need to lock-gate creation itself (saveResultComponent,
-// addResultEvidencePage) must resolve and check effectiveResultLock BEFORE calling this — it does
-// not check locking itself.
-//
-// `academicYearId` is part of the lookup key (not just a field on the created record) because
-// `classId` is a persistent identity, not re-created per year — a repeating/retained student keeps
-// the SAME classId next year. Without this, a repeating student's new-year record would silently
-// resolve to (and overwrite) their locked/published record from the year they repeated.
-function findOrCreateResultRecord(d, { studentId, classId, subject, semester }) {
-  const year = currentAcademicYear(d.academicYears);
-  const academicYearId = year ? year.id : null;
-  let record = d.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId);
-  if (!record) {
-    record = {
-      id: uid("res"), studentId, classId, subject, semester, academicYearId,
-      components: Object.fromEntries(ASSESSMENT_COMPONENTS.map((c) => [c, { score: null, max: ASSESSMENT_COMPONENT_WEIGHT[c], sharedWithParents: false, updatedAt: null, updatedBy: null }])),
-      publishStatus: "DRAFT", publishedAt: null, publishedBy: null, lockedAt: null, lockedBy: null,
-      autoLockOverride: null,
-      createdAt: Date.now(), updatedAt: Date.now(),
-    };
-    d.results.push(record);
-  }
-  return record;
-}
-
 // Turns a Postgres RLS / constraint rejection from a results write into a message that matches the
 // real rules: LOCKED blocks everyone; a teacher can only touch their own assigned subject/class
 // and only on a day they're not marked absent and inside the academic year; publish/lock is
 // Owner/Educational Director only.
 function resultRlsMessage(e) {
   const msg = e && e.message ? e.message : "";
+  // Messages raised on purpose by the Blocker 11 guard triggers are already written for the user
+  // (score range, missing structure, evidence required before publish, ...): strip the code prefix.
+  if (/EVIDENCE_REQUIRED|RESULT_CONFIG_MISSING/.test(msg)) return msg.replace(/^[A-Z_]+:\s*/, "");
+  if (e && (e.code === "P0001" || e.code === "23514") && msg) return msg;
   if (/row-level security|violates row-level|permission denied/i.test(msg)) {
-    return "You can't change this result right now — it may be locked, outside your assigned subject/class, or it isn't a day you can record results (check the academic year and your attendance).";
-  }
-  if (/result_components_score_in_range|check constraint/i.test(msg)) {
-    return "That score is outside the allowed range for this component.";
+    return "You can't change this result right now — it may be locked (the semester has ended and its correction window has closed), outside your assigned subject/class, or it isn't a day you can record results (check the academic year and your attendance).";
   }
   return msg || "Couldn't save the result.";
+}
+
+// Errors from the Results Settings save (save_result_configuration): the RPC's messages are already
+// user-facing ("Assessment weights must total exactly 100 (currently 90).").
+function resultConfigErrorMessage(e) {
+  const msg = e && e.message ? e.message : "";
+  if (e && e.code === "42501") return "Only the Owner or Educational Director can configure results.";
+  if (/duplicate key|result_configurations_one_active|result_assessment_components_name_key/i.test(msg)) {
+    return "This structure changed at the same moment somewhere else — refresh and try again.";
+  }
+  return msg || "Couldn't save the result structure.";
 }
 
 // Report-card (report_cards) equivalent of resultRlsMessage.
@@ -809,16 +794,19 @@ function DataProvider({ children }) {
   // `exam_announcements`) -- same independent-state pattern as every domain. `results` below
   // rebuilds the nested record shape on top of the flat rows this returns: the real `subject_id`
   // resolves to a subject NAME (like homework/classSubjects), and `componentRows` folds back into
-  // the `{ midterm1: {score,max,...}, ... }` object every resultTotals/resultsEngine consumer
-  // expects. result_evidence and report_cards are Supabase-backed too (see below). Parent
+  // the `{ [assessmentId]: {score,max,...} }` object every resultTotals/resultsEngine consumer
+  // expects (see the `results` memo below — the assessments themselves are configured, not coded). result_evidence and report_cards are Supabase-backed too (see below). Parent
   // notifications via notify_results_published / notify_exam_announcement /
   // notify_report_card_published.
   const resultService = useMemo(() => createResultService(), []);
+  const resultConfigService = useMemo(() => createResultConfigService(), []);
   const resultEvidenceService = useMemo(() => createResultEvidenceService(), []);
   const examService = useMemo(() => createExamService(), []);
   const reportCardService = useMemo(() => createReportCardService(), []);
   const [resultsRaw, setResultsRaw] = useState([]);
   const [resultAuditRaw, setResultAuditRaw] = useState([]);
+  const [resultConfigsRaw, setResultConfigsRaw] = useState([]);
+  const [resultConfigAuditRaw, setResultConfigAuditRaw] = useState([]);
   const [examAnnouncementsRaw, setExamAnnouncementsRaw] = useState([]);
   const [reportCardsRaw, setReportCardsRaw] = useState([]);
   const refetchResults = useCallback(async () => {
@@ -827,6 +815,15 @@ function DataProvider({ children }) {
     setResultAuditRaw(audit);
     return recs;
   }, [resultService]);
+  // The assessment structures (result_configurations + their assessments). Read once per refresh
+  // and joined onto every result below, so no per-row query is ever needed. The configuration
+  // audit trail comes back empty for anyone but the Owner/Educational Director (RLS).
+  const refetchResultConfigs = useCallback(async () => {
+    const [configs, audit] = await Promise.all([resultConfigService.list(), resultConfigService.listAudit()]);
+    setResultConfigsRaw(configs);
+    setResultConfigAuditRaw(audit);
+    return configs;
+  }, [resultConfigService]);
 
   // Report cards: Supabase-backed (`report_cards` table). The row only tracks the
   // per-student+class+year lifecycle (status + promotion decision + who/when); every
@@ -864,19 +861,23 @@ function DataProvider({ children }) {
     setExamAnnouncementsRaw(rows);
     return rows;
   }, [examService]);
+  // Each result is joined to the assessment structure it was recorded under (results.configuration_id):
+  // `assessments` = that structure's active assessments in display order, `components` = the
+  // scores keyed by ASSESSMENT ID. Nothing here assumes which assessments exist or what they weigh —
+  // computeSemesterResult / resultTotals derive everything from `assessments`, so any 100-point
+  // configuration works and an old result keeps its old structure after the school changes it.
   const results = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
+    const configById = new Map(resultConfigsRaw.map((c) => [c.id, c]));
     return resultsRaw.map((r) => {
+      const configuration = r.configurationId ? configById.get(r.configurationId) || null : null;
       const components = {};
-      for (const c of ASSESSMENT_COMPONENTS) {
-        const row = r.componentRows.find((x) => x.component === c);
-        components[c] = row
-          ? { score: row.score, max: row.max, sharedWithParents: row.sharedWithParents, updatedAt: row.updatedAt, updatedBy: row.updatedBy }
-          : { score: null, max: ASSESSMENT_COMPONENT_WEIGHT[c], sharedWithParents: false, updatedAt: null, updatedBy: null };
+      for (const row of r.componentRows) {
+        if (row.assessmentId) components[row.assessmentId] = { score: row.score, max: row.max, sharedWithParents: row.sharedWithParents, updatedAt: row.updatedAt, updatedBy: row.updatedBy };
       }
-      return { ...r, subject: nameById.get(r.subjectId) || "", components };
+      return { ...r, subject: nameById.get(r.subjectId) || "", configuration, assessments: activeAssessments(configuration), components };
     });
-  }, [resultsRaw, subjects]);
+  }, [resultsRaw, subjects, resultConfigsRaw]);
   const resultAuditLog = useMemo(() => {
     const nameById = new Map(subjects.map((s) => [s.id, s.name]));
     return resultAuditRaw.map((e) => ({
@@ -1124,7 +1125,7 @@ function DataProvider({ children }) {
     refetchStudentDocuments, refetchParents, refetchParentLinks, refetchTeacherAccounts,
     refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance,
     refetchPayrollPayments, refetchSalaryAdvances, refetchTimetable, refetchClosures,
-    refetchAttendance, refetchLeaveRequests, refetchBehavior, refetchHomework, refetchResults,
+    refetchAttendance, refetchLeaveRequests, refetchBehavior, refetchHomework, refetchResults, refetchResultConfigs,
     refetchResultEvidence, refetchExamAnnouncements, refetchReportCards, refetchFees,
     refetchPayments, refetchExpenses, refetchNotifications, refetchAnnouncements,
     refetchMessages, refetchActivities,
@@ -1134,6 +1135,11 @@ function DataProvider({ children }) {
   // Directory refetches the same auth-scoped Realtime channel triggers on a profiles/staff/students
   // row change (photo, name, status). Each is already RLS-scoped, so a session only ever re-reads
   // what it is entitled to -- the Realtime event is used purely as a "something changed" signal.
+  // Results refetches the same channel triggers when a score / structure changes elsewhere (teacher
+  // saves -> parent, Owner and Director see it without a reload). RLS still decides what each
+  // session may read; the event is only a "something changed" signal.
+  const resultsRefetchRef = useRef({});
+  resultsRefetchRef.current = { refetchResults, refetchResultConfigs, refetchResultEvidence };
   const directoryRefetchRef = useRef({});
   directoryRefetchRef.current = {
     refetchTeacherAccounts, refetchDirectorAccounts, refetchOwnerAccounts, refetchParents,
@@ -1188,6 +1194,12 @@ function DataProvider({ children }) {
           () => bounce("dir", refreshDirectory))
         .on("postgres_changes", { event: "*", schema: "public", table: "students" },
           () => bounce("stu", directoryRefetchRef.current.refetchStudents))
+        .on("postgres_changes", { event: "*", schema: "public", table: "results" },
+          () => bounce("res", () => Promise.allSettled([resultsRefetchRef.current.refetchResults(), resultsRefetchRef.current.refetchResultEvidence()])))
+        .on("postgres_changes", { event: "*", schema: "public", table: "result_components" },
+          () => bounce("res", () => Promise.allSettled([resultsRefetchRef.current.refetchResults(), resultsRefetchRef.current.refetchResultEvidence()])))
+        .on("postgres_changes", { event: "*", schema: "public", table: "result_configurations" },
+          () => bounce("resCfg", resultsRefetchRef.current.refetchResultConfigs))
         .subscribe();
     };
     const onAuth = (uid) => {
@@ -1313,6 +1325,8 @@ function DataProvider({ children }) {
       behaviorRecords: behaviorRecordsRaw,
       homework,
       results,
+      resultConfigs: resultConfigsRaw,
+      resultConfigAudit: resultConfigAuditRaw,
       resultAuditLog,
       resultEvidence,
       examAnnouncements,
@@ -3572,8 +3586,38 @@ function DataProvider({ children }) {
       // Every evidence page for one result's assessment component, in display order — the single
       // source of truth for the gradebook editor's thumbnail strip, the parent viewer, and the
       // read-only student-profile exams tab, so all three always agree on what's attached.
-      resultEvidenceFor(resultId, component) {
-        return (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component).sort((a, b) => a.order - b.order);
+      resultEvidenceFor(resultId, assessmentId) {
+        return (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.assessmentId === assessmentId).sort((a, b) => a.order - b.order);
+      },
+      // The ACTIVE assessment structure the Educational Director configured for a class's grade in
+      // one semester of one academic year, or null when none exists (callers then show "No result
+      // structure has been configured…" — never fallback fields). `academicYearId` defaults to current.
+      resultStructureForClass(classId, semester, academicYearId) {
+        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const cls = db.classes.find((c) => c.id === classId);
+        return cls ? activeConfigFor(db.resultConfigs, yearId, semester, cls.grade) : null;
+      },
+      resultConfigFor(academicYearId, semester, grade) {
+        return activeConfigFor(db.resultConfigs, academicYearId, semester, grade);
+      },
+      // Every version (newest first) of one year+semester+grade structure, for the version note.
+      resultConfigVersions(academicYearId, semester, grade) {
+        return db.resultConfigs.filter((c) => c.academicYearId === academicYearId && c.semester === semester && c.grade === grade).sort((a, b) => b.version - a.version);
+      },
+      // Which semester Results should open on: Semester 2 once it has started, else Semester 1 —
+      // from the academic year's own calendar, never a hard-coded date.
+      currentResultSemester(academicYearId) {
+        return currentResultSemester(resolveResultCal(db, academicYearId), todayKeyStr());
+      },
+      // The roster Results use for one class in one academic year. The CURRENT year is the live class
+      // list; any other year comes from that year's enrollments rows, so browsing last year's results
+      // shows the students who were in the class THEN, not whoever sits in it today (a student who has
+      // since moved up must not appear to have changed grade retroactively).
+      studentsForClassYear(classId, academicYearId) {
+        const current = (currentAcademicYear(db.academicYears) || {}).id || null;
+        if (!academicYearId || academicYearId === current) return db.students.filter((s) => s.classId === classId);
+        const ids = new Set(db.enrollments.filter((e) => e.academicYearId === academicYearId && e.classId === classId).map((e) => e.studentId));
+        return db.students.filter((s) => ids.has(s.id));
       },
       // Which semester phase (before/active/grace/locked) a result's own academic year is
       // currently in, per the academic calendar — used by the gradebook to render the "🔒 Semester
@@ -3588,42 +3632,51 @@ function DataProvider({ children }) {
         return effectiveResultLock(record, semester, resolveResultCal(db, academicYearId), todayKeyStr());
       },
 
-      // Upserts one assessment component's score/share-flag for a student+class+subject+semester
-      // result (evidence photos are a separate concern — see addResultEvidencePage/
-      // removeResultEvidencePage/reorderResultEvidencePages below). Every change is diffed and
-      // appended to resultAuditLog (the old value never silently disappears) plus a summarized
-      // line in the shared activities feed. Parents are NOT notified per-save — see publishResults
-      // for the batched notification instead. `actorId`/`actorRole` must be the caller's *real*
+      // Upserts one assessment's score/share-flag for a student+class+subject+semester result
+      // (evidence photos are a separate concern — see addResultEvidencePage/
+      // removeResultEvidencePage/reorderResultEvidencePages below). The assessment must belong to the
+      // structure the school configured for this grade + semester + academic year (Results Settings);
+      // there is no fallback structure, so an unconfigured grade cannot record anything. Every change
+      // is diffed and appended to resultAuditLog (the old value never silently disappears) plus a
+      // summarized line in the shared activities feed. Parents are NOT notified per-save — see
+      // publishResults for the batched notification instead. `actorId` must be the caller's *real*
       // identity (auth.realUser), never an Owner's impersonated identity, so audit entries and
       // masking stay accurate.
       //
-      // Gated by effectiveResultLock (manual LOCKED status, OR the semester's calendar-derived
-      // auto-lock unless overridden) BEFORE the record is created -- kept client-side for a
-      // friendly message; RLS's can_edit_result_component / results_insert enforce the LOCKED +
-      // teacher-ownership + teacher_academic_action_ok rules server-side (the calendar auto-lock
-      // has no RLS equivalent, same as homework). The score/share write goes to result_components,
-      // the audit entry to result_audit_log (actor stamped server-side by trigger); the activity
-      // line goes through log_activity.
-      async saveResultComponent({ studentId, classId, subject, semester, component, score, sharedWithParents, reason }, actorId /* actorRole unused: server stamps the audit actor */) {
-        if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
-          return { ok: false, message: "Invalid semester or assessment component." };
-        }
+      // The checks below (structure exists, score in 0..weight, calendar lock) give a friendly message
+      // BEFORE any write; they are NOT the enforcement. The database repeats every one of them
+      // (can_edit_result_component -> semester lock / correction window / teacher scope, and the
+      // result_components guard trigger -> assessment membership + score range), so a hand-crafted
+      // request fails the same way. The audit entry's actor is stamped server-side by trigger.
+      async saveResultComponent({ studentId, classId, subject, semester, assessmentId, score, sharedWithParents, reason, academicYearId: yearArg }, actorId /* server stamps the actor */) {
+        if (!SEMESTERS.includes(semester)) return { ok: false, message: "Invalid semester." };
         const student = db.students.find((s) => s.id === studentId);
         if (!student) return { ok: false, message: "Student not found." };
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
 
-        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
+        const cls = db.classes.find((c) => c.id === classId);
+        const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        if (!config) return { ok: false, message: `No result structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
+        const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
+        if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
         const cal = resolveResultCal(db, academicYearId);
         const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
         if (lock.locked) return { ok: false, message: lock.message };
 
-        const max = ASSESSMENT_COMPONENT_WEIGHT[component];
-        const prev = (record && record.components[component]) || { score: null, max, sharedWithParents: false };
+        const max = assessment.weight;
+        const prev = (record && record.components[assessmentId]) || { score: null, max, sharedWithParents: false };
         // `score === undefined` means the caller isn't touching the score — leave it as-is;
-        // `score === null` explicitly clears it.
-        const nextScore = score === undefined ? prev.score : score === null ? null : Math.max(0, Math.min(max, Number(score)));
+        // `score === null` explicitly clears it; anything outside 0..weight is rejected, not clamped.
+        let nextScore = prev.score;
+        if (score === null) nextScore = null;
+        else if (score !== undefined) {
+          const n = Number(score);
+          if (!Number.isFinite(n) || n < 0 || n > max) return { ok: false, message: `The score for ${assessment.name} must be between 0 and ${max}.` };
+          nextScore = round2(n);
+        }
         const nextShared = sharedWithParents !== undefined ? sharedWithParents : prev.sharedWithParents;
 
         const diff = [];
@@ -3633,10 +3686,10 @@ function DataProvider({ children }) {
 
         try {
           const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
-          await resultService.saveComponent({ resultId, component, score: nextScore, max, sharedWithParents: nextShared, updatedBy: actorId });
-          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component, action: "COMPONENT_UPDATED", diff, reason: reason || null });
+          await resultService.saveComponent({ resultId, assessmentId, score: nextScore, max, sharedWithParents: nextShared });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, assessmentId, action: "COMPONENT_UPDATED", diff, reason: reason || null });
           await refetchResults();
-          await logActivityFeed(`${ASSESSMENT_COMPONENT_LABEL[component]} recorded for ${studentFullName(student)} in ${subject} (${semester}).`);
+          await logActivityFeed(`${assessment.name} recorded for ${studentFullName(student)} in ${subject} (${semester}).`);
           return { ok: true, message: "" };
         } catch (e) {
           console.error("Failed to save result component", e);
@@ -3650,16 +3703,33 @@ function DataProvider({ children }) {
       // touches rows still in DRAFT). publish_status transitions are Owner/Educational Director
       // only (RLS results_update); the batched parent notification goes through
       // notify_results_published.
-      async publishResults(classId, subject, semester, studentIds, actorId, actorRole) {
-        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+      //
+      // Test evidence is REQUIRED BEFORE PUBLISH: a scored TEST assessment with no evidence page
+      // holds that student's result back (and the database refuses the publish too, so this can't be
+      // bypassed). Students who are ready are still published; the message names the rest.
+      async publishResults(classId, subject, semester, studentIds, actorId, actorRole, yearArg) {
+        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const subjectId = db.subjects.find((s) => s.name === subject)?.id || null;
         const draftRecs = db.results.filter((r) => studentIds.includes(r.studentId) && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId && r.publishStatus === "DRAFT");
         if (draftRecs.length === 0) return { ok: false, message: "Nothing to publish." };
+        const ready = [];
+        const blocked = [];
+        for (const rec of draftRecs) {
+          const missing = rec.assessments
+            .filter((a) => a.kind === ASSESSMENT_KIND.TEST && rec.components[a.id]?.score != null && !(db.resultEvidence || []).some((e) => e.resultId === rec.id && e.assessmentId === a.id))
+            .map((a) => a.name);
+          if (missing.length) blocked.push({ rec, missing }); else ready.push(rec);
+        }
+        const blockedText = blocked.map(({ rec, missing }) => {
+          const st = db.students.find((x) => x.id === rec.studentId);
+          return `${st ? studentFullName(st) : "A student"} (${missing.join(", ")})`;
+        }).join("; ");
+        if (ready.length === 0) return { ok: false, message: `Attach test evidence before publishing: ${blockedText}.` };
         try {
-          const published = await resultService.publish(draftRecs.map((r) => r.id), actorId);
+          const published = await resultService.publish(ready.map((r) => r.id), actorId);
           if (published.length === 0) return { ok: false, message: "Nothing to publish." };
           for (const r of published) {
-            await resultService.addAudit({ resultId: r.id, studentId: r.student_id, classId, subjectId, semester, component: null, action: "PUBLISHED", diff: [{ field: "publishStatus", from: "DRAFT", to: "PUBLISHED" }], reason: null });
+            await resultService.addAudit({ resultId: r.id, studentId: r.student_id, classId, subjectId, semester, assessmentId: null, action: "PUBLISHED", diff: [{ field: "publishStatus", from: "DRAFT", to: "PUBLISHED" }], reason: null });
           }
           await refetchResults();
           // Phase 6: notify_results_published re-checks each published row (class+subject+semester+
@@ -3678,7 +3748,7 @@ function DataProvider({ children }) {
             `${subject} ${semester} results published for ${published.length} student${published.length === 1 ? "" : "s"}.`,
             { page: "exams", classId, subject, semester },
           );
-          return { ok: true, message: "" };
+          return { ok: true, message: blocked.length ? `Published for ${published.length}. Not published — test evidence is missing for: ${blockedText}.` : "" };
         } catch (e) {
           console.error("Failed to publish results", e);
           return { ok: false, message: resultRlsMessage(e) };
@@ -3692,7 +3762,7 @@ function DataProvider({ children }) {
         try {
           const from = record.publishStatus;
           await resultService.lock(recordId, actorId);
-          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "LOCKED", diff: [{ field: "publishStatus", from, to: "LOCKED" }], reason: null });
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, action: "LOCKED", diff: [{ field: "publishStatus", from, to: "LOCKED" }], reason: null });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
           await logActivityFeed(`${record.subject} ${record.semester} result locked for ${student ? studentFullName(student) : "a student"}.`);
@@ -3715,7 +3785,7 @@ function DataProvider({ children }) {
           const from = record.publishStatus;
           const toStatus = record.publishedAt ? "PUBLISHED" : "DRAFT";
           await resultService.unlock(recordId, toStatus);
-          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "UNLOCKED", diff: [{ field: "publishStatus", from, to: toStatus }], reason: reason.trim() });
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, action: "UNLOCKED", diff: [{ field: "publishStatus", from, to: toStatus }], reason: reason.trim() });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
           await logActivityFeed(`${record.subject} ${record.semester} result unlocked for ${student ? studentFullName(student) : "a student"}.`);
@@ -3731,9 +3801,9 @@ function DataProvider({ children }) {
       // semester has actually closed (grace_expired / next_semester_started / year_ended), never
       // for a semester that simply hasn't started. A reason is required and fully audited, exactly
       // like the manual unlockResult path. Stays in effect until reinstateAutoLock re-locks it.
-      async overrideAutoLock({ studentId, classId, subject, semester }, actorId, actorRole, reason) {
+      async overrideAutoLock({ studentId, classId, subject, semester, academicYearId: yearArg }, actorId, actorRole, reason) {
         if (!reason || !reason.trim()) return { ok: false, message: "A reason is required to unlock a result." };
-        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
@@ -3747,7 +3817,7 @@ function DataProvider({ children }) {
         try {
           const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
           await resultService.setAutoLockOverride(resultId, { reason: reason.trim(), grantedBy: actorId, grantedByRole: actorRole || actor?.role, grantedAt: Date.now() });
-          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component: null, action: "AUTO_LOCK_OVERRIDDEN", diff: [{ field: "autoLockOverride", from: null, to: true }], reason: reason.trim() });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, action: "AUTO_LOCK_OVERRIDDEN", diff: [{ field: "autoLockOverride", from: null, to: true }], reason: reason.trim() });
           await refetchResults();
           const student = db.students.find((s) => s.id === studentId);
           await logActivityFeed(`${subject} ${semester} result unlocked (auto-lock override) for ${student ? studentFullName(student) : "a student"}.`);
@@ -3767,7 +3837,7 @@ function DataProvider({ children }) {
         const subjectId = db.subjects.find((s) => s.name === record.subject)?.id || null;
         try {
           await resultService.setAutoLockOverride(recordId, null);
-          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, component: null, action: "AUTO_LOCK_REINSTATED", diff: [{ field: "autoLockOverride", from: true, to: null }], reason: null });
+          await resultService.addAudit({ resultId: recordId, studentId: record.studentId, classId: record.classId, subjectId, semester: record.semester, action: "AUTO_LOCK_REINSTATED", diff: [{ field: "autoLockOverride", from: true, to: null }], reason: null });
           await refetchResults();
           const student = db.students.find((s) => s.id === record.studentId);
           await logActivityFeed(`${record.subject} ${record.semester} result re-locked for ${student ? studentFullName(student) : "a student"}.`);
@@ -3779,15 +3849,14 @@ function DataProvider({ children }) {
       },
 
       // Phase 3 checkpoint 3: real Supabase. Adds one evidence page (a photo/scan of the marked
-      // paper) to a component — the file goes to the private `result-evidence` Storage bucket at
-      // `<result_id>/<component>/<safe-name>` (path built server-side from ids, never client input)
-      // and the metadata row to `result_evidence`. Same client-side lock gate as
-      // saveResultComponent (friendly message); Storage + table RLS (can_edit_result_component)
-      // are the real boundary. `file` is the raw File from the picker — no base64.
-      async addResultEvidencePage({ studentId, classId, subject, semester, component, file }, actorId /* actorRole unused: server stamps */) {
-        if (!SEMESTERS.includes(semester) || !ASSESSMENT_COMPONENTS.includes(component)) {
-          return { ok: false, message: "Invalid semester or assessment component." };
-        }
+      // paper) to a TEST assessment — the file goes to the private `result-evidence` Storage bucket at
+      // `<result_id>/<assessment_id>/<safe-name>` (path built from ids, never client input) and the
+      // metadata row to `result_evidence`. A NON_TEST assessment takes no evidence (the database
+      // refuses it too). Same client-side lock gate as saveResultComponent (friendly message);
+      // Storage + table RLS (can_edit_result_component) and the evidence guard trigger are the real
+      // boundary. `file` is the raw File from the picker — no base64.
+      async addResultEvidencePage({ studentId, classId, subject, semester, assessmentId, file, academicYearId: yearArg }, actorId /* server stamps the uploader */) {
+        if (!SEMESTERS.includes(semester)) return { ok: false, message: "Invalid semester." };
         const invalid = validateEvidenceFile(file);
         if (invalid) return { ok: false, message: invalid };
         const student = db.students.find((s) => s.id === studentId);
@@ -3795,17 +3864,23 @@ function DataProvider({ children }) {
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
 
-        const academicYearId = (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
+        const cls = db.classes.find((c) => c.id === classId);
+        const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        if (!config) return { ok: false, message: `No result structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
+        const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
+        if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
+        if (assessment.kind !== ASSESSMENT_KIND.TEST) return { ok: false, message: `${assessment.name} is not a test, so it doesn't take test evidence.` };
         const cal = resolveResultCal(db, academicYearId);
         const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
         if (lock.locked) return { ok: false, message: lock.message };
 
         try {
           const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
-          const existingCount = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component).length;
-          await resultEvidenceService.add({ resultId, studentId, classId, semester, component, academicYearId, file });
-          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, component, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: existingCount, to: existingCount + 1 }], reason: null });
+          const existingCount = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.assessmentId === assessmentId).length;
+          await resultEvidenceService.add({ resultId, assessmentId, file });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, assessmentId, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: existingCount, to: existingCount + 1 }], reason: null });
           await Promise.all([refetchResultEvidence(), refetchResults()]);
           return { ok: true, message: "" };
         } catch (e) {
@@ -3829,7 +3904,7 @@ function DataProvider({ children }) {
         try {
           const oldName = row.fileName;
           const updated = await resultEvidenceService.replace(row, file);
-          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, component: row.component, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: oldName || "(page)", to: updated.fileName }], reason: "Replaced an evidence page" });
+          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, assessmentId: row.assessmentId, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: oldName || "(page)", to: updated.fileName }], reason: "Replaced an evidence page" });
           await Promise.all([refetchResultEvidence(), refetchResults()]);
           return { ok: true, message: "" };
         } catch (e) {
@@ -3839,7 +3914,7 @@ function DataProvider({ children }) {
       },
 
       // Removes one evidence page (metadata row + Storage object) and re-sequences the remaining
-      // pages of the same component so `page_order` stays a dense 0..n-1 run.
+      // pages of the same assessment so `page_order` stays a dense 0..n-1 run.
       async removeResultEvidencePage(evidenceId, actorId /* actorRole unused */) {
         const row = (db.resultEvidence || []).find((e) => e.id === evidenceId);
         if (!row) return { ok: false, message: "Evidence page not found." };
@@ -3851,13 +3926,13 @@ function DataProvider({ children }) {
         try {
           await resultEvidenceService.remove(row);
           const remaining = (db.resultEvidence || [])
-            .filter((e) => e.resultId === row.resultId && e.component === row.component && e.id !== evidenceId)
+            .filter((e) => e.resultId === row.resultId && e.assessmentId === row.assessmentId && e.id !== evidenceId)
             .sort((a, b) => a.order - b.order);
           const resequence = remaining
             .map((e, i) => ({ id: e.id, order: i }))
             .filter((u, i) => remaining[i].order !== u.order);
           if (resequence.length) await resultEvidenceService.setOrder(resequence);
-          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, component: row.component, action: "EVIDENCE_REMOVED", diff: [], reason: null });
+          await resultService.addAudit({ resultId: row.resultId, studentId: row.studentId, classId: row.classId, subjectId, semester: row.semester, assessmentId: row.assessmentId, action: "EVIDENCE_REMOVED", diff: [], reason: null });
           await Promise.all([refetchResultEvidence(), refetchResults()]);
           return { ok: true, message: "" };
         } catch (e) {
@@ -3867,10 +3942,10 @@ function DataProvider({ children }) {
       },
 
       // Purely cosmetic page reordering (no audit entry — matches saveResultComponent's "no
-      // phantom audit entry" rule). Ids not belonging to this resultId+component are ignored.
-      async reorderResultEvidencePages(resultId, component, orderedEvidenceIds, actorId /* actorRole unused */) {
+      // phantom audit entry" rule). Ids not belonging to this resultId+assessment are ignored.
+      async reorderResultEvidencePages(resultId, assessmentId, orderedEvidenceIds, actorId /* actorRole unused */) {
         const record = db.results.find((r) => r.id === resultId) || null;
-        const rows = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.component === component);
+        const rows = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.assessmentId === assessmentId);
         const cal = resolveResultCal(db, record ? record.academicYearId : (rows[0] ? rows[0].academicYearId : null));
         const semester = record ? record.semester : (rows[0] ? rows[0].semester : null);
         const lock = effectiveResultLock(record, semester, cal, todayKeyStr());
@@ -3889,6 +3964,28 @@ function DataProvider({ children }) {
         } catch (e) {
           console.error("Failed to reorder result evidence", e);
           return { ok: false, message: evidenceErrorMessage(e) };
+        }
+      },
+
+      // Results Settings: create or change the assessment structure for ONE academic year + semester +
+      // grade. `components` = [{ name, weight, kind: "TEST"|"NON_TEST" }] in display order. Everything
+      // is validated again by save_result_configuration (Owner/Educational Director only, weights total
+      // exactly 100, one active structure per year+semester+grade, a structure that already has results
+      // becomes a NEW VERSION so old results keep the structure they were recorded under). The acting
+      // user is stamped server-side into result_configuration_audit.
+      async saveResultConfiguration({ academicYearId, semester, grade, components }) {
+        try {
+          const res = await resultConfigService.save({ academicYearId, semester, grade, components });
+          await refetchResultConfigs();
+          if (res.action !== "UNCHANGED") {
+            const year = db.academicYears.find((y) => y.id === academicYearId);
+            const verb = res.action === "CREATED" ? "configured" : res.action === "NEW_VERSION" ? `changed (new version ${res.version})` : "updated";
+            await logActivityFeed(`Result structure ${verb} for ${grade} — ${SEMESTER_LABEL[semester]}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
+          }
+          return { ok: true, message: "", result: res };
+        } catch (e) {
+          console.error("Failed to save result configuration", e);
+          return { ok: false, message: resultConfigErrorMessage(e) };
         }
       },
 
@@ -4504,7 +4601,7 @@ function DataProvider({ children }) {
       // past enrollment (see Student Profile, which already has a year picker).
       classSemesterResults(classId, semester, academicYearId) {
         const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
-        return computeClassSemesterResults({ db, classId, semester, academicYearId: yearId, requiredSubjectsForClass: (id) => this.requiredSubjectsForClass(id) });
+        return computeClassSemesterResults({ db, classId, semester, academicYearId: yearId, requiredSubjectsForClass: (id) => this.requiredSubjectsForClass(id), studentsForClassYear: (id, y) => this.studentsForClassYear(id, y) });
       },
       // Yearly (S1+S2 blended) class ranking for the Report Card's Yearly Average/Rank row — a
       // student only ranks once BOTH semesters are fully complete. Distinct from, not derived by
@@ -4661,7 +4758,8 @@ function DataProvider({ children }) {
     refetchAttendance, refetchLeaveRequests,
     behaviorService, behaviorRecordsRaw, refetchBehavior,
     homeworkService, homework, refetchHomework,
-    resultService, examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
+    resultService, resultConfigService, resultConfigsRaw, resultConfigAuditRaw, refetchResultConfigs,
+    examService, results, resultAuditLog, examAnnouncements, refetchResults, refetchExamAnnouncements,
     resultEvidenceService, resultEvidence, resultEvidenceRaw, refetchResultEvidence,
     reportCardService, reportCards, refetchReportCards,
     feeService, paymentService, expenseService,

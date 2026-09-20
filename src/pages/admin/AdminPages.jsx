@@ -16,7 +16,7 @@ import {
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI, MIN_PERIODS, MAX_PERIODS,
   CLOSURE_REASON_PRESETS, staffGroupLabel,
-  SEMESTERS, SEMESTER_LABEL, ASSESSMENT_COMPONENTS, ASSESSMENT_COMPONENT_LABEL, ASSESSMENT_COMPONENT_WEIGHT,
+  SEMESTERS, SEMESTER_LABEL, RESULT_TOTAL_WEIGHT, ASSESSMENT_KIND, ASSESSMENT_KIND_LABEL,
 } from "../../utils/constants";
 import {
   uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
@@ -27,8 +27,10 @@ import {
   CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
-  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, PaymentStatusBadge, CheckboxList, FeeScheduleList,
+  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList,
 } from "../../components/ui";
+import { activeAssessments } from "../../utils/resultConfig";
+import { ResultsSettingsPage } from "./ResultsSettings";
 import { CashReceiptModal } from "../../components/Receipt";
 import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
@@ -1116,7 +1118,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
       )}
 
       {tab === "exams" && (
-        resultsWithTotals.length === 0 ? <EmptyState title="No results yet" description="Midterm, Student Book, and Final marks will appear here once entered by the assigned teacher." /> : (
+        resultsWithTotals.length === 0 ? <EmptyState title="No results yet" description="Scores will appear here once the assigned teacher enters them." /> : (
           <Card className="divide-y divide-slate-100">
             {resultsWithTotals.map((r) => (
               <div key={r.id} className="px-4 py-3">
@@ -1128,14 +1130,14 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-3 text-xs text-slate-400">
-                  {ASSESSMENT_COMPONENTS.map((c) => {
-                    const comp = r.components?.[c];
-                    const pages = data.resultEvidenceFor(r.id, c);
+                  {(r.assessments || []).map((c) => {
+                    const comp = r.components?.[c.id];
+                    const pages = data.resultEvidenceFor(r.id, c.id);
                     return (
-                      <span key={c} className="inline-flex items-center gap-1">
-                        {ASSESSMENT_COMPONENT_LABEL[c]}: {comp?.score != null ? `${comp.score}/${ASSESSMENT_COMPONENT_WEIGHT[c]}` : "—"}
+                      <span key={c.id} className="inline-flex items-center gap-1">
+                        {c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "—"}
                         {pages.length > 0 && (
-                          <button type="button" onClick={() => setDocViewer({ title: `${r.subject} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages })} className="text-brand-600 hover:text-brand-700"><FileText size={12} /></button>
+                          <button type="button" onClick={() => setDocViewer({ title: `${r.subject} — ${c.name}`, files: pages })} className="text-brand-600 hover:text-brand-700"><FileText size={12} /></button>
                         )}
                       </span>
                     );
@@ -3882,8 +3884,12 @@ function ResultsPage({ role, focus, clearFocus }) {
   const auth = useAuth();
   const { db } = data;
   const [announceOpen, setAnnounceOpen] = useState(false);
-  const [selected, setSelected] = useState(null); // { classId, subject, semester } | null
-  const [semester, setSemester] = useState(SEMESTERS[0]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [selected, setSelected] = useState(null); // { classId, subject, semester, academicYearId } | null
+  const [yearId, setYearId] = useState((currentAcademicYear(db.academicYears) || {}).id || null);
+  // Open on the semester that is actually running — Semester 2 as soon as it starts — taken from the
+  // academic year's own calendar, so nobody has to switch it by hand every time.
+  const [semester, setSemester] = useState(() => data.currentResultSemester((currentAcademicYear(db.academicYears) || {}).id));
 
   const isStaff = role === ROLES.OWNER || role === ROLES.ADMIN;
   // Subject-level ownership (teacherAssignments), not headTeacherId — a head teacher doesn't
@@ -3894,13 +3900,20 @@ function ResultsPage({ role, focus, clearFocus }) {
   const [classTab, setClassTab] = useState(browsableClasses[0]?.id || null);
   const cls = db.classes.find((c) => c.id === classTab) || browsableClasses[0] || null;
 
+  function changeYear(id) {
+    setYearId(id);
+    setSemester(data.currentResultSemester(id));
+  }
+
   // Deep-link from a Recent Activity item — jump straight into the class/subject/semester editor.
   useEffect(() => {
     if (!focus?.classId) return;
     setClassTab(focus.classId);
-    if (focus.subject && focus.semester) setSelected({ classId: focus.classId, subject: focus.subject, semester: focus.semester });
+    if (focus.subject && focus.semester) setSelected({ classId: focus.classId, subject: focus.subject, semester: focus.semester, academicYearId: yearId });
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (showSettings && isStaff) return <ResultsSettingsPage onBack={() => setShowSettings(false)} />;
 
   if (selected) {
     return (
@@ -3908,7 +3921,9 @@ function ResultsPage({ role, focus, clearFocus }) {
         classId={selected.classId}
         subject={selected.subject}
         semester={selected.semester}
+        academicYearId={selected.academicYearId}
         onBack={() => setSelected(null)}
+        onOpenSettings={isStaff ? () => { setSelected(null); setShowSettings(true); } : null}
       />
     );
   }
@@ -3932,9 +3947,12 @@ function ResultsPage({ role, focus, clearFocus }) {
       : [...new Set(db.teacherAssignments.filter((ta) => ta.classId === cls.id).map((ta) => ta.subject))]
         .filter((subject) => isAssignedSubjectTeacher(auth.currentUser, cls.id, subject, db.teacherAssignments)))
     : [];
-  const studentsInClass = cls ? db.students.filter((s) => s.classId === cls.id) : [];
+  const studentsInClass = cls ? data.studentsForClassYear(cls.id, yearId) : [];
+  const structure = cls ? data.resultStructureForClass(cls.id, semester, yearId) : null;
+  const semesterLock = data.semesterResultLockInfo(semester, yearId);
+  const yearRow = db.academicYears.find((y) => y.id === yearId);
 
-  const topPerformer = isStaff ? data.schoolTopPerformer(semester) : null;
+  const topPerformer = isStaff ? data.schoolTopPerformer(semester, yearId) : null;
   const topPerformerStudent = topPerformer ? data.getStudent(topPerformer.studentId) : null;
   const topPerformerClass = topPerformer ? data.getClass(topPerformer.classId) : null;
 
@@ -3942,12 +3960,17 @@ function ResultsPage({ role, focus, clearFocus }) {
     <div>
       <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
         <h1 className="text-lg font-semibold text-slate-800">Results</h1>
-        {isStaff && <PrimaryButton icon={Megaphone} onClick={() => setAnnounceOpen(true)}>Announce Exam</PrimaryButton>}
+        {isStaff && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <GhostButton icon={Settings} onClick={() => setShowSettings(true)}>Results Settings</GhostButton>
+            <PrimaryButton icon={Megaphone} onClick={() => setAnnounceOpen(true)}>Announce Exam</PrimaryButton>
+          </div>
+        )}
       </div>
       <p className="text-sm text-slate-400 mb-4">
         {isStaff
-          ? "The school administers exams on paper — this app only records results. Announce an upcoming exam to notify parents and teachers once it's scheduled."
-          : "Enter Midterm, Student Book, and Final marks for each subject you teach, then publish so parents can see them."}
+          ? "The school administers exams on paper — this app only records results. Set each grade's assessments in Results Settings, or announce an upcoming exam to notify parents and teachers."
+          : "Enter scores for the assessments the school has set up for each subject you teach, then publish so parents can see them."}
       </p>
 
       {!isStaff && !data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && (
@@ -3996,6 +4019,13 @@ function ResultsPage({ role, focus, clearFocus }) {
         <EmptyState icon={School} title="No classes yet" description="Add a class first." />
       ) : (
         <>
+          {db.academicYears.length > 1 && (
+            <div className="mb-3">
+              <select value={yearId || ""} onChange={(e) => changeYear(e.target.value)} aria-label="Academic year" className={`${inputCls} sm:w-auto`}>
+                {db.academicYears.map((y) => <option key={y.id} value={y.id}>{formatAcademicYearLabel(y)}{y.isCurrent ? " (current)" : ""}</option>)}
+              </select>
+            </div>
+          )}
           <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
             {browsableClasses.map((c) => (
               <button key={c.id} onClick={() => setClassTab(c.id)} className={`px-3.5 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border ${(cls && cls.id) === c.id ? "bg-brand-600 text-white border-brand-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
@@ -4003,28 +4033,43 @@ function ResultsPage({ role, focus, clearFocus }) {
               </button>
             ))}
           </div>
-          <div className="flex gap-1.5 mb-4">
-            {SEMESTERS.map((s) => (
-              <button key={s} onClick={() => setSemester(s)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${semester === s ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>{SEMESTER_LABEL[s]}</button>
-            ))}
+          <div className="flex gap-1.5 mb-4 flex-wrap">
+            {SEMESTERS.map((s) => {
+              const chip = semesterPhaseChip(data.semesterResultLockInfo(s, yearId));
+              return (
+                <button key={s} onClick={() => setSemester(s)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold border inline-flex items-center gap-1.5 ${semester === s ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>
+                  {SEMESTER_LABEL[s]}
+                  {chip && <span className={`text-[10px] font-medium ${semester === s ? "text-slate-300" : "text-slate-400"}`}>· {chip.label}</span>}
+                </button>
+              );
+            })}
           </div>
+
+          <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
+
+          {cls && !structure && (
+            <Card className="p-4 mb-4 border border-slate-200 bg-slate-50">
+              <p className="text-sm font-semibold text-slate-700">No result structure has been configured for {cls.grade} for {SEMESTER_LABEL[semester]}{yearRow ? ` (${formatAcademicYearLabel(yearRow)})` : ""}.</p>
+              <p className="text-xs text-slate-500 mt-0.5">{isStaff ? "Set its assessments in Results Settings before teachers can record scores." : "Please contact the Educational Director."}</p>
+            </Card>
+          )}
 
           {cls && subjectsForClass.length === 0 ? (
             isStaff
               ? <EmptyState title="This class doesn't have any subjects yet" description="Add subjects to this class from Classes → Edit Class." />
               : <EmptyState title="No subjects assigned to this class yet" description="Assign a teacher to a subject for this class first, from the Teachers page." />
           ) : cls && isStaff ? (
-            <ResultsGridOverview classId={cls.id} semester={semester} onOpenSubject={(subject) => setSelected({ classId: cls.id, subject, semester })} />
+            <ResultsGridOverview classId={cls.id} semester={semester} academicYearId={yearId} onOpenSubject={(subject) => setSelected({ classId: cls.id, subject, semester, academicYearId: yearId })} />
           ) : cls && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {subjectsForClass.map((subject) => {
-                const records = db.results.filter((r) => r.classId === cls.id && r.subject === subject && r.semester === semester);
+                const records = db.results.filter((r) => r.classId === cls.id && r.subject === subject && r.semester === semester && r.academicYearId === yearId);
                 const recorded = records.filter((r) => resultTotals(r).count > 0).length;
                 return (
-                  <button key={subject} onClick={() => setSelected({ classId: cls.id, subject, semester })} className="text-left">
+                  <button key={subject} onClick={() => setSelected({ classId: cls.id, subject, semester, academicYearId: yearId })} className="text-left">
                     <Card className="p-4 hover:border-brand-300 transition-colors h-full">
                       <p className="text-sm font-medium text-slate-700 mb-1">{subject}</p>
-                      <p className="text-xs text-slate-400">{recorded}/{studentsInClass.length} students have a result</p>
+                      <p className="text-xs text-slate-400">{structure ? `${recorded}/${studentsInClass.length} students have a result` : "No result structure configured yet"}</p>
                     </Card>
                   </button>
                 );
@@ -4040,12 +4085,12 @@ function ResultsPage({ role, focus, clearFocus }) {
 
 // The Owner/Director overview: every subject taught in the class as a column, so results can be
 // scanned across a whole class at a glance instead of clicking into one subject at a time.
-// Clicking a subject's header opens the full 20/20/10/50 entry screen for it. Total/Average/Rank
+// Clicking a subject's header opens the entry screen for it (its columns come from the configured structure). Total/Average/Rank
 // and the summary strip all come from the shared resultsEngine (via data.classSemesterResults) so
 // this never disagrees with Student Profile's Class Rank or any other consumer of the same numbers.
-function ResultsGridOverview({ classId, semester, onOpenSubject }) {
+function ResultsGridOverview({ classId, semester, academicYearId, onOpenSubject }) {
   const data = useData();
-  const { subjects, rows, studentsTotal, studentsAllComplete, classAverage, topStudents, subjectAverages } = data.classSemesterResults(classId, semester);
+  const { subjects, rows, studentsTotal, studentsAllComplete, classAverage, topStudents, subjectAverages } = data.classSemesterResults(classId, semester, academicYearId);
   const topStudent = topStudents[0] || null;
   const topStudentUser = topStudent ? data.getStudent(topStudent.studentId) : null;
 
@@ -4186,19 +4231,20 @@ function AnnounceExamModal({ open, onClose }) {
   );
 }
 
-function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
+function SubjectSemesterResultsEditor({ classId, subject, semester, academicYearId, onBack, onOpenSettings }) {
   const data = useData();
   const auth = useAuth();
   const toast = useToast();
   const { db } = data;
   const cls = data.getClass(classId);
-  const students = db.students.filter((s) => s.classId === classId);
+  const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+  const students = data.studentsForClassYear(classId, yearId);
   const [selectedIds, setSelectedIds] = useState([]);
   const [historyFor, setHistoryFor] = useState(null); // studentId | null
   const [docViewer, setDocViewer] = useState(null); // { title, files, initialIndex } | null
-  const [cameraChooserFor, setCameraChooserFor] = useState(null); // { studentId, component } | null
+  const [cameraChooserFor, setCameraChooserFor] = useState(null); // { studentId, assessmentId } | null
   const [unlockTarget, setUnlockTarget] = useState(null); // { mode: "manual"|"auto", record, studentId, lockMessage } | null
-  // Score edits are kept as a local, unsaved draft (`studentId::component` -> raw input string)
+  // Score edits are kept as a local, unsaved draft (`studentId::assessmentId` -> raw input string)
   // instead of writing on every keystroke or blur — nothing reaches saveResultComponent until the
   // teacher explicitly clicks Save, and Save is blocked while any edited score is out of range.
   const [drafts, setDrafts] = useState({});
@@ -4206,53 +4252,73 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   const { isBusy, run } = useMutationGuard();
 
   const ctx = { classId, subject, teacherAssignments: db.teacherAssignments };
+  const isStaff = auth.currentUser.role === ROLES.OWNER || auth.currentUser.role === ROLES.ADMIN;
 
   function recordFor(studentId) {
-    return data.getResult(studentId, classId, subject, semester);
+    return data.getResult(studentId, classId, subject, semester, yearId);
   }
-  function draftKey(studentId, component) { return `${studentId}::${component}`; }
-  function savedScoreStr(studentId, component) {
-    const score = recordFor(studentId)?.components?.[component]?.score;
+
+  // The columns come from the configured structure — never from code. Students with no result yet
+  // use the ACTIVE structure for this grade/semester/year; a student whose result was recorded under
+  // an earlier version of the structure stays on THAT version (its own table below), so changing the
+  // structure later never reinterprets old scores.
+  const activeConfig = data.resultStructureForClass(classId, semester, yearId);
+  const groupMap = new Map();
+  for (const s of students) {
+    const record = recordFor(s.id);
+    const config = (record && record.configuration) || activeConfig;
+    if (!config) continue;
+    if (!groupMap.has(config.id)) groupMap.set(config.id, { config, assessments: activeAssessments(config), students: [] });
+    groupMap.get(config.id).students.push(s);
+  }
+  if (activeConfig && !groupMap.has(activeConfig.id)) groupMap.set(activeConfig.id, { config: activeConfig, assessments: activeAssessments(activeConfig), students: [] });
+  const groups = [...groupMap.values()].sort((a, b) => (b.config.status === "ACTIVE") - (a.config.status === "ACTIVE") || b.config.version - a.config.version);
+  const assessmentById = new Map(groups.flatMap((g) => g.assessments.map((a) => [a.id, a])));
+  const anyRecorded = students.some((s) => resultTotals(recordFor(s.id)).count > 0);
+
+  function draftKey(studentId, assessmentId) { return `${studentId}::${assessmentId}`; }
+  function savedScoreStr(studentId, assessmentId) {
+    const score = recordFor(studentId)?.components?.[assessmentId]?.score;
     return score != null ? String(score) : "";
   }
-  function scoreValue(studentId, component) {
-    const key = draftKey(studentId, component);
-    return Object.prototype.hasOwnProperty.call(drafts, key) ? drafts[key] : savedScoreStr(studentId, component);
+  function scoreValue(studentId, assessmentId) {
+    const key = draftKey(studentId, assessmentId);
+    return Object.prototype.hasOwnProperty.call(drafts, key) ? drafts[key] : savedScoreStr(studentId, assessmentId);
   }
-  function isScoreDirty(studentId, component) {
-    const key = draftKey(studentId, component);
-    return Object.prototype.hasOwnProperty.call(drafts, key) && drafts[key] !== savedScoreStr(studentId, component);
+  function isScoreDirty(studentId, assessmentId) {
+    const key = draftKey(studentId, assessmentId);
+    return Object.prototype.hasOwnProperty.call(drafts, key) && drafts[key] !== savedScoreStr(studentId, assessmentId);
   }
-  function scoreError(studentId, component) {
-    const val = scoreValue(studentId, component);
+  function scoreError(studentId, assessmentId) {
+    const val = scoreValue(studentId, assessmentId);
     if (val === "") return null;
-    const max = ASSESSMENT_COMPONENT_WEIGHT[component];
+    const max = assessmentById.get(assessmentId)?.weight;
     const num = Number(val);
     if (Number.isNaN(num)) return `Enter a number from 0 to ${max}.`;
     if (num < 0 || num > max) return `Maximum score is ${max}. Enter a score from 0 to ${max}.`;
     return null;
   }
-  function setDraftScore(studentId, component, value) {
-    setDrafts((d) => ({ ...d, [draftKey(studentId, component)]: value }));
+  function setDraftScore(studentId, assessmentId, value) {
+    setDrafts((d) => ({ ...d, [draftKey(studentId, assessmentId)]: value }));
   }
-  const dirtyKeys = Object.keys(drafts).filter((key) => { const [sid, c] = key.split("::"); return isScoreDirty(sid, c); });
-  const invalidKey = dirtyKeys.find((key) => { const [sid, c] = key.split("::"); return !!scoreError(sid, c); });
+  const dirtyKeys = Object.keys(drafts).filter((key) => { const [sid, aid] = key.split("::"); return isScoreDirty(sid, aid); });
+  const invalidKey = dirtyKeys.find((key) => { const [sid, aid] = key.split("::"); return !!scoreError(sid, aid); });
   async function saveAllScores() {
     if (dirtyKeys.length === 0 || saving) return;
     if (invalidKey) {
-      const [sid, c] = invalidKey.split("::");
+      const [sid, aid] = invalidKey.split("::");
       const student = students.find((s) => s.id === sid);
-      toast(`${data.studentFullName(student)}'s ${ASSESSMENT_COMPONENT_LABEL[c]} score is invalid — ${scoreError(sid, c)}`, "error");
+      toast(`${data.studentFullName(student)}'s ${assessmentById.get(aid)?.name} score is invalid — ${scoreError(sid, aid)}`, "error");
       return;
     }
     setSaving(true);
     const savedKeys = [];
     let firstError = null;
     for (const key of dirtyKeys) {
-      const [sid, c] = key.split("::");
+      const [sid, aid] = key.split("::");
       const val = drafts[key];
       // eslint-disable-next-line no-await-in-loop
-      const res = await data.saveResultComponent({ studentId: sid, classId, subject, semester, component: c, score: val === "" ? null : Number(val) }, auth.realUser.id, auth.realUser.role);
+      const res = await data.saveResultComponent({ studentId: sid, classId, subject, semester, assessmentId: aid, score: val === "" ? null : Number(val), academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
       if (res.ok) savedKeys.push(key);
       else if (!firstError) firstError = res.message;
     }
@@ -4261,22 +4327,22 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
     if (firstError) toast(firstError, "error");
     else toast("Results saved.", "success");
   }
-  async function uploadEvidencePages(studentId, component, fileList) {
+  async function uploadEvidencePages(studentId, assessmentId, fileList) {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
     // One File per row upload; the mutation guard de-dupes a double-fired picker for the same
-    // student+component while a batch is in flight. Uploads are sequential (real Storage writes).
+    // student+assessment while a batch is in flight. Uploads are sequential (real Storage writes).
     await run(async () => {
       let added = 0;
       let firstError = null;
       for (const file of files) {
         // eslint-disable-next-line no-await-in-loop
-        const res = await data.addResultEvidencePage({ studentId, classId, subject, semester, component, file }, auth.realUser.id, auth.realUser.role);
+        const res = await data.addResultEvidencePage({ studentId, classId, subject, semester, assessmentId, file, academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
         if (res.ok) added += 1; else if (!firstError) firstError = res.message;
       }
       if (added > 0) toast(`${added} evidence page${added === 1 ? "" : "s"} attached.`, "success");
       if (firstError) toast(firstError, "error");
-    }, { key: `evidence-upload:${studentId}:${component}` });
+    }, { key: `evidence-upload:${studentId}:${assessmentId}` });
   }
   async function replaceEvidencePage(evidenceId, file) {
     if (!file) return;
@@ -4291,17 +4357,17 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
       if (!res.ok) toast(res.message, "error");
     }, { key: `evidence-remove:${evidenceId}` });
   }
-  async function reorderPage(record, component, pages, fromIdx, toIdx) {
+  async function reorderPage(record, assessmentId, pages, fromIdx, toIdx) {
     const ids = pages.map((p) => p.id);
     const [moved] = ids.splice(fromIdx, 1);
     ids.splice(toIdx, 0, moved);
     await run(async () => {
-      const res = await data.reorderResultEvidencePages(record.id, component, ids, auth.realUser.id, auth.realUser.role);
+      const res = await data.reorderResultEvidencePages(record.id, assessmentId, ids, auth.realUser.id, auth.realUser.role);
       if (!res.ok) toast(res.message, "error");
-    }, { key: `evidence-reorder:${record.id}:${component}` });
+    }, { key: `evidence-reorder:${record.id}:${assessmentId}` });
   }
-  async function toggleShare(studentId, component, current) {
-    const res = await data.saveResultComponent({ studentId, classId, subject, semester, component, sharedWithParents: !current }, auth.realUser.id, auth.realUser.role);
+  async function toggleShare(studentId, assessmentId, current) {
+    const res = await data.saveResultComponent({ studentId, classId, subject, semester, assessmentId, sharedWithParents: !current, academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
     if (!res.ok) toast(res.message, "error");
   }
   function toggleSelect(studentId) {
@@ -4312,8 +4378,10 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
     if (selectedIds.length === 0) { toast("Select at least one student to publish.", "error"); return; }
     if (dirtyKeys.length > 0) { toast("You have unsaved score changes — click Save before publishing.", "error"); return; }
     run(async () => {
-      const res = await data.publishResults(classId, subject, semester, selectedIds, auth.realUser.id, auth.realUser.role);
-      toast(res.ok ? "Results published — parents have been notified." : res.message, res.ok ? "success" : "error");
+      const res = await data.publishResults(classId, subject, semester, selectedIds, auth.realUser.id, auth.realUser.role, yearId);
+      if (!res.ok) toast(res.message, "error");
+      else if (res.message) toast(res.message, "info");
+      else toast("Results published — parents have been notified.", "success");
       if (res.ok) setSelectedIds([]);
     }, { key: `publish-results:${classId}:${subject}:${semester}` });
   }
@@ -4331,7 +4399,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
     const { mode, record, studentId } = unlockTarget;
     const res = mode === "manual"
       ? await data.unlockResult(record.id, auth.realUser.id, auth.realUser.role, reason)
-      : await data.overrideAutoLock({ studentId, classId, subject, semester }, auth.realUser.id, auth.realUser.role, reason);
+      : await data.overrideAutoLock({ studentId, classId, subject, semester, academicYearId: yearId }, auth.realUser.id, auth.realUser.role, reason);
     toast(res.ok ? "Result unlocked." : res.message, res.ok ? "success" : "error");
     setUnlockTarget(null);
   }
@@ -4347,150 +4415,220 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
   const canUnlock = canUnlockResult(auth.currentUser);
   const canAudit = canViewResultAudit(auth.currentUser, ctx);
   const historyRecord = historyFor ? recordFor(historyFor) : null;
-  const semesterLock = data.semesterResultLockInfo(semester);
+  const semesterLock = data.semesterResultLockInfo(semester, yearId);
+  const saveDisabled = dirtyKeys.length === 0 || !!invalidKey || saving;
+  const saveLabel = saving ? "Saving…" : dirtyKeys.length > 0 ? `Save (${dirtyKeys.length} unsaved)` : "Save";
+
+  const backButton = <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 mb-4"><ArrowLeft size={15} /> Back to Results</button>;
+  const titleRow = (
+    <div className="flex items-center gap-2">
+      <h1 className="text-lg font-semibold text-slate-800">{subject}</h1>
+      <Badge tone="sky">{SEMESTER_LABEL[semester]}</Badge>
+    </div>
+  );
+
+  // No structure for this grade + semester (and nothing already recorded under an older one): no
+  // fields, no fallback columns, nothing to type into.
+  if (groups.length === 0) {
+    return (
+      <div>
+        {backButton}
+        <div className="mb-3">{titleRow}</div>
+        <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
+        <EmptyState
+          icon={ShieldAlert}
+          title="No Results Configuration"
+          description={`No assessment structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
+          action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 mb-4"><ArrowLeft size={15} /> Back to Results</button>
+    <div className="pb-20 sm:pb-0">
+      {backButton}
       <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        {titleRow}
         <div className="flex items-center gap-2">
-          <h1 className="text-lg font-semibold text-slate-800">{subject}</h1>
-          <Badge tone="sky">{SEMESTER_LABEL[semester]}</Badge>
-        </div>
-        <div className="flex items-center gap-2">
-          <button type="button" disabled={dirtyKeys.length === 0 || !!invalidKey || saving} onClick={saveAllScores}
-            className={`text-sm font-medium rounded-lg px-4 py-2 flex items-center gap-1.5 transition-colors ${dirtyKeys.length > 0 && !invalidKey ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
-            <Check size={15} /> {saving ? "Saving…" : dirtyKeys.length > 0 ? `Save (${dirtyKeys.length} unsaved)` : "Save"}
+          <button type="button" disabled={saveDisabled} onClick={saveAllScores}
+            className={`text-sm font-medium rounded-lg px-4 py-2 flex items-center gap-1.5 transition-colors ${!saveDisabled ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
+            <Check size={15} /> {saveLabel}
           </button>
           {canPublish && <PrimaryButton icon={Send} onClick={publishSelected} loading={isBusy(`publish-results:${classId}:${subject}:${semester}`)} loadingText="Publishing…">Publish selected ({selectedIds.length})</PrimaryButton>}
         </div>
       </div>
-      <p className="text-sm text-slate-400 mb-4">{cls ? data.classLabel(cls) : ""} • Midterm 1 (20), Midterm 2 (20), Student Book (10), Final Exam (50) — total out of 100, calculated automatically.</p>
+      <p className="text-sm text-slate-400 mb-4">
+        {cls ? data.classLabel(cls) : ""}{activeConfig ? ` • ${activeAssessments(activeConfig).map((a) => `${a.name} (${a.weight})`).join(", ")}` : ""} — total out of {RESULT_TOTAL_WEIGHT}, calculated automatically.
+      </p>
 
-      <SemesterLockBanner lockInfo={semesterLock} />
+      <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
+      {!anyRecorded && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">Result structure configured, but no results have been recorded yet.</p>}
 
-      <Card className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs">
-              <tr>
-                {canPublish && (
-                  <th className="px-4 py-2.5">
-                    <input type="checkbox" checked={selectableIds.length > 0 && selectedIds.length === selectableIds.length} onChange={(e) => setSelectedIds(e.target.checked ? selectableIds : [])} />
-                  </th>
-                )}
-                <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
-                <th className="text-left font-medium px-4 py-2.5">Student</th>
-                {ASSESSMENT_COMPONENTS.map((c) => (
-                  <th key={c} className="text-left font-medium px-3 py-2.5 whitespace-nowrap">{ASSESSMENT_COMPONENT_LABEL[c]} ({ASSESSMENT_COMPONENT_WEIGHT[c]})</th>
-                ))}
-                <th className="text-left font-medium px-3 py-2.5">Total /100</th>
-                <th className="text-left font-medium px-3 py-2.5">Status</th>
-                <th className="text-right font-medium px-3 py-2.5">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {students.map((s, i) => {
-                const record = recordFor(s.id);
-                const totals = resultTotals(record);
-                const rowLock = data.resultLockFor(record, semester, record?.academicYearId);
-                const canEdit = canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !rowLock.locked;
-                const locked = record?.publishStatus === "LOCKED";
-                return (
-                  <tr key={s.id} className="border-t border-slate-100">
-                    {canPublish && (
-                      <td className="px-4 py-2">
-                        <input type="checkbox" checked={selectedIds.includes(s.id)} onChange={() => toggleSelect(s.id)} disabled={locked} />
-                      </td>
-                    )}
-                    <td className="px-3 py-2 text-slate-400">{i + 1}</td>
-                    <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{data.studentFullName(s)}</td>
-                    {ASSESSMENT_COMPONENTS.map((c) => {
-                      const comp = record?.components?.[c];
-                      const err = canEdit ? scoreError(s.id, c) : null;
-                      const pages = record ? data.resultEvidenceFor(record.id, c) : [];
+      {groups.map((group) => {
+        const { config, assessments } = group;
+        return (
+          <div key={config.id} className="mb-5">
+            {(groups.length > 1) && (
+              <p className="text-xs font-medium text-slate-500 mb-1.5">
+                {config.status === "ACTIVE" ? `Current structure (version ${config.version})` : `Recorded under an earlier structure (version ${config.version})`}
+              </p>
+            )}
+            <Card className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs">
+                    <tr>
+                      {canPublish && (
+                        <th className="px-4 py-2.5">
+                          <input type="checkbox" checked={selectableIds.length > 0 && selectedIds.length === selectableIds.length} onChange={(e) => setSelectedIds(e.target.checked ? selectableIds : [])} />
+                        </th>
+                      )}
+                      <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
+                      <th className="text-left font-medium px-4 py-2.5 sticky left-0 bg-slate-50 z-10">Student</th>
+                      {assessments.map((a) => (
+                        <th key={a.id} className="text-left font-medium px-3 py-2.5 whitespace-nowrap">
+                          <span className="block text-slate-600">{a.name}</span>
+                          <span className="block font-normal text-slate-400">/{a.weight} · {ASSESSMENT_KIND_LABEL[a.kind]}</span>
+                        </th>
+                      ))}
+                      <th className="text-left font-medium px-3 py-2.5 whitespace-nowrap">Total /{RESULT_TOTAL_WEIGHT}</th>
+                      <th className="text-left font-medium px-3 py-2.5">Status</th>
+                      <th className="text-right font-medium px-3 py-2.5">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.students.map((s, i) => {
+                      const record = recordFor(s.id);
+                      const totals = resultTotals(record);
+                      const rowLock = data.resultLockFor(record, semester, yearId);
+                      const canEdit = canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !rowLock.locked;
+                      const locked = record?.publishStatus === "LOCKED";
+                      const progress = totals.count === 0 ? "Not started" : totals.completionStatus === "COMPLETE" ? "Complete" : "In progress";
                       return (
-                        <td key={c} className="px-3 py-2 align-top">
-                          <div className="flex items-start gap-1.5">
-                            {canEdit ? (
-                              <div className="flex flex-col">
-                                <input type="number" min={0} max={ASSESSMENT_COMPONENT_WEIGHT[c]} step="0.1" value={scoreValue(s.id, c)} placeholder={`/${ASSESSMENT_COMPONENT_WEIGHT[c]}`}
-                                  onChange={(e) => setDraftScore(s.id, c, e.target.value)}
-                                  className={`w-14 rounded-lg border px-2 py-1 text-sm ${err ? "border-red-400 bg-red-50 text-red-700" : "border-slate-200"}`} />
-                                {err && <span className="text-[10px] text-red-600 mt-0.5 leading-tight max-w-[7rem]">{err}</span>}
-                              </div>
-                            ) : (
-                              <span className={comp?.score != null ? "text-slate-700 font-medium" : "text-slate-300"}>{comp?.score != null ? comp.score : "—"}</span>
-                            )}
-                            <div className="flex flex-col gap-1">
-                              {pages.length > 0 && (
-                                <div className="flex items-center gap-1 flex-wrap max-w-[6.5rem]">
-                                  {pages.map((p, idx) => {
-                                    const pageBusy = isBusy(`evidence-remove:${p.id}`) || isBusy(`evidence-replace:${p.id}`) || isBusy(`evidence-reorder:${record.id}:${c}`);
-                                    return (
-                                    <div key={p.id} className="flex flex-col items-center">
-                                      <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${ASSESSMENT_COMPONENT_LABEL[c]}`, files: pages, initialIndex: idx })} className="w-6 h-6 rounded border border-slate-200 hover:border-brand-400 overflow-hidden flex items-center justify-center bg-slate-50">
-                                        {p.fileType === "pdf" || !p.fileDataUrl
-                                          ? <FileText size={12} className="text-slate-400" />
-                                          : <img src={p.fileDataUrl} alt="" className="w-full h-full object-cover" />}
-                                      </button>
-                                      {canEdit && (
-                                        <div className="flex items-center gap-0.5">
-                                          <button type="button" disabled={idx === 0 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
-                                          <button type="button" disabled={idx === pages.length - 1 || pageBusy} onClick={() => reorderPage(record, c, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
-                                          <label className={`text-slate-400 hover:text-brand-600 cursor-pointer ${pageBusy ? "opacity-30 pointer-events-none" : ""}`} title="Replace this page">
-                                            <RefreshCw size={9} />
-                                            <input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) replaceEvidencePage(p.id, f); }} />
-                                          </label>
-                                          <button type="button" disabled={pageBusy} onClick={() => removeEvidencePage(p.id)} className="text-red-500 disabled:opacity-30"><X size={9} /></button>
+                        <tr key={s.id} className="border-t border-slate-100">
+                          {canPublish && (
+                            <td className="px-4 py-2">
+                              <input type="checkbox" checked={selectedIds.includes(s.id)} onChange={() => toggleSelect(s.id)} disabled={locked} />
+                            </td>
+                          )}
+                          <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                          <td className="px-4 py-2 text-slate-700 whitespace-nowrap sticky left-0 bg-white z-10">{data.studentFullName(s)}</td>
+                          {assessments.map((a) => {
+                            const comp = record?.components?.[a.id];
+                            const err = canEdit ? scoreError(s.id, a.id) : null;
+                            const isTest = a.kind === ASSESSMENT_KIND.TEST;
+                            // Evidence belongs to TEST assessments only; a NON_TEST column has no photo control at all.
+                            const pages = isTest && record ? data.resultEvidenceFor(record.id, a.id) : [];
+                            const needsEvidence = isTest && canEdit && comp?.score != null && pages.length === 0;
+                            return (
+                              <td key={a.id} className="px-3 py-2 align-top">
+                                <div className="flex items-start gap-1.5">
+                                  {canEdit ? (
+                                    <div className="flex flex-col">
+                                      <input type="number" inputMode="decimal" min={0} max={a.weight} step="0.1" value={scoreValue(s.id, a.id)} placeholder={`/${a.weight}`}
+                                        aria-label={`${data.studentFullName(s)} — ${a.name} (out of ${a.weight})`}
+                                        onChange={(e) => setDraftScore(s.id, a.id, e.target.value)}
+                                        className={`w-16 sm:w-14 rounded-lg border px-2 py-2 sm:py-1 text-base sm:text-sm ${err ? "border-red-400 bg-red-50 text-red-700" : "border-slate-200"}`} />
+                                      {err && <span className="text-[10px] text-red-600 mt-0.5 leading-tight max-w-[7rem]">{err}</span>}
+                                    </div>
+                                  ) : (
+                                    <span className={comp?.score != null ? "text-slate-700 font-medium" : "text-slate-300"}>{comp?.score != null ? comp.score : "—"}</span>
+                                  )}
+                                  {isTest && (
+                                    <div className="flex flex-col gap-1">
+                                      {pages.length > 0 && (
+                                        <div className="flex items-center gap-1 flex-wrap max-w-[6.5rem]">
+                                          {pages.map((p, idx) => {
+                                            const pageBusy = isBusy(`evidence-remove:${p.id}`) || isBusy(`evidence-replace:${p.id}`) || isBusy(`evidence-reorder:${record.id}:${a.id}`);
+                                            return (
+                                            <div key={p.id} className="flex flex-col items-center">
+                                              <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${a.name}`, files: pages, initialIndex: idx })} className="w-7 h-7 sm:w-6 sm:h-6 rounded border border-slate-200 hover:border-brand-400 overflow-hidden flex items-center justify-center bg-slate-50">
+                                                {p.fileType === "pdf" || !p.fileDataUrl
+                                                  ? <FileText size={12} className="text-slate-400" />
+                                                  : <img src={p.fileDataUrl} alt="" className="w-full h-full object-cover" />}
+                                              </button>
+                                              {canEdit && (
+                                                <div className="flex items-center gap-0.5">
+                                                  <button type="button" disabled={idx === 0 || pageBusy} onClick={() => reorderPage(record, a.id, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
+                                                  <button type="button" disabled={idx === pages.length - 1 || pageBusy} onClick={() => reorderPage(record, a.id, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
+                                                  <label className={`text-slate-400 hover:text-brand-600 cursor-pointer ${pageBusy ? "opacity-30 pointer-events-none" : ""}`} title="Replace this page">
+                                                    <RefreshCw size={9} />
+                                                    <input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" className="hidden" onChange={(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) replaceEvidencePage(p.id, f); }} />
+                                                  </label>
+                                                  <button type="button" disabled={pageBusy} onClick={() => removeEvidencePage(p.id)} className="text-red-500 disabled:opacity-30"><X size={9} /></button>
+                                                </div>
+                                              )}
+                                            </div>
+                                            );
+                                          })}
                                         </div>
                                       )}
+                                      <div className="flex items-center gap-1">
+                                        {canEdit && (
+                                          <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${a.id}`)} onClick={() => setCameraChooserFor({ studentId: s.id, assessmentId: a.id })} className="p-1 -m-1 text-slate-400 hover:text-brand-600 disabled:opacity-30" title="Add test photo / screenshot" aria-label={`Add test evidence for ${data.studentFullName(s)} — ${a.name}`}>
+                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+                                          </button>
+                                        )}
+                                        {pages.length > 0 && canEdit && (
+                                          <button onClick={() => toggleShare(s.id, a.id, comp?.sharedWithParents)} title="Toggle visibility to parent" className={`text-[9px] font-semibold px-1 py-0.5 rounded whitespace-nowrap ${comp?.sharedWithParents ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+                                            {comp?.sharedWithParents ? "Shared" : "Share?"}
+                                          </button>
+                                        )}
+                                      </div>
+                                      {needsEvidence && <span className="text-[9px] leading-tight text-amber-600 max-w-[6rem]">Photo needed to publish</span>}
                                     </div>
-                                    );
-                                  })}
+                                  )}
                                 </div>
+                              </td>
+                            );
+                          })}
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {totals.completionStatus === "COMPLETE"
+                              ? <span className="text-slate-700 font-semibold">{totals.total}</span>
+                              : totals.count > 0
+                                ? <span className="text-slate-400" title={`${totals.entered} of ${totals.totalMax} entered — ${totals.remainingWeight} points still to come`}>{totals.entered}<span className="text-[11px]"> / {totals.totalMax}</span></span>
+                                : <span className="text-slate-300">—</span>}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Badge tone={record?.publishStatus === "LOCKED" ? "red" : record?.publishStatus === "PUBLISHED" ? "green" : "slate"}>{record?.publishStatus || "DRAFT"}</Badge>
+                            <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex justify-end gap-1.5">
+                              {canAudit && <GhostButton icon={History} onClick={() => setHistoryFor(s.id)}>History</GhostButton>}
+                              {canLock && !rowLock.locked && rowLock.source === "none" && record?.publishStatus === "PUBLISHED" && (
+                                <GhostButton icon={Lock} onClick={() => requestLock(record)} loading={isBusy(`lock-result:${record.id}`)}>Lock</GhostButton>
                               )}
-                              <div className="flex items-center gap-1">
-                                {canEdit && (
-                                  <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${c}`)} onClick={() => setCameraChooserFor({ studentId: s.id, component: c })} className="text-slate-400 hover:text-brand-600 disabled:opacity-30" title="Add evidence page">
-                                    {isBusy(`evidence-upload:${s.id}:${c}`) ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-                                  </button>
-                                )}
-                                {pages.length > 0 && canEdit && (
-                                  <button onClick={() => toggleShare(s.id, c, comp?.sharedWithParents)} title="Toggle visibility to parent" className={`text-[9px] font-semibold px-1 py-0.5 rounded whitespace-nowrap ${comp?.sharedWithParents ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>
-                                    {comp?.sharedWithParents ? "Shared" : "Share?"}
-                                  </button>
-                                )}
-                              </div>
+                              {canUnlock && rowLock.locked && (rowLock.source === "manual" || rowLock.source === "auto") && (
+                                <GhostButton danger icon={Lock} onClick={() => requestUnlock(record, s.id, rowLock)}>Unlock</GhostButton>
+                              )}
+                              {canLock && rowLock.source === "override" && record && (
+                                <GhostButton icon={Lock} onClick={() => reLock(record)} loading={isBusy(`relock-result:${record.id}`)}>Re-lock</GhostButton>
+                              )}
                             </div>
-                          </div>
-                        </td>
+                          </td>
+                        </tr>
                       );
                     })}
-                    <td className="px-3 py-2 text-slate-600 font-medium">{totals.count > 0 ? totals.total : "—"}</td>
-                    <td className="px-3 py-2"><Badge tone={record?.publishStatus === "LOCKED" ? "red" : record?.publishStatus === "PUBLISHED" ? "green" : "slate"}>{record?.publishStatus || "DRAFT"}</Badge></td>
-                    <td className="px-3 py-2">
-                      <div className="flex justify-end gap-1.5">
-                        {canAudit && <GhostButton icon={History} onClick={() => setHistoryFor(s.id)}>History</GhostButton>}
-                        {canLock && !rowLock.locked && rowLock.source === "none" && record?.publishStatus === "PUBLISHED" && (
-                          <GhostButton icon={Lock} onClick={() => requestLock(record)} loading={isBusy(`lock-result:${record.id}`)}>Lock</GhostButton>
-                        )}
-                        {canUnlock && rowLock.locked && (rowLock.source === "manual" || rowLock.source === "auto") && (
-                          <GhostButton danger icon={Lock} onClick={() => requestUnlock(record, s.id, rowLock)}>Unlock</GhostButton>
-                        )}
-                        {canLock && rowLock.source === "override" && record && (
-                          <GhostButton icon={Lock} onClick={() => reLock(record)} loading={isBusy(`relock-result:${record.id}`)}>Re-lock</GhostButton>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        );
+      })}
+      <p className="text-xs text-slate-400 mt-3">Test assessments take a photo or screenshot of the marked paper — it is required before the result can be published. Non-test assessments need no photo. Parents only see a photo once you mark it as shared.</p>
+
+      {/* Phones: keep Save in reach while scrolling a long class list. */}
+      {dirtyKeys.length > 0 && (
+        <div className="sm:hidden fixed bottom-0 inset-x-0 z-20 bg-white border-t border-slate-200 px-4 py-3">
+          <button type="button" disabled={saveDisabled} onClick={saveAllScores}
+            className={`w-full text-sm font-medium rounded-lg px-4 py-3 flex items-center justify-center gap-1.5 ${!saveDisabled ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-400"}`}>
+            <Check size={16} /> {saveLabel}
+          </button>
         </div>
-      </Card>
-      <p className="text-xs text-slate-400 mt-3">Attach one or more photos of the marked paper to any component if you'd like — evidence is separate from the score, and the parent only sees it once you mark it as shared.</p>
+      )}
 
       <Modal open={!!historyFor} onClose={() => setHistoryFor(null)} title="Change History" wide>
         <ResultAuditTrail entries={historyRecord ? db.resultAuditLog.filter((e) => e.entityId === historyRecord.id) : []} viewerRole={auth.currentUser.role} />
@@ -4503,13 +4641,13 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, onBack }) {
             <Camera size={18} className="text-brand-600" />
             <span className="text-sm font-medium text-slate-700">Take Photo</span>
             <input type="file" accept="image/*" capture="environment" className="hidden"
-              onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files[0] && target) uploadEvidencePages(target.studentId, target.component, e.target.files); }} />
+              onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files[0] && target) uploadEvidencePages(target.studentId, target.assessmentId, e.target.files); }} />
           </label>
           <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
             <ImageIcon size={18} className="text-brand-600" />
             <span className="text-sm font-medium text-slate-700">Choose from Gallery</span>
             <input type="file" accept="image/*" multiple className="hidden"
-              onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files.length > 0 && target) uploadEvidencePages(target.studentId, target.component, e.target.files); }} />
+              onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files.length > 0 && target) uploadEvidencePages(target.studentId, target.assessmentId, e.target.files); }} />
           </label>
         </div>
       </Modal>
