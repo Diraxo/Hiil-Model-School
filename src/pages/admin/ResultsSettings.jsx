@@ -326,7 +326,7 @@ function ResultsSettingsPage({ onBack }) {
             title={deleteTarget ? `Delete structure — ${deleteTarget.grade} · ${SEMESTER_LABEL[deleteTarget.semester]}?` : "Delete structure?"}
             description={deleteHasResults
               ? "Results are already recorded under this structure, so it will be closed instead of erased: teachers can no longer enter new results for this grade and semester, and every recorded result keeps its scores and assessments. You can set up a new structure afterwards."
-              : "No results are recorded under this structure, so it will be removed completely. Teachers of this grade will see \"No Results Configuration\" until you set a new one."}
+              : "No results have been recorded under this structure. The structure will be removed completely. No student scores will be erased because there are no recorded scores under this structure. Teachers of this grade will see \"No Results Configuration\" until you set a new one."}
             confirmLabel={deleteHasResults ? "Close structure" : "Delete structure"}
             danger
           />
@@ -347,8 +347,14 @@ function ResultsSettingsPage({ onBack }) {
                           <td key={s} className="py-1.5 px-2">
                             <div className="flex items-stretch gap-1">
                             <button type="button" onClick={() => { setGrade(g); setSemester(s); window.scrollTo({ top: 0, behavior: "smooth" }); }} className={`text-left rounded-lg border px-2.5 py-1.5 text-xs w-full ${g === grade && s === semester ? "border-brand-400 bg-brand-50" : "border-slate-200 hover:bg-slate-50"}`}>
-                              {c ? <span className="text-slate-700">{activeAssessments(c).map((a) => `${a.name} ${a.weight}`).join(" · ")}</span> : <span className="text-slate-400">Not configured</span>}
-                              {c && <span className="ml-1.5 text-slate-400">v{c.version}</span>}
+                              {c ? (
+                                <span className="block text-slate-700">
+                                  {activeAssessments(c).map((a) => (
+                                    <span key={a.id} className="block">{a.name} {a.weight} <span className="block sm:inline text-slate-400"><span className="hidden sm:inline">· </span>{ASSESSMENT_KIND_LABEL[a.kind]}</span></span>
+                                  ))}
+                                </span>
+                              ) : <span className="text-slate-400">Not configured</span>}
+                              {c && <span className="text-slate-400">v{c.version}</span>}
                               {chip && <Badge tone={chip.tone}>{chip.label}</Badge>}
                             </button>
                             {c && (
