@@ -59,13 +59,70 @@ const ATTENDANCE_BUTTON_CLASS = {
 };
 // Shared status-button row used by every attendance editor (student, staff, and their
 // respective overview/take-attendance screens) so the six statuses only need to be wired once.
+// Phones get a grid of 44px-tall buttons (2 columns on the narrowest screens, 3 otherwise) so a
+// finger can hit one without precision tapping; the selected one also shows a check mark, so the
+// choice isn't carried by colour alone. From `sm` up it collapses back to the compact inline row.
 function AttendanceStatusPicker({ value, onChange, statuses = ATTENDANCE_STATUSES, size = "sm" }) {
-  const pad = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
+  const pad = size === "sm" ? "sm:px-2.5 sm:py-1 sm:text-xs" : "sm:px-3 sm:py-1.5 sm:text-sm";
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {statuses.map((st) => (
-        <button key={st} type="button" onClick={() => onChange(st)} className={`rounded-md font-medium border ${pad} ${value === st ? ATTENDANCE_BUTTON_CLASS[st] : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>{st}</button>
-      ))}
+    <div role="group" aria-label="Attendance status" className="grid grid-cols-2 min-[380px]:grid-cols-3 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center sm:gap-1.5">
+      {statuses.map((st) => {
+        const selected = value === st;
+        return (
+          <button key={st} type="button" aria-pressed={selected} onClick={() => onChange(st)}
+            className={`inline-flex items-center justify-center gap-1 min-h-[44px] px-1.5 text-sm rounded-lg font-medium border sm:min-h-0 sm:rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 ${pad} ${selected ? `${ATTENDANCE_BUTTON_CLASS[st]} font-semibold shadow-sm` : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}>
+            {selected && <Check size={14} aria-hidden="true" className="shrink-0" />}{st}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// One student's row inside a take/view-attendance modal — name, current status in words, then the
+// picker. Stacks on phones (name → status → buttons) and sits side by side from `sm` up. Names wrap
+// instead of truncating so a long name is never clipped. `readOnly` shows the status as a badge.
+function AttendanceStudentRow({ index, name, photo, status, onChange, readOnly, fallbackLabel = "Not marked" }) {
+  return (
+    <div className={readOnly ? "flex items-center justify-between gap-3 py-3" : "flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3"}>
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span className="text-xs text-slate-400 w-5 shrink-0">{index}.</span>
+        <Avatar name={name} photo={photo} size={32} />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-700 break-words">{name}</p>
+          {!readOnly && <p className={status ? "text-xs text-slate-500 sm:hidden" : "text-xs text-amber-600 font-medium"}>{status || "Not marked yet"}</p>}
+        </div>
+      </div>
+      {readOnly ? <span className="shrink-0"><Badge tone={statusTone(status)}>{status || fallbackLabel}</Badge></span> : <AttendanceStatusPicker value={status} onChange={onChange} />}
+    </div>
+  );
+}
+
+// "Mark all present / absent" pair — stacked on the narrowest phones, side by side otherwise.
+function AttendanceMarkAllBar({ onMarkAll }) {
+  return (
+    <div className="grid grid-cols-1 min-[380px]:grid-cols-2 sm:flex sm:items-center gap-2 mb-3">
+      <GhostButton icon={Check} className="justify-center min-h-[44px] sm:min-h-0" onClick={() => onMarkAll("Present")}>Mark all present</GhostButton>
+      <GhostButton icon={AlertTriangle} className="justify-center min-h-[44px] sm:min-h-0" onClick={() => onMarkAll("Absent")}>Mark all absent</GhostButton>
+    </div>
+  );
+}
+
+// Sticky footer for a take-attendance modal: progress ("x of y marked"), an explicit unsaved-changes
+// flag, and Cancel / Save that stay in reach however long the class list is. It sticks to the
+// bottom of the scrolling modal, clears the iPhone home indicator via the safe-area inset, and
+// cancels the panel's own bottom padding so it sits flush with the modal's edge.
+function AttendanceSaveBar({ marked, total, dirty, busy, onCancel, onSave }) {
+  return (
+    <div className="sticky bottom-0 z-10 -mx-4 sm:-mx-5 -mb-4 mt-4 px-4 sm:px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white border-t border-slate-100 rounded-b-2xl">
+      <div className="flex items-center justify-between gap-2 mb-2.5 text-xs">
+        <span className={marked === total ? "text-emerald-700 font-medium" : "text-slate-500"}>{marked} of {total} marked</span>
+        {dirty && <Badge tone="amber">Unsaved changes</Badge>}
+      </div>
+      <div className="flex gap-2 sm:justify-end">
+        <button type="button" onClick={onCancel} className="flex-1 sm:flex-none min-h-[44px] sm:min-h-0 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 border border-slate-200 sm:border-transparent hover:bg-slate-100">Cancel</button>
+        <div className="flex-[2] sm:flex-none"><PrimaryButton icon={Check} full className="min-h-[44px] sm:min-h-0" onClick={onSave} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton></div>
+      </div>
     </div>
   );
 }
@@ -174,11 +231,12 @@ function Modal({ open, onClose, title, children, wide, maxWidthClass }) {
     <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm overflow-y-auto">
       <div className="min-h-full flex items-start sm:items-center justify-center p-3 sm:p-4">
         <div className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidthClass || (wide ? "sm:max-w-2xl" : "sm:max-w-md")} my-6 sm:my-0 animate-none`}>
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-            <h3 className="font-semibold text-slate-800 text-base">{title}</h3>
-            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg p-1.5"><X size={18} /></button>
+          {/* Sticky so the close button stays reachable while a long modal scrolls on a phone. */}
+          <div className="sticky top-0 z-20 flex items-center justify-between gap-3 px-4 sm:px-5 py-3 sm:py-4 border-b border-slate-100 bg-white rounded-t-2xl">
+            <h3 className="font-semibold text-slate-800 text-base min-w-0 break-words">{title}</h3>
+            <button type="button" aria-label="Close" onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg p-2.5 -mr-1.5 sm:p-1.5 sm:mr-0"><X size={18} /></button>
           </div>
-          <div className="px-5 py-4">{children}</div>
+          <div className="px-4 sm:px-5 py-4">{children}</div>
         </div>
       </div>
     </div>
@@ -346,15 +404,17 @@ function DateNav({ date, onChange, minDate, maxDate, skipDates }) {
   const nextDate = findValid(shiftDateKey(date, 1), 1);
 
   return (
+    // On phones: [‹] [date field fills the row] [›] with the readable date + "Jump to today"
+    // wrapping onto the next line; 44px arrows; 16px date text so iOS doesn't zoom on focus.
     <div className="flex flex-wrap items-center gap-2 mb-4">
-      <button type="button" disabled={!prevDate} onClick={() => prevDate && onChange(prevDate)} className={`p-1.5 rounded-lg border ${!prevDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
-      <div className="relative">
+      <button type="button" aria-label="Previous school day" disabled={!prevDate} onClick={() => prevDate && onChange(prevDate)} className={`shrink-0 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${!prevDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
+      <div className="relative flex-1 min-w-0 sm:flex-none">
         <CalendarDays size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-        <input type="date" value={date} min={minDate || undefined} max={effectiveMax} onChange={(e) => e.target.value && onChange(e.target.value)} className="rounded-lg border border-slate-200 pl-8 pr-2.5 py-1.5 text-sm text-slate-700" />
+        <input type="date" value={date} min={minDate || undefined} max={effectiveMax} onChange={(e) => e.target.value && onChange(e.target.value)} className="w-full min-h-[44px] sm:min-h-0 rounded-lg border border-slate-200 pl-8 pr-2.5 py-1.5 text-base sm:text-sm text-slate-700" />
       </div>
-      <button type="button" disabled={!nextDate} onClick={() => nextDate && onChange(nextDate)} className={`p-1.5 rounded-lg border ${!nextDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
-      <span className="text-sm font-medium text-slate-600">{dateKeyLabel(date)}</span>
-      {date < effectiveMax && <button type="button" onClick={() => onChange(effectiveMax)} className="text-xs text-brand-600 font-medium ml-1">Jump to today</button>}
+      <button type="button" aria-label="Next school day" disabled={!nextDate} onClick={() => nextDate && onChange(nextDate)} className={`shrink-0 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${!nextDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
+      <span className="basis-full sm:basis-auto text-sm font-medium text-slate-600">{dateKeyLabel(date)}</span>
+      {date < effectiveMax && <button type="button" onClick={() => onChange(effectiveMax)} className="text-sm sm:text-xs text-brand-600 font-medium py-2 sm:py-0 sm:ml-1">Jump to today</button>}
     </div>
   );
 }
@@ -577,18 +637,18 @@ function Select({ value, onChange, options, placeholder }) {
 // `loading` shows a spinner and disables the button (double-click / repeated-Enter
 // guard for mutation actions -- pair it with useMutationGuard's `busy`). `loadingText`
 // optionally swaps the label while in flight ("Add Student" -> "Adding Student…").
-function PrimaryButton({ children, onClick, icon: Icon = Plus, type = "button", full, loading = false, disabled = false, loadingText }) {
+function PrimaryButton({ children, onClick, icon: Icon = Plus, type = "button", full, loading = false, disabled = false, loadingText, className = "" }) {
   const isDisabled = disabled || loading;
   return (
-    <button type={type} onClick={onClick} disabled={isDisabled} className={`inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${full ? "w-full" : ""}`}>
+    <button type={type} onClick={onClick} disabled={isDisabled} className={`inline-flex items-center justify-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${full ? "w-full" : ""} ${className}`}>
       {loading ? <Loader2 size={15} className="animate-spin" /> : <Icon size={15} />}{loading && loadingText ? loadingText : children}
     </button>
   );
 }
-function GhostButton({ children, onClick, icon: Icon, danger, loading = false, disabled = false }) {
+function GhostButton({ children, onClick, icon: Icon, danger, loading = false, disabled = false, className = "" }) {
   const isDisabled = disabled || loading;
   return (
-    <button type="button" onClick={onClick} disabled={isDisabled} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${danger ? "border-red-200 text-red-600 hover:bg-red-50" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+    <button type="button" onClick={onClick} disabled={isDisabled} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${danger ? "border-red-200 text-red-600 hover:bg-red-50" : "border-slate-200 text-slate-600 hover:bg-slate-50"} ${className}`}>
       {loading ? <Loader2 size={13} className="animate-spin" /> : (Icon && <Icon size={13} />)}{children}
     </button>
   );
@@ -599,6 +659,7 @@ export {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
+  AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, PaymentStatusBadge, MonthCalendarGrid,
   CheckboxList, FeeScheduleList,
 };

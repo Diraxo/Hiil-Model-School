@@ -396,15 +396,15 @@ function PeriodAttendanceSection({ child, dateKey }) {
           const covererRoleLabel = directCovererUser ? ROLE_LABEL[directCovererUser.role] : null;
           const childRecord = log?.attendance?.find((a) => a.studentId === child.id);
           return (
-            <div key={e.id} className="flex items-center justify-between text-sm px-4 py-2.5">
-              <div>
+            <div key={e.id} className="flex items-center justify-between gap-3 text-sm px-4 py-2.5">
+              <div className="min-w-0">
                 <p className="text-slate-700 font-medium">Period {e.period} · {e.subject}</p>
                 <p className="text-xs text-slate-400">{substituteUser ? `Teacher: ${teacher?.name}` : directCovererUser ? `Original teacher: ${teacher?.name}` : teacher?.name}</p>
                 {substituteUser && <p className="text-xs text-brand-600 mt-0.5">🔄 Substitute: {substituteUser.name}</p>}
                 {directCovererUser && <p className="text-xs text-brand-600 mt-0.5">🔄 Covered by {directCovererUser.name}{covererRoleLabel ? ` (${covererRoleLabel})` : ""}</p>}
               </div>
               {childRecord ? (
-                <Badge tone={statusTone(childRecord.status)}>{childRecord.status}</Badge>
+                <span className="shrink-0"><Badge tone={statusTone(childRecord.status)}>{childRecord.status}</Badge></span>
               ) : substituteUser || directCovererUser ? (
                 <Badge tone="sky">Not marked yet</Badge>
               ) : teacherAbsent ? (

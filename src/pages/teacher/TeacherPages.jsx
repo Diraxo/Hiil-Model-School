@@ -22,6 +22,7 @@ import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, PaymentStatusBadge, AttendanceStatusPicker,
+  AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
 } from "../../components/ui";
 import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
@@ -436,6 +437,13 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
 
   function setStatus(id, status) { setDraft((d) => ({ ...d, [id]: { ...d[id], status } })); }
   function markAll(status) { const next = {}; students.forEach((s) => { next[s.id] = { ...draft[s.id], status }; }); setDraft(next); }
+  // Presentation only: rows marked so far, and whether the draft differs from what's saved.
+  const markedCount = students.filter((s) => draft[s.id]?.status).length;
+  const dirty = !!entry && students.some((s) => (draft[s.id]?.status || null) !== (log?.attendance?.find((a) => a.studentId === s.id)?.status || null));
+  function requestClose() {
+    if (dirty && !window.confirm("You have unsaved attendance changes. Close and discard them?")) return;
+    onClose();
+  }
   function save() {
     if (!entry) return;
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
@@ -449,7 +457,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   }
 
   return (
-    <Modal open={!!entry} onClose={onClose} title={entry ? `Take Attendance · Period ${entry.period} · ${entry.subject}` : ""} wide>
+    <Modal open={!!entry} onClose={requestClose} title={entry ? `Take Attendance · Period ${entry.period} · ${entry.subject}` : ""} wide>
       {entry && (
         <div>
           <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
@@ -460,22 +468,14 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
           </div>
           {students.length === 0 ? <p className="text-xs text-slate-300 py-2">No students in this class.</p> : (
             <>
-              <Toolbar>
-                <GhostButton icon={Check} onClick={() => markAll("Present")}>Mark all present</GhostButton>
-                <GhostButton icon={AlertTriangle} onClick={() => markAll("Absent")}>Mark all absent</GhostButton>
-              </Toolbar>
-              <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[55vh] overflow-y-auto">
+              <AttendanceMarkAllBar onMarkAll={markAll} />
+              <div className="divide-y divide-slate-100 border-t border-slate-100 sm:max-h-[55vh] sm:overflow-y-auto">
                 {students.map((s, i) => (
-                  <div key={s.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0"><span className="text-xs text-slate-400 w-5 shrink-0">{i + 1}.</span><Avatar name={data.studentFullName(s)} photo={s.photo} size={30} /><span className="text-sm font-medium text-slate-700 truncate">{data.studentFullName(s)}</span></div>
-                    <AttendanceStatusPicker value={draft[s.id]?.status} onChange={(st) => setStatus(s.id, st)} />
-                  </div>
+                  <AttendanceStudentRow key={s.id} index={i + 1} name={data.studentFullName(s)} photo={s.photo}
+                    status={draft[s.id]?.status} onChange={(st) => setStatus(s.id, st)} />
                 ))}
               </div>
-              <div className="mt-4 flex justify-end gap-2">
-                <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-                <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton>
-              </div>
+              <AttendanceSaveBar marked={markedCount} total={students.length} dirty={dirty} busy={busy} onCancel={requestClose} onSave={save} />
             </>
           )}
         </div>
@@ -725,12 +725,12 @@ function TeacherAttendancePage() {
               </p>
               <div className="flex gap-2">
                 {canAct ? (
-                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-brand-600 rounded-lg py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
+                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-sm sm:text-xs text-white font-medium bg-brand-600 rounded-lg py-3 sm:py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
                 ) : blockedForDate && classification.available && students.length > 0 && (
-                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-xs text-slate-600 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">View</button>
+                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-sm sm:text-xs text-slate-600 font-medium border border-slate-200 rounded-lg py-3 sm:py-1.5 hover:bg-slate-50">View</button>
                 )}
                 {students.length > 0 && (
-                  <button onClick={() => setRegisterFor(c.id)} className="text-xs text-slate-500 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50" title="Monthly Register"><CalendarDays size={14} /></button>
+                  <button onClick={() => setRegisterFor(c.id)} className="inline-flex items-center justify-center gap-1.5 text-sm sm:text-xs text-slate-600 sm:text-slate-500 font-medium border border-slate-200 rounded-lg px-3.5 sm:px-2.5 py-3 sm:py-1.5 hover:bg-slate-50" title="Monthly Register" aria-label="Monthly Register"><CalendarDays size={14} /><span className="sm:hidden">Register</span></button>
                 )}
               </div>
             </Card>

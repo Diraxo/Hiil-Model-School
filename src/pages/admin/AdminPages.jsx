@@ -26,6 +26,7 @@ import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
+  AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, PaymentStatusBadge, CheckboxList, FeeScheduleList,
 } from "../../components/ui";
 import { CashReceiptModal } from "../../components/Receipt";
@@ -626,9 +627,9 @@ function MonthNav({ monthKey, onChange, maxMonthKey, minMonthKey }) {
   const atMin = !!minMonthKey && monthKey <= minMonthKey;
   return (
     <div className="flex items-center gap-2 mb-3">
-      <button type="button" disabled={atMin} onClick={() => !atMin && onChange(shiftMonthKey(monthKey, -1))} className={`p-1.5 rounded-lg border ${atMin ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
+      <button type="button" aria-label="Previous month" disabled={atMin} onClick={() => !atMin && onChange(shiftMonthKey(monthKey, -1))} className={`flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${atMin ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
       <span className="text-sm font-medium text-slate-700 min-w-[9.5rem] text-center">{monthLabel(monthKey)}</span>
-      <button type="button" disabled={atMax} onClick={() => !atMax && onChange(shiftMonthKey(monthKey, 1))} className={`p-1.5 rounded-lg border ${atMax ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
+      <button type="button" aria-label="Next month" disabled={atMax} onClick={() => !atMax && onChange(shiftMonthKey(monthKey, 1))} className={`flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${atMax ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
     </div>
   );
 }
@@ -2857,12 +2858,12 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
                 </p>
                 <div className="flex gap-2">
                   {classification.available && students.length > 0 && canTake ? (
-                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-xs text-white font-medium bg-brand-600 rounded-lg py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
+                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-sm sm:text-xs text-white font-medium bg-brand-600 rounded-lg py-3 sm:py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
                   ) : (
-                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">View</button>
+                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-sm sm:text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-3 sm:py-1.5 hover:bg-slate-50">View</button>
                   )}
                   {students.length > 0 && (
-                    <button onClick={() => setRegisterFor(c.id)} className="text-xs text-slate-500 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50" title="Monthly Register"><CalendarDays size={14} /></button>
+                    <button onClick={() => setRegisterFor(c.id)} className="inline-flex items-center justify-center gap-1.5 text-sm sm:text-xs text-slate-600 sm:text-slate-500 font-medium border border-slate-200 rounded-lg px-3.5 sm:px-2.5 py-3 sm:py-1.5 hover:bg-slate-50" title="Monthly Register" aria-label="Monthly Register"><CalendarDays size={14} /><span className="sm:hidden">Register</span></button>
                   )}
                 </div>
               </Card>
@@ -2920,6 +2921,14 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
 
   function setStatus(id, status) { setDraft((d) => ({ ...d, [id]: { ...d[id], status } })); }
   function markAll(status) { const next = {}; students.forEach((s) => { next[s.id] = { ...draft[s.id], status }; }); setDraft(next); }
+  // Presentation only: how many rows are marked, and whether the draft differs from what's saved.
+  const markedCount = students.filter((s) => draft[s.id]?.status).length;
+  const savedStatusByStudent = new Map(db.attendance.filter((a) => a.date === dateKey).map((a) => [a.studentId, a.status]));
+  const dirty = !readOnly && students.some((s) => (draft[s.id]?.status || null) !== (savedStatusByStudent.get(s.id) || null));
+  function requestClose() {
+    if (dirty && !window.confirm("You have unsaved attendance changes. Close and discard them?")) return;
+    onClose();
+  }
   function save() {
     if (!cls) return;
     if (students.some((s) => !draft[s.id]?.status)) { toast("Mark every student before saving — attendance never defaults to Present.", "error"); return; }
@@ -2933,7 +2942,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   }
 
   return (
-    <Modal open={!!classId} onClose={onClose} title={cls ? `${readOnly ? "Attendance" : "Take Attendance"} · ${cls.grade}${cls.section}` : ""} wide>
+    <Modal open={!!classId} onClose={requestClose} title={cls ? `${readOnly ? "Attendance" : "Take Attendance"} · ${cls.grade}${cls.section}` : ""} wide>
       {cls && (
         <div>
           <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
@@ -2947,30 +2956,15 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
           ) : (
             <>
               {noSchoolDay && <AttendanceCalendarNotice classification={classification} />}
-              {!readOnly && (
-                <Toolbar>
-                  <GhostButton icon={Check} onClick={() => markAll("Present")}>Mark all present</GhostButton>
-                  <GhostButton icon={AlertTriangle} onClick={() => markAll("Absent")}>Mark all absent</GhostButton>
-                </Toolbar>
-              )}
-              <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[55vh] overflow-y-auto">
+              {!readOnly && <AttendanceMarkAllBar onMarkAll={markAll} />}
+              <div className="divide-y divide-slate-100 border-t border-slate-100 sm:max-h-[55vh] sm:overflow-y-auto">
                 {students.map((s, i) => (
-                  <div key={s.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0"><span className="text-xs text-slate-400 w-5 shrink-0">{i + 1}.</span><Avatar name={data.studentFullName(s)} photo={s.photo} size={30} /><span className="text-sm font-medium text-slate-700 truncate">{data.studentFullName(s)}</span></div>
-                    {readOnly ? (
-                      <Badge tone={statusTone(draft[s.id]?.status)}>{draft[s.id]?.status || (noSchoolDay ? classification.label : "Not marked")}</Badge>
-                    ) : (
-                      <AttendanceStatusPicker value={draft[s.id]?.status} onChange={(st) => setStatus(s.id, st)} />
-                    )}
-                  </div>
+                  <AttendanceStudentRow key={s.id} index={i + 1} name={data.studentFullName(s)} photo={s.photo}
+                    status={draft[s.id]?.status} onChange={(st) => setStatus(s.id, st)} readOnly={readOnly}
+                    fallbackLabel={noSchoolDay ? classification.label : "Not marked"} />
                 ))}
               </div>
-              {!readOnly && (
-                <div className="mt-4 flex justify-end gap-2">
-                  <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-                  <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton>
-                </div>
-              )}
+              {!readOnly && <AttendanceSaveBar marked={markedCount} total={students.length} dirty={dirty} busy={busy} onCancel={requestClose} onSave={save} />}
             </>
           )}
         </div>
@@ -3031,12 +3025,14 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
           {students.length === 0 ? <EmptyState title="No students in this class" description="Nothing to register yet." /> : days.length === 0 ? (
             <EmptyState title="No school days this month" description="Attendance wasn't available on any date in this month." />
           ) : (
+            <>
+            <p className="sm:hidden text-[11px] text-slate-400 mb-1.5">Swipe sideways to see every day. Tap a day number to open that day.</p>
             <div className="overflow-x-auto -mx-1">
               <table className="min-w-full text-[11px] border-collapse">
                 <thead>
                   <tr>
                     <th className="sticky left-0 bg-white px-1.5 py-1 text-left font-medium text-slate-400 w-6">#</th>
-                    <th className="sticky left-6 bg-white px-2 py-1 text-left font-medium text-slate-400 min-w-[9rem]">Student</th>
+                    <th className="sticky left-6 bg-white px-2 py-1 text-left font-medium text-slate-400 min-w-[7.5rem] max-w-[9.5rem]">Student</th>
                     {days.map((d) => {
                       const blocked = canManage && d.available && !!(blockedForDate && blockedForDate(d.dateKey));
                       return (
@@ -3060,7 +3056,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
                     return (
                       <tr key={s.id} className="hover:bg-slate-50/60">
                         <td className="sticky left-0 bg-white px-1.5 py-1.5 text-slate-400">{i + 1}</td>
-                        <td className="sticky left-6 bg-white px-2 py-1.5 text-slate-700 font-medium whitespace-nowrap">{data.studentFullName(s)}</td>
+                        <td className="sticky left-6 bg-white px-2 py-1.5 text-slate-700 font-medium min-w-[7.5rem] max-w-[9.5rem] leading-tight">{data.studentFullName(s)}</td>
                         {days.map((d) => {
                           const rec = db.attendance.find((a) => a.studentId === s.id && a.date === d.dateKey);
                           if (rec) totals[rec.status] = (totals[rec.status] || 0) + 1;
@@ -3092,6 +3088,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </div>
       )}
@@ -3491,7 +3488,7 @@ function StaffAttendancePage() {
                 </div>
                 {canEditGroup && (
                   <Toolbar>
-                    <GhostButton icon={Check} onClick={() => markAll("Present", activeGroup.items)}>Mark all present</GhostButton>
+                    <GhostButton icon={Check} className="justify-center min-h-[44px] sm:min-h-0" onClick={() => markAll("Present", activeGroup.items)}>Mark all present</GhostButton>
                   </Toolbar>
                 )}
                 <Card className="divide-y divide-slate-100">
@@ -3518,7 +3515,7 @@ function StaffAttendancePage() {
                                     {draft[s.id]?.[period]?.status === "Late" && (
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-xs text-slate-400">Arrived</span>
-                                        <input type="time" value={draft[s.id]?.[period]?.arrivalTime || ""} onChange={(e) => setArrival(s.id, period, e.target.value)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs" />
+                                        <input type="time" value={draft[s.id]?.[period]?.arrivalTime || ""} onChange={(e) => setArrival(s.id, period, e.target.value)} className="rounded-lg border border-slate-200 px-2 py-1.5 text-base sm:text-xs sm:py-1" />
                                       </div>
                                     )}
                                   </>
@@ -3549,7 +3546,7 @@ function StaffAttendancePage() {
                     );
                   })}
                 </Card>
-                {canEditGroup && <div className="mt-4 flex justify-end"><PrimaryButton icon={Check} onClick={() => save(activeGroup.items)} loading={saveBusy} loadingText="Saving…">Save Attendance</PrimaryButton></div>}
+                {canEditGroup && <div className="mt-4 flex sm:justify-end"><div className="w-full sm:w-auto"><PrimaryButton icon={Check} full className="min-h-[44px] sm:min-h-0" onClick={() => save(activeGroup.items)} loading={saveBusy} loadingText="Saving…">Save Attendance</PrimaryButton></div></div>}
               </>
             );
           })()}
