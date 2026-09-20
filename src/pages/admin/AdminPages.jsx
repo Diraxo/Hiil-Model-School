@@ -6413,6 +6413,124 @@ function VoidPaymentModal({ open, onClose, payment }) {
   );
 }
 
+// One entry per calendar month that combines every school-fee and bus installment falling in it, so
+// a bus student's month reads as ONE bill (School Fee 5,000 + Bus Fee 1,000 = 6,000) that matches
+// the receipt, instead of two separate lists whose figures never add up to what was actually paid.
+// Purely a read-side regrouping of the rows feeRowsForStudentIn already produced — no fee or
+// payment calculation changes.
+function monthlyFeeRows(installmentStatus, busSchedule) {
+  const todayMonth = todayKeyStr().slice(0, 7);
+  const byMonth = new Map();
+  const add = (kind, r) => {
+    const key = r.instMonth || "";
+    if (!byMonth.has(key)) byMonth.set(key, { key, school: [], bus: [] });
+    byMonth.get(key)[kind].push(r);
+  };
+  installmentStatus.rows.forEach((r) => add("school", r));
+  busSchedule.rows.forEach((r) => add("bus", r));
+  const total = (rows, f) => rows.reduce((s, r) => s + r[f], 0);
+  const part = (rows) => (rows.length ? { amountDue: total(rows, "amountDue"), paid: total(rows, "paid"), remaining: total(rows, "remaining") } : null);
+  const statusOf = (p) => (p.remaining <= 0 ? "PAID" : p.paid > 0 ? "PARTIAL" : "UNPAID");
+  const hasTodayRow = byMonth.has(todayMonth);
+  return [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key)).map((m) => {
+    const school = part(m.school), bus = part(m.bus);
+    const all = [...m.school, ...m.bus];
+    const sum = part(all);
+    const first = m.school[0] || m.bus[0];
+    return {
+      key: m.key,
+      label: m.key ? new Date(`${m.key}-01T00:00:00`).toLocaleDateString("en-US", { month: "long", year: "numeric" }) : (first?.installment?.label || first?.label || "Fee"),
+      dueDate: m.school[0]?.installment?.dueDate || m.bus[0]?.dueDate || null,
+      school, bus,
+      amountDue: sum.amountDue, paid: sum.paid, remaining: sum.remaining, status: statusOf(sum),
+      // "Not due yet": a later month nothing has been paid toward — reads Upcoming, not a red Unpaid.
+      upcoming: !!m.key && m.key > todayMonth && sum.paid === 0,
+      current: hasTodayRow ? m.key === todayMonth : all.some((r) => r.isCurrent),
+      statusOfPart: { school: school && statusOf(school), bus: bus && statusOf(bus) },
+    };
+  });
+}
+
+function monthStatusBadge(month) {
+  return month.upcoming ? <Badge tone="slate">Upcoming</Badge> : paymentStatusBadge(month.status);
+}
+
+// At-a-glance totals for the statement below. `dueNow` is the same current-period figure the rest
+// of the app uses (dueStatusForStudent), so the parent sees one consistent "due now" everywhere.
+function FeeSummaryTiles({ months, dueNow }) {
+  if (months.length === 0) return null;
+  const current = months.find((m) => m.current);
+  const totalDue = months.reduce((s, m) => s + m.amountDue, 0);
+  const totalPaid = months.reduce((s, m) => s + m.paid, 0);
+  const totalRemaining = months.reduce((s, m) => s + m.remaining, 0);
+  const monthsToGo = months.filter((m) => m.remaining > 0).length;
+  const tile = "rounded-xl border p-3.5";
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className={`${tile} border-slate-200 bg-white`}>
+        <p className="text-xs text-slate-400">This month's bill</p>
+        <p className="text-lg font-semibold text-slate-800 mt-0.5">{current ? formatMoney(current.amountDue) : "—"}</p>
+        <p className="text-[11px] text-slate-400 mt-0.5">
+          {current ? (current.bus ? `School ${formatMoney(current.school ? current.school.amountDue : 0)} + Bus ${formatMoney(current.bus.amountDue)}` : "School fee") : "No fee this month"}
+        </p>
+      </div>
+      <div className={`${tile} border-emerald-200 bg-emerald-50`}>
+        <p className="text-xs text-emerald-700">Paid so far</p>
+        <p className="text-lg font-semibold text-emerald-800 mt-0.5">{formatMoney(totalPaid)}</p>
+        <p className="text-[11px] text-emerald-700/70 mt-0.5">of {formatMoney(totalDue)} this year</p>
+      </div>
+      <div className={`${tile} ${dueNow > 0 ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
+        <p className={`text-xs ${dueNow > 0 ? "text-amber-700" : "text-slate-400"}`}>Due now</p>
+        <p className={`text-lg font-semibold mt-0.5 ${dueNow > 0 ? "text-amber-800" : "text-slate-800"}`}>{dueNow > 0 ? formatMoney(dueNow) : "Nothing due"}</p>
+        <p className={`text-[11px] mt-0.5 ${dueNow > 0 ? "text-amber-700/70" : "text-slate-400"}`}>{dueNow > 0 ? "Please arrange payment" : "You're up to date"}</p>
+      </div>
+      <div className={`${tile} border-slate-200 bg-white`}>
+        <p className="text-xs text-slate-400">Remaining this year</p>
+        <p className="text-lg font-semibold text-slate-800 mt-0.5">{formatMoney(totalRemaining)}</p>
+        <p className="text-[11px] text-slate-400 mt-0.5">{monthsToGo > 0 ? `${monthsToGo} ${monthsToGo === 1 ? "month" : "months"} to go` : "Fully paid"}</p>
+      </div>
+    </div>
+  );
+}
+
+function MonthlyFeeStatement({ months }) {
+  if (months.length === 0) return <p className="text-xs text-slate-400 py-2">No fees have been set up for this year yet.</p>;
+  const partText = (status, upcoming) => {
+    if (status === "PAID") return <span className="text-emerald-600">Paid</span>;
+    if (upcoming) return <span className="text-slate-400">Upcoming</span>;
+    if (status === "PARTIAL") return <span className="text-amber-600">Part paid</span>;
+    return <span className="text-red-600">Unpaid</span>;
+  };
+  return (
+    <div className="divide-y divide-slate-100">
+      {months.map((m) => (
+        <div key={m.key || m.label} className={`py-3 ${m.current ? "-mx-4 px-4 bg-brand-50/50" : ""}`}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <p className="text-sm font-semibold text-slate-800">{m.label}</p>
+                {m.current && <span className="shrink-0 text-[10px] font-medium text-brand-600 bg-brand-50 border border-brand-100 px-1.5 py-0.5 rounded-full">Current</span>}
+              </div>
+              {m.dueDate && <p className="text-xs text-slate-400">Due {fmtDateLong(m.dueDate)}</p>}
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-sm font-semibold text-slate-800">{formatMoney(m.amountDue)}</p>
+              <div className="mt-0.5">{monthStatusBadge(m)}</div>
+            </div>
+          </div>
+          {m.school && m.bus && (
+            <div className="mt-2 space-y-0.5 text-xs">
+              <div className="flex items-center justify-between text-slate-500"><span>School Fee</span><span>{formatMoney(m.school.amountDue)} · {partText(m.statusOfPart.school, m.upcoming)}</span></div>
+              <div className="flex items-center justify-between text-slate-500"><span>Bus Fee</span><span>{formatMoney(m.bus.amountDue)} · {partText(m.statusOfPart.bus, m.upcoming)}</span></div>
+            </div>
+          )}
+          {m.status === "PARTIAL" && <p className="text-xs text-amber-700 mt-1.5">{formatMoney(m.paid)} paid • {formatMoney(m.remaining)} remaining</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
@@ -6429,6 +6547,8 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
   const history = data.paymentsForStudents([child.id]).sort((a, b) => b.createdAt - a.createdAt);
   const installmentStatus = data.installmentStatusForStudent(child, selectedYear?.id);
   const busSchedule = data.busScheduleForStudent(child, selectedYear?.id);
+  const statementMonths = monthlyFeeRows(installmentStatus, busSchedule);
+  const otherBalances = summary.balances.filter((b) => b.feeType.category !== "TUITION" && b.feeType.category !== "TRANSPORT");
 
   // Privacy: a receipt may include siblings paid for in the same transaction, but a parent
   // viewing it here only ever sees lines belonging to their own connected children — never
@@ -6461,30 +6581,22 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
         </Card>
       )}
 
-      {due.totalRemaining > 0 && (
-        <Card className="p-4 mb-4 border border-amber-200 bg-amber-50">
-          <p className="text-sm font-medium text-amber-800">Outstanding balance (due now): {formatMoney(due.totalRemaining)}</p>
-        </Card>
-      )}
-
-      {installmentStatus.feeType && (
-        <Card className="p-4 mb-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-2">School Fee Schedule</h3>
-          <FeeScheduleList rows={installmentStatus.rows.map((r) => ({ label: `${installmentStatus.feeType.name} ${r.installment.label}`, dueLabel: `Due ${fmtDateLong(r.installment.dueDate)}`, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} />
-        </Card>
-      )}
+      <FeeSummaryTiles months={statementMonths} dueNow={due.totalRemaining} />
 
       <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-semibold text-slate-700">Bus</h3>
-          {!child.usesBus && <Badge tone="slate">No Bus</Badge>}
-          {child.usesBus && busSchedule.feeType && <Badge tone="sky">{formatMoney(busSchedule.feeType.unitAmount)}/month</Badge>}
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <h3 className="text-sm font-semibold text-slate-700">Monthly Fee Statement</h3>
+          {child.usesBus && busSchedule.feeType
+            ? <Badge tone="sky">School bus • {formatMoney(busSchedule.feeType.unitAmount)}/month</Badge>
+            : <Badge tone="slate">No bus</Badge>}
         </div>
-        {child.usesBus ? <FeeScheduleList rows={busSchedule.rows.map((r) => ({ label: r.label, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} /> : <p className="text-xs text-slate-400">This child does not use the school bus.</p>}
+        <MonthlyFeeStatement months={statementMonths} />
       </Card>
 
-      <div className="grid sm:grid-cols-2 gap-3 mb-4">
-        {summary.balances.map((b) => {
+      {/* School and bus fees are covered by the statement above; only any other fee types keep their own card. */}
+      {otherBalances.length > 0 && <h3 className="text-sm font-semibold text-slate-700 mb-2">Other Fees</h3>}
+      <div className={`grid sm:grid-cols-2 gap-3 ${otherBalances.length > 0 ? "mb-4" : ""}`}>
+        {otherBalances.map((b) => {
           const coverage = feeCoverage(b.paid, b.feeType, activeYearStartDate(data.db.academicYears));
           const feeDue = data.dueStatusForFeeType(child, b.feeType, selectedYear?.id);
           return (

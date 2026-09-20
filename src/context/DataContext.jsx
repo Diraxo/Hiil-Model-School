@@ -1467,7 +1467,7 @@ function DataProvider({ children }) {
       const feeType = busFeeTypeForStudent(student, yearId);
       if (!feeType) return { feeType: null, rows: [], currentIndex: -1 };
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
-      const busRows = rows.map((r) => ({ index: r.installment.sequenceIndex, installmentId: r.installment.id, label: r.installment.label, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId }));
+      const busRows = rows.map((r) => ({ index: r.installment.sequenceIndex, installmentId: r.installment.id, label: r.installment.label, dueDate: r.installment.dueDate, instMonth: r.instMonth, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId }));
       return { feeType: feeTypeYearView(db, feeType, yearId), rows: busRows, currentIndex };
     }
     // Per-fee-type "what's actually due as of today" — only counts installments up through the

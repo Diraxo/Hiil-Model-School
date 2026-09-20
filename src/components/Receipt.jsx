@@ -102,12 +102,9 @@ function CashReceiptVoucher({
           <p className="text-base font-medium">ሂል ሞዴል ትምህርት ቤት</p>
           <p className="text-3xl font-bold -mt-1">Hiil Model School</p>
           <p className="text-sm mt-1">0915111821 / 0901382701 / 0915188114 &nbsp; Jigjiga, Ethiopia</p>
-          <div className="flex items-center justify-center gap-2 text-sm mt-0.5">
-            <span>Tin: 0065997758</span>
-            <span className="text-right">
-              <span className="block">የገንዘብ መቀቢያ ደረሰኝ</span>
-              <span className="block font-semibold underline underline-offset-2">Cash Receipt Voucher</span>
-            </span>
+          <div className="text-sm mt-0.5">
+            <span className="block">የገንዘብ መቀቢያ ደረሰኝ</span>
+            <span className="block font-semibold underline underline-offset-2">Cash Receipt Voucher</span>
           </div>
         </div>
         <div className="text-right shrink-0 w-28">
