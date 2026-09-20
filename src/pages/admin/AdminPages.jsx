@@ -2987,7 +2987,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
   const data = useData();
   const { db } = data;
   const cls = db.classes.find((c) => c.id === classId) || null;
-  const students = cls ? data.attendanceRosterForClass(cls.id) : [];
+  const students = cls ? sortStudentsByFullName(data.attendanceRosterForClass(cls.id)) : [];
   const head = cls ? data.getUser(cls.headTeacherId) : null;
   const bounds = data.attendanceDateBounds();
 
