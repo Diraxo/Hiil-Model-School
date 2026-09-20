@@ -146,8 +146,8 @@ function AccountsPage() {
 
   const owner = db.users.find((u) => u.role === ROLES.OWNER);
   const directors = groupUsers(db.users.filter((u) => u.role === ROLES.ADMIN || u.role === ROLES.FINANCE))[0]?.items || [];
-  // "View as" is staff-only — parents are never impersonable, so they're excluded from this list entirely.
-  const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && (u.name || "").toLowerCase().includes(q.toLowerCase()));
+  // "View as" is staff-only — parents and other Owners are never impersonable, so they're excluded from this list entirely.
+  const staffAccounts = db.users.filter((u) => u.id !== auth.realUser.id && u.role !== ROLES.PARENT && u.role !== ROLES.OWNER &&(u.name || "").toLowerCase().includes(q.toLowerCase()));
   const staffAccountGroups = groupUsers(staffAccounts);
 
   async function applyStatusChange() {
@@ -222,7 +222,7 @@ function AccountsPage() {
 
       <Card className="p-5">
         <h3 className="text-sm font-semibold text-slate-700 mb-1">Staff Access — View as</h3>
-        <p className="text-xs text-slate-400 mb-3">See exactly what a Director, Finance Director, Teacher, or other staff member sees — without knowing their password. You'll always be able to return to your Owner account. Parent accounts can't be viewed this way; use the Parents page to look up parent and student information instead.</p>
+        <p className="text-xs text-slate-400 mb-3">See exactly what a Director, Finance Director, Teacher, or other staff member sees — without knowing their password. You'll always be able to return to your Owner account. Other Owner accounts and Parent accounts can't be viewed this way; use the Parents page to look up parent and student information instead.</p>
         <Toolbar><SearchInput value={q} onChange={setQ} placeholder="Search by name…" /></Toolbar>
         {staffAccountGroups.length === 0 ? <EmptyState icon={SearchIcon} title="No matching accounts" /> : (
           <div className="space-y-4 max-h-96 overflow-y-auto">

@@ -414,6 +414,8 @@ function AuthProvider({ children }) {
     if (!target) return;
     // Owner impersonation is limited to internal staff accounts -- parents are never enterable this way.
     if (target.role === ROLES.PARENT) return;
+    // Owners are never enterable either: every Owner's activity must stay attributable to them alone.
+    if (target.role === ROLES.OWNER) return;
     data.logActivity(`${realUser.name} (Owner) started viewing the account of ${target.name} (${ROLE_LABEL[target.role] || target.role}).`);
     setViewingAsId(targetUserId);
   }, [data, realUser]);

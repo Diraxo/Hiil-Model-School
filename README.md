@@ -105,7 +105,7 @@ only decide which buttons/forms render.
 
 | Role | Label in UI | Can see / do |
 |------|-------------|--------------|
-| `OWNER` | Owner | Everything: students, staff, teachers, classes, curriculum, timetable, attendance, leave, results, report cards, fees, payments, payroll, expenses, announcements, messaging, activity log, and Accounts & Access (create/disable/reset any account, "View as" any user). |
+| `OWNER` | Owner | Everything: students, staff, teachers, classes, curriculum, timetable, attendance, leave, results, report cards, fees, payments, payroll, expenses, announcements, messaging, activity log, and Accounts & Access (create/disable/reset any account, "View as" any non-Owner staff account). |
 | `ADMIN` | Educational Director | Academic operations: students, teachers, classes, curriculum, timetable, attendance, leave decisions for teachers/other staff, results, report cards, behaviour records, exam announcements, announcements, messaging. **No** payment, payroll or salary visibility. |
 | `FINANCE` | Finance & Operations Director | Finance only: fees, payments (record / void), expenses, payroll for every staff group, contact details for "Other Staff" they administer. **No** academic marks, attendance editing, or behaviour records. |
 | `TEACHER` | Teacher | Their own classes only: take attendance for a class they head, publish/edit homework and enter draft results for subjects they are assigned to teach, view their own timetable, request leave, message parents/staff, view their own payslips. Academic actions are also gated by the calendar and by their own attendance that day. |
