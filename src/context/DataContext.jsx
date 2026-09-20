@@ -2473,6 +2473,14 @@ function DataProvider({ children }) {
         }
       },
 
+      // Re-reads every domain. A self-registering parent's SIGNED_IN hydrate (the auth effect above)
+      // runs before their children are linked, and RLS scopes every parent read through
+      // parent_students -- so AuthContext calls this right after self_register_link_children to
+      // show the children on the dashboard without a browser refresh.
+      async refetchAllData() {
+        await Promise.allSettled(allRefetchRef.current.map((fn) => fn()));
+      },
+
       // Admin-only (see parentService.js's RLS note): links an EXISTING parent account to another
       // student by their Student ID, from the school's own Parents management screen. A parent
       // can never insert their own parent_students row directly (Postgres rejects it) -- the one

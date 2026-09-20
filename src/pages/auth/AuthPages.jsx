@@ -150,7 +150,6 @@ function RegisterScreen({ onBack }) {
 
     await run(async () => {
       const res = await auth.signUp({ fullName, email, password, phone, studentIds: ids });
-      if (!res.ok) { setError(res.message); return; }
       if (res.fieldErrors) {
         setChildren((c) => c.map((ch) => {
           const trimmed = ch.studentId.trim();
@@ -160,6 +159,7 @@ function RegisterScreen({ onBack }) {
         setError(res.message);
         return;
       }
+      if (!res.ok) { setError(res.message); return; }
       setDone({ pendingConfirmation: !!res.pendingConfirmation, message: res.message });
     });
   }

@@ -6,6 +6,7 @@ import { usePresenceHeartbeat } from "../utils/presence";
 import { createProfilePhotoService } from "../services/profilePhotoService";
 import { isStoragePath, signPaths } from "../lib/storageMedia";
 import { profileSyncStore } from "../utils/profileSync";
+import { createParentService } from "../services/parentService";
 
 const profilePhotoService = createProfilePhotoService();
 
@@ -193,7 +194,14 @@ function AuthProvider({ children }) {
 
   const login = useCallback(async (email, password) => {
     const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    if (signInError) return { ok: false, message: "Incorrect email or password." };
+    if (signInError) {
+      // Supabase reports an unconfirmed email as its own error even when the password is right;
+      // showing "Incorrect email or password." for it sends the user chasing the wrong problem.
+      const unconfirmed = signInError.code === "email_not_confirmed" || /email not confirmed/i.test(signInError.message || "");
+      return { ok: false, message: unconfirmed
+        ? "Your email address hasn't been confirmed yet. Open the confirmation link we emailed you, then sign in."
+        : "Incorrect email or password." };
+    }
     const { profile: mapped, message } = await loadProfile();
     if (!mapped) {
       await supabase.auth.signOut();
@@ -210,9 +218,11 @@ function AuthProvider({ children }) {
     if (mapped.role === ROLES.PARENT && Array.isArray(signInData?.user?.user_metadata?.pending_student_ids) && signInData.user.user_metadata.pending_student_ids.length > 0) {
       await linkChildrenOrExplain(signInData.user.user_metadata.pending_student_ids).catch(() => {});
       await supabase.auth.updateUser({ data: { pending_student_ids: null } }).catch(() => {});
+      // The data hydrate triggered by this sign-in ran before the children were linked.
+      await data.refetchAllData().catch(() => {});
     }
     return { ok: true };
-  }, [loadProfile]);
+  }, [loadProfile, data]);
 
   const logout = useCallback(async () => {
     setViewingAsId(null);
@@ -236,6 +246,23 @@ function AuthProvider({ children }) {
     if (!password || password.length < 6) return { ok: false, message: "Password must be at least 6 characters." };
     if (!trimmedPhone) return { ok: false, message: "Phone number is required." };
     if (ids.length === 0) return { ok: false, message: "Add at least one child's Student ID." };
+
+    // Check the Student IDs BEFORE creating the account. Once signUp succeeds the parent is signed
+    // in and the app leaves the registration form, so a bad ID discovered afterwards would strand
+    // them on an empty dashboard with the error nowhere to be shown. The RPC below re-validates
+    // atomically; this pre-check is just so a typo never creates an account.
+    try {
+      const statuses = await createParentService().checkStudentIds(ids);
+      const fieldErrors = {};
+      ids.forEach((id) => {
+        const status = statuses.get(id);
+        if (status === "not_found") fieldErrors[id] = "Student ID not found.";
+        else if (status === "already_linked") fieldErrors[id] = "This student is already linked to a parent account.";
+      });
+      if (Object.keys(fieldErrors).length > 0) {
+        return { ok: false, fieldErrors, message: "Please fix the Student ID(s) below. No account was created." };
+      }
+    } catch { /* pre-check is best-effort; self_register_link_children re-validates below */ }
 
     const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
       email: trimmedEmail,
@@ -263,10 +290,13 @@ function AuthProvider({ children }) {
     const linkResult = await linkChildrenOrExplain(ids);
     if (!linkResult.ok) return { ok: true, accountCreated: true, ...linkResult };
 
+    // The SIGNED_IN hydrate already ran (before this link existed), so re-read everything now or
+    // the parent lands on a dashboard with no children until they refresh.
+    await data.refetchAllData().catch(() => {});
     const { profile: mapped } = await loadProfile();
     if (mapped) setProfile(mapped);
     return { ok: true, message: "Account created." };
-  }, [loadProfile]);
+  }, [loadProfile, data]);
 
   const clearSessionEndedMessage = useCallback(() => setSessionEndedMessage(null), []);
 
