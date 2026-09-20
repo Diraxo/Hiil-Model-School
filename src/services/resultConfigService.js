@@ -82,6 +82,19 @@ export function createResultConfigService() {
       return (data || []).map(mapAudit);
     },
 
+    // Deletes the structure for one year + semester + grade. The server picks the safe outcome:
+    // DELETED when no result is recorded under it, ARCHIVED (kept for the recorded results, closed to
+    // new entries) when some are. Returns { grade, semester, version, outcome }.
+    async remove({ academicYearId, semester, grade }) {
+      const { data, error } = await supabase.rpc("delete_result_configuration", {
+        p_academic_year_id: academicYearId,
+        p_semester: semester,
+        p_grade: grade,
+      });
+      if (error) throw error;
+      return data;
+    },
+
     // Applies ONE structure to every selected grade x semester in a single all-or-nothing call
     // (save_result_configuration_bulk). components: [{ name, weight, kind }] in display order.
     // Returns one entry per combination: { grade, semester, configurationId, version,

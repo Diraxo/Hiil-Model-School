@@ -3994,6 +3994,23 @@ function DataProvider({ children }) {
         }
       },
 
+      // Results Settings: delete the structure for one year + semester + grade. Never destroys recorded
+      // results — the server DELETES it when nothing is recorded under it, and ARCHIVES it (no new
+      // entries, recorded results keep it) when results exist. The outcome is returned so the UI can say
+      // which happened. Owner/Educational Director only; audited server-side.
+      async deleteResultConfiguration({ academicYearId, semester, grade }) {
+        try {
+          const result = await resultConfigService.remove({ academicYearId, semester, grade });
+          await refetchResultConfigs();
+          const year = db.academicYears.find((y) => y.id === academicYearId);
+          await logActivityFeed(`Result structure ${result.outcome === "ARCHIVED" ? "closed" : "deleted"} for ${grade} — ${SEMESTER_LABEL[semester]}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
+          return { ok: true, message: "", result };
+        } catch (e) {
+          console.error("Failed to delete result configuration", e);
+          return { ok: false, message: resultConfigErrorMessage(e) };
+        }
+      },
+
       // Supabase-backed (`exam_announcements`). Creation is Owner/Educational Director only (RLS
       // exam_announcements_insert). The parent + head-teacher notification fan-out goes through
       // notify_exam_announcement.

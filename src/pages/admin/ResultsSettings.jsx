@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Plus, Trash2, ArrowUp, ArrowDown, Info, Lock, Save } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, ArrowUp, ArrowDown, Info, Lock, Save, Pencil } from "lucide-react";
 import { SEMESTERS, SEMESTER_LABEL, ASSESSMENT_KIND, ASSESSMENT_KIND_LABEL, RESULT_TOTAL_WEIGHT, ROLES } from "../../utils/constants";
 import { uid, timeAgo, fmtDate, fmtTime } from "../../utils/helpers";
 import { currentAcademicYear, formatAcademicYearLabel } from "../../utils/academicCalendar";
@@ -44,6 +44,7 @@ function ResultsSettingsPage({ onBack }) {
   const [targetGrades, setTargetGrades] = useState(() => (grades[0] ? [grades[0]] : []));
   const [targetSems, setTargetSems] = useState(() => [semester]);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // { grade, semester } | null
   // Reload the draft only when the selection (or the saved structure itself) changes — a background
   // refresh of the same structure must not wipe what is being typed.
   useEffect(() => { setRows(draftFromConfig(config)); }, [config?.id, yearId, semester, grade]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,6 +124,20 @@ function ResultsSettingsPage({ onBack }) {
     }, { key: saveKey });
   }
 
+  // Delete one grade + semester's structure. Recorded results are never destroyed: with results the
+  // server archives it instead (closed to new entries), and says which happened.
+  const deleteConfig = deleteTarget ? activeConfigFor(db.resultConfigs, yearId, deleteTarget.semester, deleteTarget.grade) : null;
+  const deleteHasResults = !!deleteConfig && db.results.some((r) => r.configurationId === deleteConfig.id);
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    const res = await data.deleteResultConfiguration({ academicYearId: yearId, semester: target.semester, grade: target.grade });
+    if (!res.ok) { toast(res.message, "error"); return; }
+    toast(res.result.outcome === "ARCHIVED"
+      ? `Structure for ${target.grade} · ${SEMESTER_LABEL[target.semester]} closed — recorded results keep it, but no new results can be entered.`
+      : `Structure for ${target.grade} · ${SEMESTER_LABEL[target.semester]} deleted.`, "success");
+  }
+
   const barTone = totals.over ? "bg-red-500" : totals.complete ? "bg-emerald-500" : "bg-amber-400";
   const totalTone = totals.over ? "text-red-600" : totals.complete ? "text-emerald-600" : "text-amber-600";
 
@@ -184,8 +199,11 @@ function ResultsSettingsPage({ onBack }) {
 
           <Card className="p-4 mb-4">
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <h2 className="text-sm font-semibold text-slate-700">Assessments — {grade} · {SEMESTER_LABEL[semester]}</h2>
-              <GhostButton icon={Plus} onClick={addRow}>Add assessment</GhostButton>
+              <h2 className="text-sm font-semibold text-slate-700">{config ? "Edit" : "Create"} assessments — {grade} · {SEMESTER_LABEL[semester]}</h2>
+              <div className="flex items-center gap-2">
+                {config && <GhostButton danger icon={Trash2} onClick={() => setDeleteTarget({ grade, semester })}>Delete structure</GhostButton>}
+                <GhostButton icon={Plus} onClick={addRow}>Add assessment</GhostButton>
+              </div>
             </div>
 
             {rows.length === 0 ? (
@@ -301,6 +319,17 @@ function ResultsSettingsPage({ onBack }) {
             confirmLabel="Replace and save"
             danger
           />
+          <ConfirmDialog
+            open={!!deleteTarget}
+            onClose={() => setDeleteTarget(null)}
+            onConfirm={confirmDelete}
+            title={deleteTarget ? `Delete structure — ${deleteTarget.grade} · ${SEMESTER_LABEL[deleteTarget.semester]}?` : "Delete structure?"}
+            description={deleteHasResults
+              ? "Results are already recorded under this structure, so it will be closed instead of erased: teachers can no longer enter new results for this grade and semester, and every recorded result keeps its scores and assessments. You can set up a new structure afterwards."
+              : "No results are recorded under this structure, so it will be removed completely. Teachers of this grade will see \"No Results Configuration\" until you set a new one."}
+            confirmLabel={deleteHasResults ? "Close structure" : "Delete structure"}
+            danger
+          />
 
           <Card className="p-4 mb-4">
             <h2 className="text-sm font-semibold text-slate-700 mb-3">Overview — {yearLabel}</h2>
@@ -316,11 +345,19 @@ function ResultsSettingsPage({ onBack }) {
                         const chip = semesterPhaseChip(data.semesterResultLockInfo(s, yearId));
                         return (
                           <td key={s} className="py-1.5 px-2">
+                            <div className="flex items-stretch gap-1">
                             <button type="button" onClick={() => { setGrade(g); setSemester(s); window.scrollTo({ top: 0, behavior: "smooth" }); }} className={`text-left rounded-lg border px-2.5 py-1.5 text-xs w-full ${g === grade && s === semester ? "border-brand-400 bg-brand-50" : "border-slate-200 hover:bg-slate-50"}`}>
                               {c ? <span className="text-slate-700">{activeAssessments(c).map((a) => `${a.name} ${a.weight}`).join(" · ")}</span> : <span className="text-slate-400">Not configured</span>}
                               {c && <span className="ml-1.5 text-slate-400">v{c.version}</span>}
                               {chip && <Badge tone={chip.tone}>{chip.label}</Badge>}
                             </button>
+                            {c && (
+                              <>
+                                <button type="button" onClick={() => { setGrade(g); setSemester(s); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="px-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-brand-600" title={`Edit ${g} · ${SEMESTER_LABEL[s]}`} aria-label={`Edit structure for ${g} ${SEMESTER_LABEL[s]}`}><Pencil size={14} /></button>
+                                <button type="button" onClick={() => setDeleteTarget({ grade: g, semester: s })} className="px-2 rounded-lg border border-slate-200 text-red-500 hover:bg-red-50" title={`Delete ${g} · ${SEMESTER_LABEL[s]}`} aria-label={`Delete structure for ${g} ${SEMESTER_LABEL[s]}`}><Trash2 size={14} /></button>
+                              </>
+                            )}
+                            </div>
                           </td>
                         );
                       })}
@@ -346,8 +383,8 @@ function ResultsSettingsPage({ onBack }) {
                         <span className="text-slate-400 shrink-0" title={`${fmtDate(e.at)} ${fmtTime(e.at)}`}>{timeAgo(e.at)}</span>
                       </div>
                       <p className="text-slate-500 mt-0.5">
-                        {e.action === "CREATED" ? "Created" : e.action === "NEW_VERSION" ? "Changed (new version)" : "Updated"} — version {e.version}:{" "}
-                        {((e.diff && e.diff.after) || []).map((a) => `${a.name} ${a.weight} (${ASSESSMENT_KIND_LABEL[a.kind] || a.kind})`).join(", ")}
+                        {e.action === "CREATED" ? "Created" : e.action === "NEW_VERSION" ? "Changed (new version)" : e.action === "DELETED" ? (e.diff && e.diff.outcome === "ARCHIVED" ? "Deleted (kept for recorded results)" : "Deleted") : "Updated"} — version {e.version}:{" "}
+                        {(((e.diff && (e.diff.after || e.diff.before)) || [])).map((a) => `${a.name} ${a.weight} (${ASSESSMENT_KIND_LABEL[a.kind] || a.kind})`).join(", ")}
                       </p>
                     </div>
                   ))}
