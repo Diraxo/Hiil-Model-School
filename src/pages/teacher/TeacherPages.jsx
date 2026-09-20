@@ -16,7 +16,7 @@ import {
   BRAND, LOGO_DATA_URI,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, monthLabel,
+  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, monthLabel, sortStudentsByFullName,
 } from "../../utils/helpers";
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
@@ -419,7 +419,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   const toast = useToast();
   const { db } = data;
   const cls = entry ? data.getClass(entry.classId) : null;
-  const students = cls ? data.attendanceRosterForClass(cls.id) : [];
+  const students = cls ? sortStudentsByFullName(data.attendanceRosterForClass(cls.id)) : [];
   const log = entry ? db.periodLogs.find((l) => l.timetableEntryId === entry.id && l.date === date) : null;
   const [draft, setDraft] = useState({});
   const { busy, run } = useMutationGuard();

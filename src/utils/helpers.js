@@ -64,6 +64,13 @@ function initials(name = "") {
 function fullName(first, middle, last) {
   return [first, middle, last].map((p) => (p || "").trim()).filter(Boolean).join(" ");
 }
+// Presentation-only A -> Z ordering by the displayed full name, for the attendance-taking student
+// list. Returns a new array (never mutates or persists an order). Identical names fall back to the
+// record id purely so the order is deterministic — Student ID is never the sort key.
+function sortStudentsByFullName(students) {
+  const label = (s) => fullName(s.firstName, s.middleName, s.lastName);
+  return [...students].sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: "base", numeric: true }) || String(a.id).localeCompare(String(b.id)));
+}
 // Inverse of fullName(): splits one typed "Full Name" string into the existing
 // first/middle/last columns without inventing or dropping any part. 2 words -> no last name
 // (never fabricated); 4+ words -> the interior words are folded into middleName so
@@ -233,6 +240,6 @@ function joinWithAnd(items) {
 }
 
 export {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, sortStudentsByFullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule, leaveDurationDays, leaveDurationLabel,
   numberToWords, amountInWords, joinWithAnd, monthLabel,
 };

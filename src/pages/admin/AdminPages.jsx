@@ -19,7 +19,7 @@ import {
   SEMESTERS, SEMESTER_LABEL, RESULT_TOTAL_WEIGHT, ASSESSMENT_KIND, ASSESSMENT_KIND_LABEL,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, sortStudentsByFullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
   leaveDurationLabel, amountInWords, monthLabel,
 } from "../../utils/helpers";
 import {
@@ -2898,7 +2898,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   const toast = useToast();
   const { db } = data;
   const cls = db.classes.find((c) => c.id === classId) || null;
-  const students = cls ? data.attendanceRosterForClass(cls.id) : [];
+  const students = cls ? sortStudentsByFullName(data.attendanceRosterForClass(cls.id)) : [];
   const readOnly = mode === "view";
   const [draft, setDraft] = useState({});
   const { busy, run } = useMutationGuard();
