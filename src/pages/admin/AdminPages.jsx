@@ -188,9 +188,13 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-slate-700">Teachers Attendance Today</h3>
-          <Badge tone="sky">{teachers.filter((t) => { const sr = db.staff.find((s) => s.userId === t.id); return sr && db.staffAttendance.some((a) => a.staffId === sr.id && a.date === todayKey && a.status === "Present"); }).length}/{teachers.length} present</Badge>
+          {todayInfo.available && (
+            <Badge tone="sky">{teachers.filter((t) => { const sr = db.staff.find((s) => s.userId === t.id); return sr && db.staffAttendance.some((a) => a.staffId === sr.id && a.date === todayKey && a.status === "Present"); }).length}/{teachers.length} present</Badge>
+          )}
         </div>
-        {teachers.length === 0 ? <EmptyState title="No teaching staff yet" description="Teacher attendance will appear here once staff are added." /> : (
+        {!todayInfo.available ? (
+          <p className="text-xs text-slate-400">{todayInfo.label}{todayInfo.message ? ` — ${todayInfo.message}` : ""}</p>
+        ) : teachers.length === 0 ? <EmptyState title="No teaching staff yet" description="Teacher attendance will appear here once staff are added." /> : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {teachers.map((t) => {
               const sr = db.staff.find((s) => s.userId === t.id);
@@ -2897,6 +2901,11 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   const { busy, run } = useMutationGuard();
   const dayRecords = cls ? db.attendance.filter((a) => a.classId === cls.id && a.date === dateKey) : [];
   const latestRecord = dayRecords.reduce((latest, r) => (!latest || (r.markedAt || 0) > (latest.markedAt || 0)) ? r : latest, null);
+  // A weekend/closure/break/etc. isn't "not marked" — it's not a school day at all, so there was
+  // never an attendance opportunity. Existing historical records (e.g. from before this calendar
+  // rule existed) still display in full; only the "no record" fallback label changes.
+  const classification = dateKey ? data.classifyAttendanceDay(dateKey) : null;
+  const noSchoolDay = !!classification && !classification.available;
 
   useEffect(() => {
     if (!cls) return;
@@ -2933,8 +2942,11 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
               <p className="text-xs text-slate-400">Recorded by <span className="text-slate-600 font-medium">{data.userIdentity(latestRecord.markedBy).display}</span>{latestRecord.markedAt ? ` · ${fmtDate(latestRecord.markedAt)} · ${fmtTime(latestRecord.markedAt)}` : ""}</p>
             )}
           </div>
-          {students.length === 0 ? <p className="text-xs text-slate-300 py-2">No students in this class.</p> : (
+          {students.length === 0 ? <p className="text-xs text-slate-300 py-2">No students in this class.</p> : noSchoolDay && dayRecords.length === 0 ? (
+            <AttendanceCalendarNotice classification={classification} />
+          ) : (
             <>
+              {noSchoolDay && <AttendanceCalendarNotice classification={classification} />}
               {!readOnly && (
                 <Toolbar>
                   <GhostButton icon={Check} onClick={() => markAll("Present")}>Mark all present</GhostButton>
@@ -2946,7 +2958,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
                   <div key={s.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2.5">
                     <div className="flex items-center gap-2.5 min-w-0"><span className="text-xs text-slate-400 w-5 shrink-0">{i + 1}.</span><Avatar name={data.studentFullName(s)} photo={s.photo} size={30} /><span className="text-sm font-medium text-slate-700 truncate">{data.studentFullName(s)}</span></div>
                     {readOnly ? (
-                      <Badge tone={statusTone(draft[s.id]?.status)}>{draft[s.id]?.status || "Not marked"}</Badge>
+                      <Badge tone={statusTone(draft[s.id]?.status)}>{draft[s.id]?.status || (noSchoolDay ? classification.label : "Not marked")}</Badge>
                     ) : (
                       <AttendanceStatusPicker value={draft[s.id]?.status} onChange={(st) => setStatus(s.id, st)} />
                     )}
