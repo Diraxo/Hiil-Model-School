@@ -82,17 +82,19 @@ export function createResultConfigService() {
       return (data || []).map(mapAudit);
     },
 
-    // components: [{ name, weight, kind }] in display order. Returns { configurationId, version,
+    // Applies ONE structure to every selected grade x semester in a single all-or-nothing call
+    // (save_result_configuration_bulk). components: [{ name, weight, kind }] in display order.
+    // Returns one entry per combination: { grade, semester, configurationId, version,
     // action: "CREATED" | "UPDATED" | "NEW_VERSION" | "UNCHANGED" }.
-    async save({ academicYearId, semester, grade, components }) {
-      const { data, error } = await supabase.rpc("save_result_configuration", {
+    async saveBulk({ academicYearId, semesters, grades, components }) {
+      const { data, error } = await supabase.rpc("save_result_configuration_bulk", {
         p_academic_year_id: academicYearId,
-        p_semester: semester,
-        p_grade: grade,
+        p_semesters: semesters,
+        p_grades: grades,
         p_components: components.map((c) => ({ name: c.name, weight: Number(c.weight), kind: c.kind })),
       });
       if (error) throw error;
-      return data;
+      return data || [];
     },
   };
 }

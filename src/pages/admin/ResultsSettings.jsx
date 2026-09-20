@@ -5,7 +5,7 @@ import { uid, timeAgo, fmtDate, fmtTime } from "../../utils/helpers";
 import { currentAcademicYear, formatAcademicYearLabel } from "../../utils/academicCalendar";
 import { activeAssessments, activeConfigFor, gradesFromClasses, validateConfigDraft } from "../../utils/resultConfig";
 import { displayActorLabel } from "../../utils/resultAudit";
-import { Card, Badge, EmptyState, PrimaryButton, GhostButton, inputCls, semesterPhaseChip } from "../../components/ui";
+import { Card, Badge, EmptyState, PrimaryButton, GhostButton, ConfirmDialog, inputCls, semesterPhaseChip } from "../../components/ui";
 import { useData } from "../../context/DataContext";
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../context/ToastContext";
@@ -39,9 +39,15 @@ function ResultsSettingsPage({ onBack }) {
 
   const config = activeConfigFor(db.resultConfigs, yearId, semester, grade);
   const [rows, setRows] = useState(() => draftFromConfig(config));
+  // "Apply to": which grades and semesters this structure is saved for. Starts as just the one being
+  // viewed; tick more to configure several at once instead of repeating the same structure per class.
+  const [targetGrades, setTargetGrades] = useState(() => (grades[0] ? [grades[0]] : []));
+  const [targetSems, setTargetSems] = useState(() => [semester]);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   // Reload the draft only when the selection (or the saved structure itself) changes — a background
   // refresh of the same structure must not wipe what is being typed.
   useEffect(() => { setRows(draftFromConfig(config)); }, [config?.id, yearId, semester, grade]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTargetGrades(grade ? [grade] : []); setTargetSems([semester]); }, [yearId, semester, grade]);
 
   if (role !== ROLES.OWNER && role !== ROLES.ADMIN) {
     return <EmptyState title="Not available" description="Only the Owner and the Educational Director can configure results." />;
@@ -78,18 +84,42 @@ function ResultsSettingsPage({ onBack }) {
       return [...rs, { key: uid("row"), name: "", weight: remaining > 0 ? String(remaining) : "", kind: ASSESSMENT_KIND.TEST }];
     });
   }
-  function save() {
-    if (!validation.canSave || !dirty) return;
-    run(async () => {
-      const res = await data.saveResultConfiguration({ academicYearId: yearId, semester, grade, components: normalize(rows) });
+  // Every selected grade x semester, and what saving would do to each: create it, replace a different
+  // structure, or nothing (already identical). The one being viewed is edited in place, so it never
+  // counts as "replacing another structure".
+  const draftJson = JSON.stringify(normalize(rows));
+  const targets = targetGrades.flatMap((g) => targetSems.map((s) => {
+    const c = activeConfigFor(db.resultConfigs, yearId, s, g);
+    const status = !c ? "create" : JSON.stringify(normalize(draftFromConfig(c))) === draftJson ? "same" : "replace";
+    const hasResults = !!c && db.results.some((r) => r.configurationId === c.id);
+    return { grade: g, semester: s, status, hasResults, isViewed: g === grade && s === semester };
+  }));
+  const willCreate = targets.filter((t) => t.status === "create");
+  const willReplace = targets.filter((t) => t.status === "replace");
+  const otherReplaced = willReplace.filter((t) => !t.isViewed);
+  const willVersion = willReplace.filter((t) => t.hasResults);
+  const changesNeeded = willCreate.length + willReplace.length;
+  const canSaveNow = validation.canSave && targets.length > 0 && changesNeeded > 0;
+  const labelOf = (t) => `${t.grade} · ${SEMESTER_LABEL[t.semester]}`;
+
+  function toggleIn(list, setList, value) { setList(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]); }
+
+  function requestSave() {
+    if (!canSaveNow) return;
+    if (otherReplaced.length > 0) setConfirmOpen(true); else save();
+  }
+  async function save() {
+    await run(async () => {
+      const res = await data.saveResultConfiguration({ academicYearId: yearId, semesters: targetSems, grades: targetGrades, components: normalize(rows) });
       if (!res.ok) { toast(res.message, "error"); return; }
-      const action = res.result && res.result.action;
-      toast(
-        action === "UNCHANGED" ? "No changes to save."
-          : action === "NEW_VERSION" ? `Saved as version ${res.result.version}. Results already recorded keep the structure they were entered under.`
-          : "Result structure saved.",
-        "success",
-      );
+      const made = res.results.filter((r) => r.action === "CREATED").length;
+      const updated = res.results.filter((r) => r.action === "UPDATED").length;
+      const versioned = res.results.filter((r) => r.action === "NEW_VERSION").length;
+      const parts = [];
+      if (made) parts.push(`${made} created`);
+      if (updated) parts.push(`${updated} updated`);
+      if (versioned) parts.push(`${versioned} saved as a new version (results already recorded keep their earlier structure)`);
+      toast(parts.length ? `Result structure saved — ${parts.join(", ")}.` : "No changes to save.", "success");
     }, { key: saveKey });
   }
 
@@ -211,11 +241,66 @@ function ResultsSettingsPage({ onBack }) {
             </div>
           </Card>
 
+          <Card className="p-4 mb-4">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h2 className="text-sm font-semibold text-slate-700">Apply this structure to</h2>
+              <div className="flex items-center gap-2">
+                <GhostButton onClick={() => setTargetGrades(grades)}>All grades</GhostButton>
+                <GhostButton onClick={() => setTargetGrades(grade ? [grade] : [])}>Only {grade || "this grade"}</GhostButton>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Tick every grade and semester that should use these assessments — you only fill them in once.</p>
+            <span className="block text-xs font-medium text-slate-500 mb-1.5">Semesters</span>
+            <div className="flex gap-2 flex-wrap mb-3">
+              {SEMESTERS.map((s) => (
+                <label key={s} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer select-none ${targetSems.includes(s) ? "border-brand-400 bg-brand-50 text-slate-800" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                  <input type="checkbox" checked={targetSems.includes(s)} onChange={() => toggleIn(targetSems, setTargetSems, s)} />
+                  {SEMESTER_LABEL[s]}
+                </label>
+              ))}
+            </div>
+            <span className="block text-xs font-medium text-slate-500 mb-1.5">Grades</span>
+            <div className="flex gap-2 flex-wrap">
+              {grades.map((g) => (
+                <label key={g} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm cursor-pointer select-none ${targetGrades.includes(g) ? "border-brand-400 bg-brand-50 text-slate-800" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                  <input type="checkbox" checked={targetGrades.includes(g)} onChange={() => toggleIn(targetGrades, setTargetGrades, g)} />
+                  {g}
+                </label>
+              ))}
+            </div>
+            <div className="mt-3 pt-3 border-t border-slate-100 text-xs space-y-1">
+              {targets.length === 0 ? (
+                <p className="text-red-600">Choose at least one grade and one semester.</p>
+              ) : (
+                <>
+                  <p className="text-slate-600">
+                    Saving will set {targets.length} combination{targets.length === 1 ? "" : "s"}: {willCreate.length} new, {willReplace.length} changed, {targets.length - willCreate.length - willReplace.length} already identical.
+                  </p>
+                  {otherReplaced.length > 0 && (
+                    <p className="text-amber-700">Replaces the existing structure for: {otherReplaced.map(labelOf).join("; ")}.</p>
+                  )}
+                  {willVersion.length > 0 && (
+                    <p className="text-amber-700">Results are already recorded for {willVersion.map(labelOf).join("; ")} — those become a new version; recorded results keep their earlier structure.</p>
+                  )}
+                </>
+              )}
+            </div>
+          </Card>
+
           {/* Sticky on phones so Save is always in reach while scrolling a long structure. */}
           <div className="fixed sm:static bottom-0 inset-x-0 z-20 bg-white sm:bg-transparent border-t sm:border-0 border-slate-200 px-4 py-3 sm:p-0 flex items-center justify-end gap-2 mb-4">
             {dirty && <GhostButton onClick={() => setRows(draftFromConfig(config))}>Discard changes</GhostButton>}
-            <PrimaryButton icon={Save} onClick={save} disabled={!validation.canSave || !dirty} loading={isBusy(saveKey)} loadingText="Saving…">Save Configuration</PrimaryButton>
+            <PrimaryButton icon={Save} onClick={requestSave} disabled={!canSaveNow} loading={isBusy(saveKey)} loadingText="Saving…">{targets.length > 1 ? `Save for ${targets.length} combinations` : "Save Configuration"}</PrimaryButton>
           </div>
+          <ConfirmDialog
+            open={confirmOpen}
+            onClose={() => setConfirmOpen(false)}
+            onConfirm={save}
+            title="Replace existing structures?"
+            description={`This will replace the assessment structure already set for ${otherReplaced.map(labelOf).join("; ")}.${willVersion.length ? " Where results are already recorded, they keep the structure they were entered under and the new one applies to future entries." : ""}`}
+            confirmLabel="Replace and save"
+            danger
+          />
 
           <Card className="p-4 mb-4">
             <h2 className="text-sm font-semibold text-slate-700 mb-3">Overview — {yearLabel}</h2>

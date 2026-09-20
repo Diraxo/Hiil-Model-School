@@ -3967,22 +3967,27 @@ function DataProvider({ children }) {
         }
       },
 
-      // Results Settings: create or change the assessment structure for ONE academic year + semester +
-      // grade. `components` = [{ name, weight, kind: "TEST"|"NON_TEST" }] in display order. Everything
-      // is validated again by save_result_configuration (Owner/Educational Director only, weights total
-      // exactly 100, one active structure per year+semester+grade, a structure that already has results
-      // becomes a NEW VERSION so old results keep the structure they were recorded under). The acting
-      // user is stamped server-side into result_configuration_audit.
-      async saveResultConfiguration({ academicYearId, semester, grade, components }) {
+      // Results Settings: create or change the assessment structure for an academic year across ONE OR
+      // MANY grades and semesters in a single save (`grades` / `semesters` are arrays), so the same
+      // structure never has to be re-entered class by class. `components` = [{ name, weight, kind:
+      // "TEST"|"NON_TEST" }] in display order. Everything is validated again by
+      // save_result_configuration_bulk -> save_result_configuration (Owner/Educational Director only,
+      // weights total exactly 100, one active structure per year+semester+grade, a structure that
+      // already has results becomes a NEW VERSION so old results keep the structure they were recorded
+      // under) and the whole batch is one transaction: if any combination is rejected, none is saved.
+      // The acting user is stamped server-side into result_configuration_audit.
+      async saveResultConfiguration({ academicYearId, semesters, grades, components }) {
         try {
-          const res = await resultConfigService.save({ academicYearId, semester, grade, components });
+          const results = await resultConfigService.saveBulk({ academicYearId, semesters, grades, components });
           await refetchResultConfigs();
-          if (res.action !== "UNCHANGED") {
+          const changed = results.filter((r) => r.action !== "UNCHANGED");
+          if (changed.length > 0) {
             const year = db.academicYears.find((y) => y.id === academicYearId);
-            const verb = res.action === "CREATED" ? "configured" : res.action === "NEW_VERSION" ? `changed (new version ${res.version})` : "updated";
-            await logActivityFeed(`Result structure ${verb} for ${grade} — ${SEMESTER_LABEL[semester]}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
+            const gradeList = [...new Set(changed.map((r) => r.grade))];
+            const semList = [...new Set(changed.map((r) => SEMESTER_LABEL[r.semester]))];
+            await logActivityFeed(`Result structure saved for ${joinWithAnd(gradeList)} — ${joinWithAnd(semList)}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
           }
-          return { ok: true, message: "", result: res };
+          return { ok: true, message: "", results };
         } catch (e) {
           console.error("Failed to save result configuration", e);
           return { ok: false, message: resultConfigErrorMessage(e) };
