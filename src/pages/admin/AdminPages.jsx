@@ -1485,6 +1485,11 @@ function ParentsPage({ onOpen, onMessage }) {
               <div className="mt-2 space-y-1.5">
                 {children.length === 0 ? <p className="text-xs text-slate-300">No children connected</p> : children.map((c) => {
                   const summary = canPayments ? data.studentPaymentSummary(c) : null;
+                  // The badge shows what's due as of today (same as Fees & Payments), not the whole
+                  // academic year — otherwise a child fully paid for this month reads "Partially
+                  // paid" just because future months aren't prepaid. `summary` still drives the
+                  // Record Payment button so the remaining year can be prepaid from here.
+                  const due = canPayments ? data.dueStatusForStudent(c) : null;
                   return (
                     <div key={c.id} className="bg-slate-50 rounded-lg px-2.5 py-1.5">
                       <button onClick={() => onOpen(c.id)} className="w-full flex items-center justify-between text-xs mb-1">
@@ -1493,7 +1498,7 @@ function ParentsPage({ onOpen, onMessage }) {
                       </button>
                       {canPayments && (
                         <div className="flex items-center justify-between">
-                          {paymentStatusBadge(summary.status)}
+                          {paymentStatusBadge(due.status)}
                           {["UNPAID", "PARTIAL"].includes(summary.status) ? (
                             <button onClick={() => setRecordFor(c)} className="text-[11px] text-brand-600 font-medium">Record Payment</button>
                           ) : (
