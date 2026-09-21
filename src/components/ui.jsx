@@ -59,19 +59,23 @@ const ATTENDANCE_BUTTON_CLASS = {
 };
 // Shared status-button row used by every attendance editor (student, staff, and their
 // respective overview/take-attendance screens) so the six statuses only need to be wired once.
-// Phones get a grid of 44px-tall buttons (2 columns on the narrowest screens, 3 otherwise) so a
-// finger can hit one without precision tapping; the selected one also shows a check mark, so the
-// choice isn't carried by colour alone. From `sm` up it collapses back to the compact inline row.
+// On phones the six statuses sit in ONE slim row of separate buttons (36px tall, small gap between
+// them, the selected one filled with its colour) so a whole student fits in ~80px and a teacher sees
+// several students per screen instead of one and a half. Phones narrower than 360px fall back to a compact 3x2 grid, as
+// six labels can't fit on one line there. The chosen status is also spelled out in words by the
+// row (AttendanceStudentRow), so the choice isn't carried by colour alone. From `sm` up it becomes
+// the compact inline row of separate buttons.
 function AttendanceStatusPicker({ value, onChange, statuses = ATTENDANCE_STATUSES, size = "sm" }) {
   const pad = size === "sm" ? "sm:px-2.5 sm:py-1 sm:text-xs" : "sm:px-3 sm:py-1.5 sm:text-sm";
   return (
-    <div role="group" aria-label="Attendance status" className="grid grid-cols-2 min-[380px]:grid-cols-3 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center sm:gap-1.5">
+    <div role="group" aria-label="Attendance status"
+      className="grid grid-cols-3 gap-1.5 w-full min-[360px]:max-sm:flex min-[360px]:max-sm:gap-[3px] sm:flex sm:flex-wrap sm:items-center sm:w-auto sm:gap-1.5">
       {statuses.map((st) => {
         const selected = value === st;
         return (
           <button key={st} type="button" aria-pressed={selected} onClick={() => onChange(st)}
-            className={`inline-flex items-center justify-center gap-1 min-h-[44px] px-1.5 text-sm rounded-lg font-medium border sm:min-h-0 sm:rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 ${pad} ${selected ? `${ATTENDANCE_BUTTON_CLASS[st]} font-semibold shadow-sm` : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}>
-            {selected && <Check size={14} aria-hidden="true" className="shrink-0" />}{st}
+            className={`inline-flex items-center justify-center whitespace-nowrap min-h-[36px] px-0.5 sm:px-1 text-xs rounded-md font-medium border min-[360px]:max-sm:flex-auto sm:min-h-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 ${pad} ${selected ? `${ATTENDANCE_BUTTON_CLASS[st]} font-semibold shadow-sm` : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}>
+            {st}
           </button>
         );
       })}
@@ -79,31 +83,30 @@ function AttendanceStatusPicker({ value, onChange, statuses = ATTENDANCE_STATUSE
   );
 }
 
-// One student's row inside a take/view-attendance modal — name, current status in words, then the
-// picker. Stacks on phones (name → status → buttons) and sits side by side from `sm` up. Names wrap
-// instead of truncating so a long name is never clipped. `readOnly` shows the status as a badge.
+// One student's row inside a take/view-attendance modal. On phones it is two tight lines: the
+// number, avatar and name with the current status in words on the right, then the segmented status
+// control underneath. From `sm` up it sits side by side. Names wrap instead of truncating so a long
+// name is never clipped. `readOnly` shows the status as a badge.
 function AttendanceStudentRow({ index, name, photo, status, onChange, readOnly, fallbackLabel = "Not marked" }) {
   return (
-    <div className={readOnly ? "flex items-center justify-between gap-3 py-3" : "flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3"}>
-      <div className="flex items-center gap-2.5 min-w-0">
+    <div className={readOnly ? "flex items-center justify-between gap-3 py-2.5 sm:py-3" : "flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-2.5 py-2.5 sm:py-3"}>
+      <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
         <span className="text-xs text-slate-400 w-5 shrink-0">{index}.</span>
-        <Avatar name={name} photo={photo} size={32} />
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-700 break-words">{name}</p>
-          {!readOnly && <p className={status ? "text-xs text-slate-500 sm:hidden" : "text-xs text-amber-600 font-medium"}>{status || "Not marked yet"}</p>}
-        </div>
+        <Avatar name={name} photo={photo} size={28} />
+        <p className="text-sm font-medium text-slate-700 break-words min-w-0 flex-1">{name}</p>
+        {!readOnly && <span className={`shrink-0 text-[11px] font-medium sm:hidden ${status ? "text-slate-500" : "text-amber-600"}`}>{status || "Not marked"}</span>}
       </div>
       {readOnly ? <span className="shrink-0"><Badge tone={statusTone(status)}>{status || fallbackLabel}</Badge></span> : <AttendanceStatusPicker value={status} onChange={onChange} />}
     </div>
   );
 }
 
-// "Mark all present / absent" pair — stacked on the narrowest phones, side by side otherwise.
+// "Mark all present / absent" pair — two slim buttons side by side on every phone, inline from `sm` up.
 function AttendanceMarkAllBar({ onMarkAll }) {
   return (
-    <div className="grid grid-cols-1 min-[380px]:grid-cols-2 sm:flex sm:items-center gap-2 mb-3">
-      <GhostButton icon={Check} className="justify-center min-h-[44px] sm:min-h-0" onClick={() => onMarkAll("Present")}>Mark all present</GhostButton>
-      <GhostButton icon={AlertTriangle} className="justify-center min-h-[44px] sm:min-h-0" onClick={() => onMarkAll("Absent")}>Mark all absent</GhostButton>
+    <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 mb-2 sm:mb-3">
+      <GhostButton icon={Check} className="justify-center whitespace-nowrap min-h-[36px] sm:min-h-0 px-2" onClick={() => onMarkAll("Present")}>Mark all present</GhostButton>
+      <GhostButton icon={AlertTriangle} className="justify-center whitespace-nowrap min-h-[36px] sm:min-h-0 px-2" onClick={() => onMarkAll("Absent")}>Mark all absent</GhostButton>
     </div>
   );
 }
@@ -120,8 +123,8 @@ function AttendanceSaveBar({ marked, total, dirty, busy, onCancel, onSave }) {
         {dirty && <Badge tone="amber">Unsaved changes</Badge>}
       </div>
       <div className="flex gap-2 sm:justify-end">
-        <button type="button" onClick={onCancel} className="flex-1 sm:flex-none min-h-[44px] sm:min-h-0 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 border border-slate-200 sm:border-transparent hover:bg-slate-100">Cancel</button>
-        <div className="flex-[2] sm:flex-none"><PrimaryButton icon={Check} full className="min-h-[44px] sm:min-h-0" onClick={onSave} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton></div>
+        <button type="button" onClick={onCancel} className="flex-1 sm:flex-none min-h-[44px] sm:min-h-0 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium text-slate-600 border border-slate-200 sm:border-transparent hover:bg-slate-100">Cancel</button>
+        <div className="flex-[2] sm:flex-none"><PrimaryButton icon={Check} full className="whitespace-nowrap min-h-[44px] sm:min-h-0" onClick={onSave} loading={busy} loadingText="Saving…">Save Attendance</PrimaryButton></div>
       </div>
     </div>
   );
