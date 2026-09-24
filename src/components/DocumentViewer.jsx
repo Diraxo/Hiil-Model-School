@@ -3,7 +3,7 @@
 // Announcement attachments — written generically so wiring in homework/exam attachments later is
 // a one-line change per call site, not a rewrite.
 import React, { useEffect, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, X, ZoomIn, ZoomOut } from "lucide-react";
 import { inferFileType } from "../utils/fileType";
 
 const ZOOM_STEPS = [1, 1.5, 2];
@@ -16,7 +16,11 @@ const ZOOM_STEPS = [1, 1.5, 2];
 // `data.resultEvidenceFor(...)`) instead of the single-file props, plus optional `initialIndex`.
 // When `files` is omitted this renders exactly as the original single-file viewer (all 4 existing
 // call sites keep working unchanged); `files` adds Prev/Next paging and image zoom.
-function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, fileType, files, initialIndex = 0 }) {
+//
+// `allowDownload` (default true) hides the Download link. Private evidence is served from
+// short-lived cross-origin signed URLs, where the `download` attribute is ignored and the browser
+// would navigate away from the app to the storage host — so evidence callers pass false.
+function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, fileType, files, initialIndex = 0, allowDownload = true }) {
   const multi = Array.isArray(files) && files.length > 0;
   const [index, setIndex] = useState(initialIndex);
   const [zoomStep, setZoomStep] = useState(0);
@@ -24,6 +28,20 @@ function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, file
   useEffect(() => {
     if (open) { setIndex(initialIndex); setZoomStep(0); }
   }, [open, initialIndex]);
+
+  const count = multi ? files.length : 1;
+
+  // Keyboard: Esc closes, ←/→ page. Registered only while open, and always cleaned up.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") { setIndex((i) => Math.max(0, i - 1)); setZoomStep(0); }
+      else if (e.key === "ArrowRight") { setIndex((i) => Math.min(count - 1, i + 1)); setZoomStep(0); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose, count]);
 
   if (!open) return null;
   if (!multi && !fileDataUrl) return null;
@@ -35,10 +53,10 @@ function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, file
   const zoom = ZOOM_STEPS[zoomStep];
 
   return (
-    <div className="fixed inset-0 z-[110] bg-slate-900/90 backdrop-blur-sm flex flex-col">
+    <div className="fixed inset-0 z-[110] bg-slate-900/90 backdrop-blur-sm flex flex-col" role="dialog" aria-modal="true" aria-label={displayTitle}>
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10 shrink-0">
-        <button type="button" onClick={onClose} className="inline-flex items-center gap-1.5 text-white/80 hover:text-white text-sm font-medium">
-          <ArrowLeft size={16} /> Back
+        <button type="button" onClick={onClose} aria-label="Close viewer" className="inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg px-3 py-1.5">
+          <X size={16} /> Close
         </button>
         <p className="text-sm font-medium text-white truncate px-2">
           {displayTitle}{multi && files.length > 1 && <span className="text-white/60 font-normal"> — page {index + 1} of {files.length}</span>}
@@ -54,18 +72,20 @@ function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, file
               {zoom > 1 ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
             </button>
           )}
-          <a
-            href={current.fileDataUrl}
-            download={current.fileName || displayTitle}
-            className="inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg px-3 py-1.5"
-          >
-            <Download size={15} /> Download
-          </a>
+          {allowDownload && (
+            <a
+              href={current.fileDataUrl}
+              download={current.fileName || displayTitle}
+              className="inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-lg px-3 py-1.5"
+            >
+              <Download size={15} /> Download
+            </a>
+          )}
         </div>
       </div>
       <div className="flex-1 overflow-auto flex items-center justify-center p-4 relative">
         {multi && files.length > 1 && index > 0 && (
-          <button type="button" onClick={() => { setIndex((i) => i - 1); setZoomStep(0); }} className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2">
+          <button type="button" aria-label="Previous page" onClick={() => { setIndex((i) => i - 1); setZoomStep(0); }} className="absolute left-3 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2">
             <ChevronLeft size={20} />
           </button>
         )}
@@ -75,7 +95,7 @@ function DocumentViewerModal({ open, onClose, title, fileName, fileDataUrl, file
           <img src={current.fileDataUrl} alt={displayTitle} style={{ transform: `scale(${zoom})` }} className="max-w-full max-h-full object-contain rounded-lg bg-white transition-transform" />
         )}
         {multi && files.length > 1 && index < files.length - 1 && (
-          <button type="button" onClick={() => { setIndex((i) => i + 1); setZoomStep(0); }} className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2">
+          <button type="button" aria-label="Next page" onClick={() => { setIndex((i) => i + 1); setZoomStep(0); }} className="absolute right-3 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2">
             <ChevronRight size={20} />
           </button>
         )}

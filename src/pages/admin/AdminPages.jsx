@@ -51,6 +51,7 @@ import {
   canManageAcademicYears, canAddBehavior, canViewStudentPayments, canVoidPayment, canTakeAttendance, studentStatusNotice,
 } from "../../utils/studentPermissions";
 import { DocumentViewerModal } from "../../components/DocumentViewer";
+import { ExamEvidenceStrip } from "../../components/ResultEvidence";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 
@@ -1129,17 +1130,15 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                     <Badge tone={r.publishStatus === "LOCKED" ? "red" : r.publishStatus === "PUBLISHED" ? "green" : "slate"}>{r.publishStatus}</Badge>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                <div className="space-y-2 text-xs text-slate-400">
                   {(r.assessments || []).map((c) => {
                     const comp = r.components?.[c.id];
                     const pages = data.resultEvidenceFor(r.id, c.id);
                     return (
-                      <span key={c.id} className="inline-flex items-center gap-1">
-                        {c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "—"}
-                        {pages.length > 0 && (
-                          <button type="button" onClick={() => setDocViewer({ title: `${r.subject} — ${c.name}`, files: pages })} className="text-brand-600 hover:text-brand-700"><FileText size={12} /></button>
-                        )}
-                      </span>
+                      <div key={c.id}>
+                        <span>{c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "—"}</span>
+                        <ExamEvidenceStrip pages={pages} onOpen={(idx) => setDocViewer({ title: `${r.subject} — ${c.name}`, files: pages, initialIndex: idx })} />
+                      </div>
                     );
                   })}
                 </div>
@@ -1297,7 +1296,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
       <UploadDocumentModal open={uploadDocOpen} onClose={() => setUploadDocOpen(false)} studentId={s.id} />
       {canPayments && <RecordPaymentModal open={recordPaymentOpen} onClose={() => setRecordPaymentOpen(false)} student={s} />}
       {canVoid && <VoidPaymentModal open={!!voidTarget} onClose={() => setVoidTarget(null)} payment={voidTarget} />}
-      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} fileDataUrl={docViewer?.fileDataUrl} fileType={docViewer?.fileType} fileName={docViewer?.fileName} files={docViewer?.files} initialIndex={docViewer?.initialIndex} />
+      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} fileDataUrl={docViewer?.fileDataUrl} fileType={docViewer?.fileType} fileName={docViewer?.fileName} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={!docViewer?.files} />
       <ConfirmDialog
         open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} danger confirmLabel="Delete Permanently"
         title="Delete Student Permanently?"
@@ -4054,7 +4053,7 @@ function ResultsPage({ role, focus, clearFocus }) {
 
           {cls && !structure && (
             <Card className="p-4 mb-4 border border-slate-200 bg-slate-50">
-              <p className="text-sm font-semibold text-slate-700">No result structure has been configured for {cls.grade} for {SEMESTER_LABEL[semester]}{yearRow ? ` (${formatAcademicYearLabel(yearRow)})` : ""}.</p>
+              <p className="text-sm font-semibold text-slate-700">No Results Structure Configured — none has been set for {cls.grade} for {SEMESTER_LABEL[semester]}{yearRow ? ` (${formatAcademicYearLabel(yearRow)})` : ""}.</p>
               <p className="text-xs text-slate-500 mt-0.5">{isStaff ? "Set its assessments in Results Settings before teachers can record scores." : "Please contact the Educational Director."}</p>
             </Card>
           )}
@@ -4074,7 +4073,7 @@ function ResultsPage({ role, focus, clearFocus }) {
                   <button key={subject} onClick={() => setSelected({ classId: cls.id, subject, semester, academicYearId: yearId })} className="text-left">
                     <Card className="p-4 hover:border-brand-300 transition-colors h-full">
                       <p className="text-sm font-medium text-slate-700 mb-1">{subject}</p>
-                      <p className="text-xs text-slate-400">{structure ? `${recorded}/${studentsInClass.length} students have a result` : "No result structure configured yet"}</p>
+                      <p className="text-xs text-slate-400">{structure ? `${recorded}/${studentsInClass.length} students have a result` : "No Results Structure configured yet"}</p>
                     </Card>
                   </button>
                 );
@@ -4442,8 +4441,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
         <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
         <EmptyState
           icon={ShieldAlert}
-          title="No Results Configuration"
-          description={`No assessment structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
+          title="No Results Structure Configured"
+          description={`No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
           action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
         />
       </div>
@@ -4468,7 +4467,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       </p>
 
       <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
-      {!anyRecorded && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">Result structure configured, but no results have been recorded yet.</p>}
+      {!anyRecorded && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">No Results Recorded Yet — the structure is configured, but no student has a result.</p>}
 
       {groups.map((group) => {
         const { config, assessments } = group;
@@ -4569,10 +4568,12 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                                           })}
                                         </div>
                                       )}
+                                      {pages.length > 0 && <span className="text-[10px] text-slate-500">{pages.length} {pages.length === 1 ? "page" : "pages"}</span>}
                                       <div className="flex items-center gap-1">
                                         {canEdit && (
-                                          <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${a.id}`)} onClick={() => setCameraChooserFor({ studentId: s.id, assessmentId: a.id })} className="p-1 -m-1 text-slate-400 hover:text-brand-600 disabled:opacity-30" title="Add test photo / screenshot" aria-label={`Add test evidence for ${data.studentFullName(s)} — ${a.name}`}>
-                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+                                          <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${a.id}`)} onClick={() => setCameraChooserFor({ studentId: s.id, assessmentId: a.id })} className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500 hover:text-brand-600 disabled:opacity-30 whitespace-nowrap" title="Add another test photo / screenshot" aria-label={`Add test evidence for ${data.studentFullName(s)} — ${a.name}`}>
+                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? "Uploading…" : "Add image"}
                                           </button>
                                         )}
                                         {pages.length > 0 && canEdit && (
@@ -4638,7 +4639,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       <Modal open={!!historyFor} onClose={() => setHistoryFor(null)} title="Change History" wide>
         <ResultAuditTrail entries={historyRecord ? db.resultAuditLog.filter((e) => e.entityId === historyRecord.id) : []} viewerRole={auth.currentUser.role} />
       </Modal>
-      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} files={docViewer?.files} initialIndex={docViewer?.initialIndex} />
+      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={false} />
       <UnlockReasonModal open={!!unlockTarget} onClose={() => setUnlockTarget(null)} lockMessage={unlockTarget?.lockMessage} onConfirm={confirmUnlock} />
       <Modal open={!!cameraChooserFor} onClose={() => setCameraChooserFor(null)} title="Attach exam photo">
         <div className="space-y-2">

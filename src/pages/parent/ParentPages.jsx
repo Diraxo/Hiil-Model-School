@@ -32,6 +32,7 @@ import { homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../compo
 import { LeaveRequestHistoryList } from "../../components/leave";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
 import { DocumentViewerModal } from "../../components/DocumentViewer";
+import { ExamEvidenceStrip } from "../../components/ResultEvidence";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 // Mirrors AdminPages.jsx's DOCUMENT_CATEGORIES — the fixed set of categories documents are
@@ -652,17 +653,15 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
                       )}
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                  <div className="space-y-2 text-xs text-slate-400">
                     {r.assessments.map((c) => {
                       const comp = r.components?.[c.id];
                       const pages = c.kind === ASSESSMENT_KIND.TEST && comp?.sharedWithParents ? data.resultEvidenceFor(r.id, c.id) : [];
                       return (
-                        <span key={c.id} className="inline-flex items-center gap-1">
-                          {c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "Not yet recorded"}
-                          {pages.length > 0 && (
-                            <button onClick={() => setEvidenceView({ title: `${r.subject} — ${c.name}`, files: pages })} className="text-brand-600 hover:text-brand-700"><Eye size={12} /></button>
-                          )}
-                        </span>
+                        <div key={c.id}>
+                          <span>{c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "Not yet recorded"}</span>
+                          <ExamEvidenceStrip pages={pages} onOpen={(idx) => setEvidenceView({ title: `${r.subject} — ${c.name}`, files: pages, initialIndex: idx })} />
+                        </div>
                       );
                     })}
                   </div>
@@ -673,7 +672,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
         </>
       )}
       <ReportCardModal student={viewCard ? child : null} classId={child.classId} onClose={() => setViewCard(false)} />
-      <DocumentViewerModal open={!!evidenceView} onClose={() => setEvidenceView(null)} title={evidenceView?.title} files={evidenceView?.files} initialIndex={evidenceView?.initialIndex} />
+      <DocumentViewerModal open={!!evidenceView} onClose={() => setEvidenceView(null)} title={evidenceView?.title} files={evidenceView?.files} initialIndex={evidenceView?.initialIndex} allowDownload={false} />
     </div>
   );
 }

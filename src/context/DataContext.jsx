@@ -3667,7 +3667,7 @@ function DataProvider({ children }) {
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
         const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
-        if (!config) return { ok: false, message: `No result structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
+        if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
         const cal = resolveResultCal(db, academicYearId);
@@ -3876,7 +3876,7 @@ function DataProvider({ children }) {
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
         const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
-        if (!config) return { ok: false, message: `No result structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
+        if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
         if (assessment.kind !== ASSESSMENT_KIND.TEST) return { ok: false, message: `${assessment.name} is not a test, so it doesn't take test evidence.` };
@@ -3886,9 +3886,10 @@ function DataProvider({ children }) {
 
         try {
           const resultId = record ? record.id : (await resultService.ensureRecord({ studentId, classId, subjectId, semester, academicYearId })).id;
-          const existingCount = (db.resultEvidence || []).filter((e) => e.resultId === resultId && e.assessmentId === assessmentId).length;
-          await resultEvidenceService.add({ resultId, assessmentId, file });
-          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, assessmentId, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: existingCount, to: existingCount + 1 }], reason: null });
+          // The stored row's own page_order (server-side max+1) is the authoritative count: `db` here
+          // is the render-time snapshot, which goes stale mid-batch when several pages are added in one go.
+          const added = await resultEvidenceService.add({ resultId, assessmentId, file });
+          await resultService.addAudit({ resultId, studentId, classId, subjectId, semester, assessmentId, action: "EVIDENCE_ADDED", diff: [{ field: "evidence", from: added.order, to: added.order + 1 }], reason: null });
           await Promise.all([refetchResultEvidence(), refetchResults()]);
           return { ok: true, message: "" };
         } catch (e) {
