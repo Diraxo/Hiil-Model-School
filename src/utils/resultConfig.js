@@ -71,4 +71,13 @@ function activeConfigFor(configs, academicYearId, semester, grade) {
   return (configs || []).find((c) => c.status === "ACTIVE" && c.academicYearId === academicYearId && c.semester === semester && c.grade === grade) || null;
 }
 
-export { activeAssessments, parseWeight, configTotals, validateConfigDraft, gradesFromClasses, activeConfigFor };
+// The ONE structure a result workflow (gradebook, save score, add evidence) works against: the
+// structure the student's existing result was recorded under when it resolves, otherwise the ACTIVE
+// structure for the grade + semester + year. A result row that exists but whose pinned structure is
+// not resolvable client-side (no result yet recorded, not loaded) must never make a configured grade
+// look unconfigured — that is exactly what the gradebook page already did.
+function effectiveConfigFor(record, configs, academicYearId, semester, grade) {
+  return (record && record.configuration) || activeConfigFor(configs, academicYearId, semester, grade);
+}
+
+export { activeAssessments, parseWeight, configTotals, validateConfigDraft, gradesFromClasses, activeConfigFor, effectiveConfigFor };

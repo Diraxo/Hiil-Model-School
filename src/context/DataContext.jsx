@@ -39,7 +39,7 @@ import { createBehaviorService } from "../services/behaviorService";
 import { createHomeworkService } from "../services/homeworkService";
 import { createResultService } from "../services/resultService";
 import { createResultConfigService } from "../services/resultConfigService";
-import { activeAssessments, activeConfigFor } from "../utils/resultConfig";
+import { activeAssessments, activeConfigFor, effectiveConfigFor } from "../utils/resultConfig";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
 import { createExamService } from "../services/examService";
 import { createReportCardService } from "../services/reportCardService";
@@ -3666,7 +3666,7 @@ function DataProvider({ children }) {
         const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
-        const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
         if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
@@ -3875,7 +3875,7 @@ function DataProvider({ children }) {
         const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
-        const config = record ? record.configuration : activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
         if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };

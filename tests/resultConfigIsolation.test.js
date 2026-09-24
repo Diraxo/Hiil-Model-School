@@ -60,3 +60,26 @@ describe("Results structure is scoped to academic year + semester + grade", () =
     expect(find("class-10")).toBeNull();
   });
 });
+
+import { effectiveConfigFor } from "../src/utils/resultConfig";
+
+describe("effectiveConfigFor — Add Image / save score agree with the gradebook page", () => {
+  const g10 = cfg("c10x", Y26, "S1", "Grade 10", [comp("t", "Test", 20, "TEST", 0), comp("n", "Non-test", 80, "NON_TEST", 1)]);
+  const all = [cfg("c9x", Y26, "S1", "Grade 9", [comp("t9", "Test", 20, "TEST", 0), comp("n9", "Non-test", 80)]), g10];
+
+  it("no result yet: resolves the Grade 10 active structure", () => {
+    expect(effectiveConfigFor(null, all, Y26, "S1", "Grade 10").id).toBe("c10x");
+  });
+  it("REGRESSION: a result row whose configuration is unresolved still falls back to the active structure", () => {
+    expect(effectiveConfigFor({ id: "r1", configuration: null }, all, Y26, "S1", "Grade 10").id).toBe("c10x");
+    expect(effectiveConfigFor({ id: "r1", configuration: undefined }, all, Y26, "S1", "Grade 10")).not.toBeNull();
+  });
+  it("a result pinned to an older structure keeps it", () => {
+    const old = cfg("old", Y26, "S1", "Grade 10", [comp("o", "Old", 100)], "CLOSED", 0);
+    expect(effectiveConfigFor({ id: "r1", configuration: old }, all, Y26, "S1", "Grade 10").id).toBe("old");
+  });
+  it("grades resolve independently; unconfigured grades are null", () => {
+    expect(["Grade 9", "Grade 10", "Grade 11", "Grade 12"].map((g) => effectiveConfigFor(null, all, Y26, "S1", g)?.id ?? null)).toEqual(["c9x", "c10x", null, null]);
+    expect(effectiveConfigFor(null, all, Y26, "S1", null)).toBeNull();
+  });
+});
