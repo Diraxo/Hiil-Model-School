@@ -298,7 +298,7 @@ function Modal({ open, onClose, title, children, wide, maxWidthClass }) {
   );
 }
 
-function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = "Confirm", danger }) {
+function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLabel = "Confirm", cancelLabel = "Cancel", danger }) {
   const { busy, run } = useMutationGuard();
   if (!open) return null;
   // One authoritative confirm path, guarded against double-clicks / repeated Enter:
@@ -312,10 +312,10 @@ function ConfirmDialog({ open, onClose, onConfirm, title, description, confirmLa
   }
   return (
     <Modal open={open} onClose={busy ? () => {} : onClose} title={title}>
-      <p className="text-sm text-slate-600 mb-5">{description}</p>
-      <div className="flex justify-end gap-2">
-        <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
-        <button type="button" disabled={busy} onClick={handleConfirm} className={`px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 disabled:cursor-not-allowed ${danger ? "bg-red-600 hover:bg-red-700" : "bg-brand-600 hover:bg-brand-700"}`}>{busy ? "Working…" : confirmLabel}</button>
+      <p className="text-sm text-slate-600 mb-5 break-words">{description}</p>
+      <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+        <button type="button" disabled={busy} onClick={onClose} className="px-4 py-2.5 sm:py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed">{cancelLabel}</button>
+        <button type="button" disabled={busy} onClick={handleConfirm} className={`px-4 py-2.5 sm:py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 disabled:cursor-not-allowed ${danger ? "bg-red-600 hover:bg-red-700" : "bg-brand-600 hover:bg-brand-700"}`}>{busy ? "Working…" : confirmLabel}</button>
       </div>
     </Modal>
   );

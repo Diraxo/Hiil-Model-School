@@ -30,6 +30,7 @@ import {
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList,
 } from "../../components/ui";
 import { activeAssessments } from "../../utils/resultConfig";
+import { attendanceStatusForClassDate } from "../../utils/attendanceStatus";
 import { ResultsSettingsPage } from "./ResultsSettings";
 import { CashReceiptModal } from "../../components/Receipt";
 import { useData } from "../../context/DataContext";
@@ -2796,6 +2797,44 @@ function TimetableSettingsModal({ open, onClose }) {
   );
 }
 
+// The status + actions block for one class on one date, shared by the Owner/ED overview and the
+// Head Teacher page. `status` comes from attendanceStatusForClassDate (the single source of truth):
+// one saved row => "Attendance Taken" + actor + View/Edit; none => "Not marked" + Take Attendance.
+// The per-student controls live only inside AttendanceEditorModal, never on the card.
+function ClassAttendanceStatus({ status, unavailable, noStudents, canEdit, canView = true, onOpen, extra }) {
+  const data = useData();
+  const summary = ATTENDANCE_STATUSES
+    .map((st) => ({ st, n: status.rows.filter((r) => r.status === st).length }))
+    .filter((x) => x.n > 0)
+    .map((x) => `${x.n} ${x.st}`)
+    .join(" · ");
+  const shown = !unavailable && !noStudents;
+  return (
+    <>
+      <div className="text-xs mb-3 flex-1 min-w-0">
+        {unavailable ? <p className="text-slate-500">Attendance unavailable for this date.</p>
+          : noStudents ? <p className="text-slate-500">No students in this class.</p>
+          : status.taken ? (
+            <>
+              <p className="mb-1"><Badge tone="green">Attendance Taken</Badge></p>
+              {status.markedBy && <p className="text-slate-400 break-words">by <span className="text-slate-600 font-medium">{data.userIdentity(status.markedBy).display}</span></p>}
+              {summary && <p className="text-slate-500 mt-0.5 break-words">{summary}</p>}
+            </>
+          ) : <p><Badge tone="slate">Not marked</Badge></p>}
+      </div>
+      <div className="flex gap-2">
+        {shown && status.taken && canView && (
+          <button onClick={() => onOpen("view")} className="flex-1 text-sm sm:text-xs text-slate-600 font-medium border border-slate-200 rounded-lg py-3 sm:py-1.5 hover:bg-slate-50">View</button>
+        )}
+        {shown && canEdit && (
+          <button onClick={() => onOpen("edit")} className="flex-1 text-sm sm:text-xs text-white font-medium bg-brand-600 rounded-lg py-3 sm:py-1.5 hover:bg-brand-700">{status.taken ? "Edit" : "Take Attendance"}</button>
+        )}
+        {extra}
+      </div>
+    </>
+  );
+}
+
 function AttendanceOverviewPage({ focus, clearFocus }) {
   const data = useData();
   const auth = useAuth();
@@ -2840,14 +2879,9 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {db.classes.map((c) => {
             const students = data.attendanceRosterForClass(c.id);
-            const records = db.attendance.filter((a) => a.classId === c.id && a.date === dateKey);
+            const status = attendanceStatusForClassDate(db.attendance, c.id, dateKey);
             const head = data.getUser(c.headTeacherId);
             const canTake = classification.available && students.length > 0 && data.canTakeClassAttendance(c, auth.currentUser);
-            const summary = ATTENDANCE_STATUSES
-              .map((st) => ({ st, n: records.filter((r) => r.status === st).length }))
-              .filter((x) => x.n > 0)
-              .map((x) => `${x.n} ${x.st}`)
-              .join(" · ");
             return (
               <Card key={c.id} className="p-4 flex flex-col">
                 <div className="flex items-center justify-between mb-1">
@@ -2859,19 +2893,16 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
                 ) : (
                   <p className="text-xs text-amber-600 font-medium mb-2 flex items-center gap-1"><AlertTriangle size={12} /> No head teacher assigned</p>
                 )}
-                <p className="text-xs text-slate-500 mb-3 flex-1">
-                  {!classification.available ? "Attendance unavailable for this date." : students.length === 0 ? "No students in this class." : summary || "Not taken"}
-                </p>
-                <div className="flex gap-2">
-                  {classification.available && students.length > 0 && canTake ? (
-                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-sm sm:text-xs text-white font-medium bg-brand-600 rounded-lg py-3 sm:py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
-                  ) : (
-                    <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-sm sm:text-xs text-slate-500 font-medium border border-slate-200 rounded-lg py-3 sm:py-1.5 hover:bg-slate-50">View</button>
-                  )}
-                  {students.length > 0 && (
+                <ClassAttendanceStatus
+                  status={status}
+                  unavailable={!classification.available}
+                  noStudents={students.length === 0}
+                  canEdit={canTake}
+                  onOpen={(mode) => setEditor({ classId: c.id, dateKey, mode })}
+                  extra={students.length > 0 && (
                     <button onClick={() => setRegisterFor(c.id)} className="inline-flex items-center justify-center gap-1.5 text-sm sm:text-xs text-slate-600 sm:text-slate-500 font-medium border border-slate-200 rounded-lg px-3.5 sm:px-2.5 py-3 sm:py-1.5 hover:bg-slate-50" title="Monthly Register" aria-label="Monthly Register"><CalendarDays size={14} /><span className="sm:hidden">Register</span></button>
                   )}
-                </div>
+                />
               </Card>
             );
           })}
@@ -2906,8 +2937,10 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   const readOnly = mode === "view";
   const [draft, setDraft] = useState({});
   const { busy, run } = useMutationGuard();
-  const dayRecords = cls ? db.attendance.filter((a) => a.classId === cls.id && a.date === dateKey) : [];
-  const latestRecord = dayRecords.reduce((latest, r) => (!latest || (r.markedAt || 0) > (latest.markedAt || 0)) ? r : latest, null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const dayStatus = attendanceStatusForClassDate(db.attendance, cls?.id, dateKey);
+  const dayRecords = dayStatus.rows;
+  const latestRecord = dayStatus.latestRecord;
   // A weekend/closure/break/etc. isn't "not marked" — it's not a school day at all, so there was
   // never an attendance opportunity. Existing historical records (e.g. from before this calendar
   // rule existed) still display in full; only the "no record" fallback label changes.
@@ -2932,7 +2965,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   const savedStatusByStudent = new Map(db.attendance.filter((a) => a.date === dateKey).map((a) => [a.studentId, a.status]));
   const dirty = !readOnly && students.some((s) => (draft[s.id]?.status || null) !== (savedStatusByStudent.get(s.id) || null));
   function requestClose() {
-    if (dirty && !window.confirm("You have unsaved attendance changes. Close and discard them?")) return;
+    if (dirty) { setConfirmDiscard(true); return; }
     onClose();
   }
   function save() {
@@ -2948,7 +2981,8 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
   }
 
   return (
-    <Modal open={!!classId} onClose={requestClose} title={cls ? `${readOnly ? "Attendance" : "Take Attendance"} · ${cls.grade}${cls.section}` : ""} wide>
+    <>
+    <Modal open={!!classId} onClose={requestClose} title={cls ? `${readOnly ? "Attendance" : dayStatus.taken ? "Edit Attendance" : "Take Attendance"} · ${cls.grade}${cls.section}` : ""} wide>
       {cls && (
         <div>
           <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
@@ -2976,6 +3010,10 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
         </div>
       )}
     </Modal>
+    <ConfirmDialog open={confirmDiscard} onClose={() => setConfirmDiscard(false)} onConfirm={() => { setDraft({}); onClose(); }}
+      title="Unsaved Changes" confirmLabel="Discard Changes" cancelLabel="Keep Editing"
+      description="You have unsaved attendance changes. If you leave now, those changes will be discarded." />
+    </>
   );
 }
 
@@ -3003,7 +3041,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
     for (let d = 1; d <= daysInMonth; d++) {
       const dateKey = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
       const classification = data.classifyAttendanceDay(dateKey);
-      const hasRecord = db.attendance.some((a) => a.classId === classId && a.date === dateKey);
+      const hasRecord = attendanceStatusForClassDate(db.attendance, classId, dateKey).taken;
       if (classification.available || hasRecord) list.push({ dateKey, day: d, available: classification.available });
     }
     return list;
@@ -7210,7 +7248,7 @@ export {
   AdminDashboard, StudentsPage, AddStudentModal, StudentProfilePage, EditStudentModal,
   BehaviorModal, SuspendModal, ParentsPage, TeachersPage, TeacherFormModal, ClassesPage,
   ClassFormModal, AdminTimetablePage, AssignSubstituteModal, TodaysJournalSummaryCard,
-  SelectSubjectModal, TimetableSettingsModal, AttendanceOverviewPage, AttendanceEditorModal, ClassMonthlyRegisterModal, StaffAttendancePage, LeaveApprovalsPage,
+  SelectSubjectModal, TimetableSettingsModal, AttendanceOverviewPage, AttendanceEditorModal, ClassAttendanceStatus, ClassMonthlyRegisterModal, StaffAttendancePage, LeaveApprovalsPage,
   StaffLeaveRequestForm, LeaveRequestHistoryList, HomeworkAdminPage, ResultsPage,
   AnnounceExamModal, SubjectSemesterResultsEditor, BehaviorAdminPage, AnnouncementsPage,
   CreateAnnouncementModal, PaymentsPage, FeeSettingsModal, RecordPaymentModal, ReminderModal,

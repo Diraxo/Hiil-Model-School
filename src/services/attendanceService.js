@@ -21,6 +21,26 @@
 // 20260903000000).
 import { supabase } from "../lib/supabaseClient";
 
+// PostgREST silently caps a single response at 1000 rows (no error). A plain `.select("*")` on
+// `attendance` therefore dropped rows once the school passed ~1000 saved records -- an arbitrary
+// subset (the query was unordered), so a class whose attendance WAS saved looked "Not taken".
+// Walk `.range()` pages ordered by the primary key (stable + unique => no gaps/overlaps).
+// Same fix as feeService.pageThrough.
+const PAGE_SIZE = 1000;
+export async function pageThrough(table, { select = "*", orderBy = "id", client = supabase } = {}) {
+  let rows = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await client
+      .from(table).select(select).order(orderBy, { ascending: true }).range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows = rows.concat(data || []);
+    if (!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return rows;
+}
+
 function mapAttendance(row) {
   return {
     id: row.id,
@@ -49,18 +69,14 @@ function mapPeriodLog(row) {
   };
 }
 
-export function createAttendanceService() {
+export function createAttendanceService(client = supabase) {
   return {
     async list() {
-      const { data, error } = await supabase.from("attendance").select("*");
-      if (error) throw error;
-      return (data || []).map(mapAttendance);
+      return (await pageThrough("attendance", { client })).map(mapAttendance);
     },
 
     async listPeriodLogs() {
-      const { data, error } = await supabase.from("period_logs").select("*");
-      if (error) throw error;
-      return (data || []).map(mapPeriodLog);
+      return (await pageThrough("period_logs", { client })).map(mapPeriodLog);
     },
 
     // One upsert per student, on the table's unique(student_id, date) constraint — the same

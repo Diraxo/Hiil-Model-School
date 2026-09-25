@@ -28,7 +28,8 @@ import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
 import { useAuth } from "../../context/AuthContext";
 import { homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../components/homework";
-import { AttendanceEditorModal, ClassMonthlyRegisterModal, StaffLeaveRequestForm, PayslipModal } from "../admin/AdminPages";
+import { attendanceStatusForClassDate } from "../../utils/attendanceStatus";
+import { AttendanceEditorModal, ClassAttendanceStatus, ClassMonthlyRegisterModal, StaffLeaveRequestForm, PayslipModal } from "../admin/AdminPages";
 import { AdvanceHistoryList } from "../owner/OwnerPages";
 import { LeaveRequestHistoryList } from "../../components/leave";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
@@ -422,6 +423,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   const students = cls ? sortStudentsByFullName(data.attendanceRosterForClass(cls.id)) : [];
   const log = entry ? db.periodLogs.find((l) => l.timetableEntryId === entry.id && l.date === date) : null;
   const [draft, setDraft] = useState({});
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const { busy, run } = useMutationGuard();
 
   useEffect(() => {
@@ -441,7 +443,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   const markedCount = students.filter((s) => draft[s.id]?.status).length;
   const dirty = !!entry && students.some((s) => (draft[s.id]?.status || null) !== (log?.attendance?.find((a) => a.studentId === s.id)?.status || null));
   function requestClose() {
-    if (dirty && !window.confirm("You have unsaved attendance changes. Close and discard them?")) return;
+    if (dirty) { setConfirmDiscard(true); return; }
     onClose();
   }
   function save() {
@@ -457,6 +459,7 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
   }
 
   return (
+    <>
     <Modal open={!!entry} onClose={requestClose} title={entry ? `Take Attendance · Period ${entry.period} · ${entry.subject}` : ""} wide>
       {entry && (
         <div>
@@ -481,6 +484,10 @@ function PeriodAttendanceModal({ entry, date, onClose }) {
         </div>
       )}
     </Modal>
+    <ConfirmDialog open={confirmDiscard} onClose={() => setConfirmDiscard(false)} onConfirm={() => { setDraft({}); onClose(); }}
+      title="Unsaved Changes" confirmLabel="Discard Changes" cancelLabel="Keep Editing"
+      description="You have unsaved attendance changes. If you leave now, those changes will be discarded." />
+    </>
   );
 }
 
@@ -707,12 +714,7 @@ function TeacherAttendancePage() {
       <div className="grid sm:grid-cols-2 gap-3">
         {myClasses.map((c) => {
           const students = data.attendanceRosterForClass(c.id);
-          const records = db.attendance.filter((a) => a.classId === c.id && a.date === dateKey);
-          const summary = ATTENDANCE_STATUSES
-            .map((st) => ({ st, n: records.filter((r) => r.status === st).length }))
-            .filter((x) => x.n > 0)
-            .map((x) => `${x.n} ${x.st}`)
-            .join(" · ");
+          const status = attendanceStatusForClassDate(db.attendance, c.id, dateKey);
           const canAct = classification.available && students.length > 0 && !blockedForDate;
           return (
             <Card key={c.id} className="p-4 flex flex-col">
@@ -720,19 +722,16 @@ function TeacherAttendancePage() {
                 <h3 className="font-semibold text-slate-700 flex items-center gap-1.5">{c.grade}{c.section}<Badge tone="sky">Head Teacher</Badge></h3>
                 <Badge tone="slate">{students.length} student{students.length === 1 ? "" : "s"}</Badge>
               </div>
-              <p className="text-xs text-slate-500 mb-3 flex-1">
-                {!classification.available ? "Attendance unavailable for this date." : students.length === 0 ? "No students in this class." : summary || "Not taken"}
-              </p>
-              <div className="flex gap-2">
-                {canAct ? (
-                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "edit" })} className="flex-1 text-sm sm:text-xs text-white font-medium bg-brand-600 rounded-lg py-3 sm:py-1.5 hover:bg-brand-700">{records.length > 0 ? "View & Edit" : "Take Attendance"}</button>
-                ) : blockedForDate && classification.available && students.length > 0 && (
-                  <button onClick={() => setEditor({ classId: c.id, dateKey, mode: "view" })} className="flex-1 text-sm sm:text-xs text-slate-600 font-medium border border-slate-200 rounded-lg py-3 sm:py-1.5 hover:bg-slate-50">View</button>
-                )}
-                {students.length > 0 && (
+              <ClassAttendanceStatus
+                status={status}
+                unavailable={!classification.available}
+                noStudents={students.length === 0}
+                canEdit={canAct}
+                onOpen={(mode) => setEditor({ classId: c.id, dateKey, mode })}
+                extra={students.length > 0 && (
                   <button onClick={() => setRegisterFor(c.id)} className="inline-flex items-center justify-center gap-1.5 text-sm sm:text-xs text-slate-600 sm:text-slate-500 font-medium border border-slate-200 rounded-lg px-3.5 sm:px-2.5 py-3 sm:py-1.5 hover:bg-slate-50" title="Monthly Register" aria-label="Monthly Register"><CalendarDays size={14} /><span className="sm:hidden">Register</span></button>
                 )}
-              </div>
+              />
             </Card>
           );
         })}

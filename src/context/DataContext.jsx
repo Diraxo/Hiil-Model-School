@@ -753,6 +753,13 @@ function DataProvider({ children }) {
     setPeriodLogsRaw(logs);
     return rows;
   }, [attendanceService]);
+  // A tab left open (e.g. an Owner checking remotely) never saw attendance a teacher saved after it
+  // loaded. Re-read it whenever the tab becomes visible again so the status can't go stale.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") refetchAttendance().catch(() => {}); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refetchAttendance]);
   const refetchLeaveRequests = useCallback(async () => {
     const [rows, ownerLog] = await Promise.all([
       leaveService.list().catch(() => []),
