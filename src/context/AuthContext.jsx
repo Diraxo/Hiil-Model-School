@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from "react";
 import { supabase, recoveryUrlState, scrubAuthParamsFromUrl } from "../lib/supabaseClient";
+import { getPushService } from "../services/pushService";
 import { useData } from "../context/DataContext";
 import { ROLES, ROLE_LABEL } from "../utils/constants";
 import { usePresenceHeartbeat } from "../utils/presence";
@@ -226,6 +227,9 @@ function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     setViewingAsId(null);
+    // Stop pushes for this device while the session still exists (the RPC needs it), so the next
+    // person to sign in here never receives this user's alerts.
+    await getPushService().unregisterForLogout();
     await supabase.auth.signOut();
   }, []);
 

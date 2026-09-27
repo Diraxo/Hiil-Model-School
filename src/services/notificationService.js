@@ -27,6 +27,8 @@ function mapNotification(row) {
     read: !!row.read,
     type: row.type,
     announcementId: row.announcement_id || null,
+    // Who caused it -- stamped server-side from auth.uid() (never client-supplied); null for system events.
+    actorId: row.actor_user_id || null,
     // PAYMENT rows carry a real payments FK; PAYROLL rows can't (notifications.payment_id is FK'd
     // to payments, and a payroll_payments id would violate it) -- notify_salary_paid puts the
     // payslip id in navigation.payrollPaymentId instead. Surface it as `paymentId` so the

@@ -24,6 +24,8 @@ import { useData } from "../context/DataContext";
 import { useToast } from "../context/ToastContext";
 import { useAuth } from "../context/AuthContext";
 import { notificationPageKey } from "../utils/notifications";
+import { PushOptInBanner } from "../components/PushOptIn";
+import { listenForServiceWorkerMessages, getPendingNotification, subscribePendingNotification } from "../utils/pushNavigation";
 import { canViewStudentPayments } from "../utils/studentPermissions";
 import { canViewPayroll } from "../utils/payrollPermissions";
 import { LoginScreen, RegisterScreen } from "../pages/auth/AuthPages";
@@ -196,6 +198,18 @@ function AppShell() {
   // doesn't have it.
   useEffect(() => { setPage("dashboard"); }, [auth.currentUser.id]);
 
+  // Push notifications. While the app is open the service worker skips the OS banner and posts here
+  // instead (the list itself refreshes through Supabase Realtime -- no polling): show a toast. A tapped
+  // notification (cold start via ?n=, or a message from the worker) opens the Notifications page, which
+  // resolves the id against this user's own rows. It waits until a forced password change is done.
+  const pushToast = useToast();
+  useEffect(() => listenForServiceWorkerMessages({ onPush: (m) => pushToast(m.body || "You have a new notification", "info") }), []);
+  useEffect(() => {
+    const go = (id) => { if (id && !needsPasswordChange) setPage("notifications"); };
+    go(getPendingNotification());
+    return subscribePendingNotification(go);
+  }, [needsPasswordChange]);
+
   // Opening a section clears its own badge immediately — Messages and Announcements already have
   // their own finer-grained per-item read tracking (see markNotificationsForPageRead), and
   // Notifications has its own "mark all as read" control, so none of those three are bulk-cleared
@@ -269,6 +283,7 @@ function AppShell() {
         </header>
 
         <main className="flex-1 p-4 sm:p-6 max-w-[1400px] w-full mx-auto">
+          <PushOptInBanner />
           <PageRouter role={role} page={page} setPage={setPage} />
         </main>
       </div>

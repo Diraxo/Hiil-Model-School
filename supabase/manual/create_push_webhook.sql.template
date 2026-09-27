@@ -1,0 +1,19 @@
+-- NOT a migration (it embeds the shared secret). Already applied to production on 2026-09-27; kept as a record / for rebuilding.
+-- <SECRET> = the value of the PUSH_WEBHOOK_SECRET Edge Function secret.
+create extension if not exists pg_net with schema extensions;
+create or replace function public.push_fanout_notify() returns trigger
+language plpgsql security definer set search_path = public, extensions as $fn$
+begin
+  perform net.http_post(
+    url := 'https://qdasxuwewtbzjbhiulja.supabase.co/functions/v1/push-fanout',
+    body := jsonb_build_object('type','INSERT','schema','public','table','notifications','record',jsonb_build_object('id', new.id)),
+    headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret','<SECRET>'),
+    timeout_milliseconds := 5000);
+  return new;
+exception when others then
+  return new; -- a push problem must never block or roll back the notification itself
+end $fn$;
+revoke all on function public.push_fanout_notify() from public, anon, authenticated;
+drop trigger if exists push_fanout_on_notification_insert on public.notifications;
+create trigger push_fanout_on_notification_insert after insert on public.notifications
+  for each row execute function public.push_fanout_notify();

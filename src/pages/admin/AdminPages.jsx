@@ -55,6 +55,8 @@ import { DocumentViewerModal } from "../../components/DocumentViewer";
 import { ExamEvidenceStrip } from "../../components/ResultEvidence";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
+import { PushStatusCard } from "../../components/PushOptIn";
+import { getPendingNotification, clearPendingNotification, subscribePendingNotification } from "../../utils/pushNavigation";
 
 
 function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
@@ -6992,6 +6994,30 @@ function NotificationsPage({ onOpen }) {
     if (n.navigation && onOpen) onOpen(n.navigation);
   }
 
+  // A tapped push notification carries only its id. Resolve it against THIS user's own RLS-scoped rows
+  // (refetching once if it isn't loaded yet); an id that isn't theirs / no longer exists is reported and
+  // dropped, so an old notification can never open anything the current session may not see.
+  const toast = useToast();
+  const [pendingId, setPendingId] = useState(getPendingNotification());
+  useEffect(() => subscribePendingNotification(setPendingId), []);
+  const refetchedFor = useRef(null);
+  useEffect(() => {
+    if (!pendingId) return;
+    const target = mine.find((n) => n.id === pendingId);
+    if (target) { clearPendingNotification(); setPendingId(null); openNotification(target); return; }
+    if (refetchedFor.current === pendingId) return;
+    refetchedFor.current = pendingId;
+    Promise.resolve(data.refetchNotifications && data.refetchNotifications()).catch(() => {}).then(() => {
+      // If the refetch brought it in, the effect above re-runs and opens it; otherwise it is unavailable.
+      setTimeout(() => {
+        if (getPendingNotification() === pendingId) {
+          clearPendingNotification(); setPendingId(null);
+          toast("That notification is no longer available.", "info");
+        }
+      }, 1500);
+    });
+  }, [pendingId, mine.length]);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -6999,15 +7025,22 @@ function NotificationsPage({ onOpen }) {
         {unread > 0 && <GhostButton icon={Check} onClick={() => data.markAllNotificationsRead(auth.currentUser.id)}>Mark all as read</GhostButton>}
       </div>
       <p className="text-sm text-slate-400 mb-4">{unread} unread notification{unread !== 1 ? "s" : ""}.</p>
+      <PushStatusCard />
       {mine.length === 0 ? <EmptyState icon={Bell} title="No notifications yet" description="You're all caught up. Updates will appear here." /> : (
         <Card className="divide-y divide-slate-100">
           {mine.map((n) => {
             const Icon = typeIcon[n.type] || Bell;
             const hint = navHintFor(n);
+            // The person behind it (server-stamped actor), resolved from the directory the user is
+            // already entitled to read. Payments/payroll never surface a staff identity here.
+            const actor = n.actorId && n.type !== "PAYMENT" && n.type !== "PAYROLL" ? data.getUser(n.actorId) : null;
             return (
               <button key={n.id} onClick={() => openNotification(n)} className={`w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-slate-50 ${!n.read ? "bg-brand-50/40" : ""}`}>
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${!n.read ? "bg-brand-100 text-brand-600" : "bg-slate-100 text-slate-400"}`}><Icon size={15} /></div>
+                {actor
+                  ? <Avatar name={actor.name} photo={actor.photo} size={32} />
+                  : <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${!n.read ? "bg-brand-100 text-brand-600" : "bg-slate-100 text-slate-400"}`}><Icon size={15} /></div>}
                 <div className="flex-1 min-w-0">
+                  {actor && <p className="text-[11px] font-medium text-slate-500">{actor.name}</p>}
                   <p className={`text-sm ${!n.read ? "font-semibold text-slate-800" : "text-slate-600"}`}>{n.title}</p>
                   <p className="text-xs text-slate-400 mt-0.5">{n.message}</p>
                   {n.image && <img src={n.image} alt="Payment details" className="mt-2 w-32 h-32 object-cover rounded-lg border border-slate-200" />}
