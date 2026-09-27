@@ -13,3 +13,6 @@ test-artifacts
 firebase-service-account*.json
 supabase/.env
 supabase/functions/.env
+.vercel
+
+.vercel
