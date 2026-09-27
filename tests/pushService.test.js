@@ -223,3 +223,44 @@ describe("refresh / logout / disable / re-enable", () => {
     expect((await svc.enable("u")).ok).toBe(true);
   });
 });
+
+// docs/PUSH_NOTIFICATIONS.md "Phase 2/8": a generic "couldn't connect" toast is not enough to tell a real
+// device failure apart from another. These diagnostics are the only way to see WHY, so they must actually
+// fire, and must never carry the one secret this whole feature exists to protect: the FCM token itself.
+describe("diagnostics (safe, non-secret)", () => {
+  it("never logs the raw FCM token, only its length", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const rawToken = "fcm-token-1".padEnd(64, "x");
+    const { svc } = make({ standalone: true, getTokenImpl: async () => rawToken });
+    await svc.enable("user-1");
+    const lines = info.mock.calls.map((c) => c.join(" "));
+    expect(lines.some((l) => l.includes("fcm-token") && l.includes("len=64"))).toBe(true);
+    expect(lines.some((l) => l.includes(rawToken))).toBe(false);
+    info.mockRestore();
+  });
+
+  it("logs a sanitized reason (not a generic swallow) for each step that can fail", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const sw = make({ registerImpl: async () => { throw new Error("scope mismatch"); } });
+    await sw.svc.enable("u");
+    expect(info.mock.calls.map((c) => c.join(" ")).some((l) => l.includes("service-worker") && l.includes("scope mismatch"))).toBe(true);
+    info.mockClear();
+
+    const tk = make({ getTokenImpl: async () => { throw new Error("messaging/permission-blocked"); } });
+    await tk.svc.enable("u");
+    expect(info.mock.calls.map((c) => c.join(" ")).some((l) => l.includes("fcm-token") && l.includes("messaging/permission-blocked"))).toBe(true);
+    info.mockClear();
+
+    const be = make({ rpcImpl: async () => ({ error: { message: "row-level security" } }) });
+    await be.svc.enable("u");
+    expect(info.mock.calls.map((c) => c.join(" ")).some((l) => l.includes("register-device") && l.includes("row-level security"))).toBe(true);
+    info.mockRestore();
+  });
+
+  it("never breaks enable() when logging itself throws", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => { throw new Error("console blocked"); });
+    const { svc } = make({ standalone: true });
+    await expect(svc.enable("u")).resolves.toEqual({ ok: true });
+    info.mockRestore();
+  });
+});

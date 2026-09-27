@@ -29,6 +29,18 @@ function randomId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Safe production diagnostics for the enable/refresh path (never a token, never a secret -- see
+// docs/PUSH_NOTIFICATIONS.md "Phase 2"). A generic toast ("couldn't connect") is not enough to debug a
+// real device; these console lines let a real failure be told apart from another without ever printing
+// the FCM token, an RPC/service-role credential, or the VAPID/service-account key.
+function diag(step, detail) {
+  try { console.info("[push]", step, detail === undefined ? "" : detail); } catch { /* logging must never break push */ }
+}
+function safeErr(e) {
+  const m = e?.message ?? e;
+  return typeof m === "string" ? m.slice(0, 200) : String(m).slice(0, 200);
+}
+
 async function loadFirebaseMessaging() {
   const [{ initializeApp, getApps, getApp }, messaging] = await Promise.all([
     import("firebase/app"),
@@ -94,6 +106,7 @@ export function createPushService(deps = {}) {
   async function registerServiceWorker() {
     const reg = await nav.serviceWorker.register(PUSH_SW_URL, { scope: PUSH_SW_SCOPE });
     await nav.serviceWorker.ready;
+    diag("service-worker", `ok scope=${reg?.scope ?? PUSH_SW_SCOPE}`);
     return reg;
   }
 
@@ -102,6 +115,9 @@ export function createPushService(deps = {}) {
     const app = fb.getApps().length ? fb.getApp() : fb.initializeApp(firebaseConfig());
     const messaging = fb.getMessaging(app);
     const token = await fb.getToken(messaging, { vapidKey: vapidKey(), serviceWorkerRegistration: registration });
+    // Never the token itself -- only whether one came back and how long it is, enough to tell "FCM
+    // returned nothing" apart from "FCM returned something clearly wrong" without exposing it.
+    diag("fcm-token", token ? `ok len=${token.length}` : "empty");
     return { token, fb, messaging };
   }
 
@@ -112,7 +128,8 @@ export function createPushService(deps = {}) {
       p_device_id: deviceId(),
       p_app_version: appVersion(),
     });
-    if (error) throw error;
+    if (error) { diag("register-device", `failed ${safeErr(error)}`); throw error; }
+    diag("register-device", "ok");
   }
 
   /**
@@ -122,26 +139,31 @@ export function createPushService(deps = {}) {
    */
   async function enable(userId) {
     const s = support();
+    diag("enable:start", `permission=${NotificationApi?.permission} supported=${s.supported} reason=${s.reason ?? ""}`);
     if (!s.supported) return { ok: false, code: "unsupported", reason: s.reason };
     if (NotificationApi.permission === "denied") return { ok: false, code: "denied" };
 
     if (NotificationApi.permission !== "granted") {
       let result;
-      try { result = await NotificationApi.requestPermission(); } catch { return { ok: false, code: "denied" }; }
+      try { result = await NotificationApi.requestPermission(); } catch (e) { diag("permission", `prompt-threw ${safeErr(e)}`); return { ok: false, code: "denied" }; }
+      diag("permission", result);
       if (result === "denied") return { ok: false, code: "denied" };
       if (result !== "granted") return { ok: false, code: "dismissed" };
+    } else {
+      diag("permission", "already-granted");
     }
 
     let registration;
-    try { registration = await registerServiceWorker(); } catch { return { ok: false, code: "service-worker-failed" }; }
+    try { registration = await registerServiceWorker(); } catch (e) { diag("service-worker", `failed ${safeErr(e)}`); return { ok: false, code: "service-worker-failed" }; }
 
     let token;
-    try { ({ token } = await getFcmToken(registration)); } catch { return { ok: false, code: "token-failed" }; }
+    try { ({ token } = await getFcmToken(registration)); } catch (e) { diag("fcm-token", `failed ${safeErr(e)}`); return { ok: false, code: "token-failed" }; }
     if (!token) return { ok: false, code: "token-failed" };
 
     try { await sendToBackend(token); } catch { return { ok: false, code: "registration-failed" }; }
 
     if (userId) { write(optInKey(userId), "1"); remove(dismissKey(userId)); }
+    diag("enable:done", "ok");
     notify();
     return { ok: true };
   }
@@ -154,12 +176,14 @@ export function createPushService(deps = {}) {
   async function refresh(userId) {
     if (!userId || read(optInKey(userId)) !== "1") return { ok: false, code: "skipped" };
     if (!support().supported || NotificationApi.permission !== "granted") return { ok: false, code: "skipped" };
+    diag("refresh:start", "");
     let registration;
-    try { registration = await registerServiceWorker(); } catch { return { ok: false, code: "service-worker-failed" }; }
+    try { registration = await registerServiceWorker(); } catch (e) { diag("service-worker", `failed ${safeErr(e)}`); return { ok: false, code: "service-worker-failed" }; }
     let token;
-    try { ({ token } = await getFcmToken(registration)); } catch { return { ok: false, code: "token-failed" }; }
+    try { ({ token } = await getFcmToken(registration)); } catch (e) { diag("fcm-token", `failed ${safeErr(e)}`); return { ok: false, code: "token-failed" }; }
     if (!token) return { ok: false, code: "token-failed" };
     try { await sendToBackend(token); } catch { return { ok: false, code: "registration-failed" }; }
+    diag("refresh:done", "ok");
     return { ok: true };
   }
 

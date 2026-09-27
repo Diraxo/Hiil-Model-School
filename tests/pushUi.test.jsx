@@ -20,7 +20,7 @@ function makeService(over = {}) {
     isOptedIn: vi.fn(() => over.optedIn ?? false),
     isDismissed: vi.fn(() => over.dismissed ?? false),
     subscribe: vi.fn(() => () => {}),
-    refresh: vi.fn(async () => ({ ok: false, code: "skipped" })),
+    refresh: vi.fn(async () => over.refreshResult ?? { ok: false, code: "skipped" }),
     enable: vi.fn(async () => over.enableResult ?? { ok: true }),
     disable: vi.fn(async () => ({ ok: true })),
     dismiss: vi.fn(),
@@ -113,5 +113,41 @@ describe("PushStatusCard (Notifications page)", () => {
     r = render(<PushStatusCard />);
     expect(screen.getByText(/Add to Home Screen/)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  // State C (docs/PUSH_NOTIFICATIONS.md "Phase 3"): browser permission Allowed but the device failed to
+  // register must NEVER read as "blocked" or as plain "off" -- it needs its own explanation + Retry.
+  it("permission granted but registration fails: 'isn't connected yet' + Retry, never 'blocked' or silently 'off'", async () => {
+    makeService({ permission: "granted", enableResult: { ok: false, code: "token-failed" } });
+    const r = render(<PushStatusCard />);
+    // Before any attempt: permission granted, never registered -> the plain "off/Enable" copy is correct.
+    expect(screen.getByText(/off on this device/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Enable Notifications/ }));
+    await waitFor(() => expect(screen.getByText(/isn't connected yet/i)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /^Retry$/ })).toBeTruthy();
+    expect(screen.queryByText(/blocked/i)).toBeNull();
+    expect(screen.queryByText(/off on this device/)).toBeNull();
+    r.unmount();
+  });
+
+});
+
+describe("PushOptInBanner — registration-error (State C)", () => {
+  it("stays visible with Retry copy after a failed attempt, instead of disappearing or looking like 'off'", async () => {
+    makeService({ permission: "granted", enableResult: { ok: false, code: "token-failed" } });
+    render(<PushOptInBanner />);
+    fireEvent.click(screen.getByRole("button", { name: /Enable Notifications/ }));
+    await waitFor(() => expect(screen.getByText(/Finish turning on notifications/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /^Retry$/ })).toBeTruthy();
+  });
+
+  // Absolute Rule 24 ("do not report registration failure if the device was successfully registered" cuts
+  // both ways): a stale local "opted in" flag from an EARLIER success must not keep reading as "enabled"
+  // once the silent sign-in refresh (a real live registration attempt) actually fails.
+  it("a stale 'opted in' flag from an earlier success is overridden the moment a live refresh attempt fails", async () => {
+    makeService({ permission: "granted", optedIn: true, refreshResult: { ok: false, code: "token-failed" } });
+    render(<PushOptInBanner />); // autoRefresh: true -- runs the (failing) silent refresh on mount
+    await waitFor(() => expect(screen.getByText(/Finish turning on notifications/)).toBeTruthy());
+    expect(screen.queryByText(/Turn on notifications/)).toBeNull();
   });
 });
