@@ -18,6 +18,10 @@ import {
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor,
 } from "../utils/helpers";
+import {
+  ETHIOPIAN_MONTHS, getEthiopianToday, gregorianToEthiopian, ethiopianToGregorianKey,
+  daysInEthiopianMonth, formatEthiopianDateFromKey,
+} from "../utils/ethiopianCalendar";
 import { displayActorLabel } from "../utils/resultAudit";
 import { useToast } from "../context/ToastContext";
 import { useMutationGuard } from "../hooks/useMutationGuard";
@@ -426,11 +430,16 @@ function shiftDateKey(dateKey, deltaDays) {
   d.setDate(d.getDate() + deltaDays);
   return dateKeyOf(d);
 }
+// Ethiopian Calendar is the school's primary calendar (see AGENTS.md), so every date-key label
+// leads with the EC date and shows the Gregorian date secondarily. "Today"/"Yesterday" keep their
+// relative label but still surface the EC date, since that's what a reader compares against.
 function dateKeyLabel(dateKey) {
   const today = todayKeyStr();
-  if (dateKey === today) return "Today";
-  if (dateKey === shiftDateKey(today, -1)) return "Yesterday";
-  return new Date(dateKey + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const ec = `${formatEthiopianDateFromKey(dateKey)} E.C.`;
+  if (dateKey === today) return `Today · ${ec}`;
+  if (dateKey === shiftDateKey(today, -1)) return `Yesterday · ${ec}`;
+  const gc = new Date(dateKey + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  return `${ec} · ${gc} G.C.`;
 }
 // A professional calendar-style date navigator: back/forward one day at a time, or jump via the
 // native date picker. Never allows navigating past today by default.
@@ -647,7 +656,7 @@ function MonthCalendarGrid({ year, month, getDayInfo, onSelectDay, minDate, maxD
               type="button"
               disabled={!clickable}
               onClick={() => clickable && onSelectDay(dateKey)}
-              title={info ? `${dateKey} — ${info.status}${info.note ? `: ${info.note}` : ""}` : dateKey}
+              title={info ? `${formatEthiopianDateFromKey(dateKey)} E.C. — ${info.status}${info.note ? `: ${info.note}` : ""}` : `${formatEthiopianDateFromKey(dateKey)} E.C.`}
               className={`aspect-square rounded-lg text-[11px] font-medium flex items-center justify-center transition-colors ${outOfRange ? "text-slate-200" : info ? CALENDAR_CELL_TONE[tone] : "bg-slate-50 text-slate-400"} ${clickable ? "hover:ring-2 hover:ring-brand-300 cursor-pointer" : "cursor-default"}`}
             >
               {d}
@@ -709,6 +718,55 @@ function GhostButton({ children, onClick, icon: Icon, danger, loading = false, d
   );
 }
 
+// Drop-in replacement for `<input type="date" value={dateKey} onChange={...} />` wherever a
+// person actually ENTERS a date (not just views one) and Ethiopian Calendar must lead per
+// AGENTS.md — e.g. Enrollment date, Payment date. Same contract in both directions: `value` is a
+// plain Gregorian "YYYY-MM-DD" string, `onChange` receives one back — callers, RPCs, and DB
+// columns never see anything else, so nothing downstream changes. Internally toggles between an
+// Ethiopian entry mode (three <select>s built on ETHIOPIAN_MONTHS/daysInEthiopianMonth) and the
+// native Gregorian date input, defaulting to Ethiopian; both modes always show the resulting date
+// in both calendars so switching never hides the other one.
+function EthiopianDateField({ value, onChange }) {
+  const [mode, setMode] = useState("EC");
+  const ec = value ? gregorianToEthiopian(new Date(value + "T00:00:00")) : getEthiopianToday();
+  const dayCount = daysInEthiopianMonth(ec.year, ec.month);
+
+  function setEc(next) {
+    const year = next.year ?? ec.year;
+    const month = next.month ?? ec.month;
+    const day = Math.min(next.day ?? ec.day, daysInEthiopianMonth(year, month));
+    onChange(ethiopianToGregorianKey(year, month, day));
+  }
+
+  const gcLabel = value
+    ? new Date(value + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
+    : "";
+
+  return (
+    <div>
+      <div className="inline-flex rounded-lg border border-slate-200 p-0.5 mb-2 text-xs font-medium">
+        <button type="button" onClick={() => setMode("EC")} className={`px-2.5 py-1 rounded-md transition-colors ${mode === "EC" ? "bg-brand-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}>Ethiopian</button>
+        <button type="button" onClick={() => setMode("GC")} className={`px-2.5 py-1 rounded-md transition-colors ${mode === "GC" ? "bg-brand-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}>Gregorian</button>
+      </div>
+      {mode === "EC" ? (
+        <div className="grid grid-cols-3 gap-1.5">
+          <select value={ec.day} onChange={(e) => setEc({ day: Number(e.target.value) })} className={inputCls}>
+            {Array.from({ length: dayCount }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <select value={ec.month} onChange={(e) => setEc({ month: Number(e.target.value) })} className={inputCls}>
+            {ETHIOPIAN_MONTHS.map((m, i) => <option key={m.en} value={i + 1}>{m.en}</option>)}
+          </select>
+          <input type="number" value={ec.year} onChange={(e) => setEc({ year: Number(e.target.value) || ec.year })} className={inputCls} />
+        </div>
+      ) : (
+        <input type="date" value={value || ""} onChange={(e) => onChange(e.target.value)} className={inputCls} />
+      )}
+      <p className="mt-1.5 text-xs text-slate-500">
+        {formatEthiopianDateFromKey(value) || "—"} E.C. · {gcLabel || "—"} G.C.
+      </p>
+    </div>
+  );
+}
 
 export {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
@@ -716,5 +774,5 @@ export {
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, MonthCalendarGrid,
-  CheckboxList, FeeScheduleList,
+  CheckboxList, FeeScheduleList, EthiopianDateField,
 };

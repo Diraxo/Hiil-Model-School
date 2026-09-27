@@ -27,7 +27,7 @@ import {
   CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
-  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList,
+  ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList, EthiopianDateField,
 } from "../../components/ui";
 import { activeAssessments } from "../../utils/resultConfig";
 import { attendanceStatusForClassDate } from "../../utils/attendanceStatus";
@@ -46,6 +46,7 @@ import { RecentActivityFeed } from "../../components/RecentActivity";
 import { LeaveRequestHistoryList, RejectLeaveModal } from "../../components/leave";
 import { AnnouncementDetailModal, audienceLabel, AnnouncementAttachmentField, AnnouncementAttachmentChip, isAnnouncementLive, announcementReadStats } from "../../components/announcements";
 import { computeBreakRange, suggestSemester2, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel, defaultAcademicCalendar, addDays } from "../../utils/academicCalendar";
+import { ethiopianToGregorianKey, getEthiopianToday, gregorianToEthiopian, formatEthiopianDateFromKey, ethiopianMonthLabelForGcMonthKey } from "../../utils/ethiopianCalendar";
 import { downloadElementAsPdf } from "../../utils/pdf";
 import {
   canEditStudent, canDeleteStudent, canSuspendStudent, canChangeStudentPhoto,
@@ -58,6 +59,12 @@ import { useMutationGuard } from "../../hooks/useMutationGuard";
 import { PushStatusCard } from "../../components/PushOptIn";
 import { getPendingNotification, clearPendingNotification, subscribePendingNotification } from "../../utils/pushNavigation";
 
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — this single-line caption
+// leads with the EC date and keeps the Gregorian date visible parenthetically, for inline spots
+// (table cells, toasts, list rows) too tight for a stacked two-line date.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 
 function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
   const data = useData();
@@ -156,7 +163,7 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
                     <p className="font-medium text-slate-700">{a.title}</p>
                     <p className="text-slate-400">{a.audience.type === "ALL" ? "Whole school" : a.audience.type === "GRADE" ? a.audience.grade : `${a.audience.grade}${a.audience.section}`}</p>
                   </div>
-                  <Badge tone="sky">{fmtDate(a.examDate)}</Badge>
+                  <Badge tone="sky">{ecDate(a.examDate)}</Badge>
                 </div>
               ))}
             </div>
@@ -447,7 +454,7 @@ function StudentFormFields({ form, set, fieldCls, errors, mode, gradeOptions, on
           </select>
         </Field>
       )}
-      <Field label="Enrollment / start date"><input type="date" className={inputCls} value={form.admissionDate || ""} onChange={(e) => set("admissionDate", e.target.value)} /></Field>
+      <Field label="Enrollment / start date"><EthiopianDateField value={form.admissionDate || ""} onChange={(v) => set("admissionDate", v)} /></Field>
       {isEdit && (
         <Field label="Status"><select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value)}>{STUDENT_STATUS.map((st) => <option key={st}>{st}</option>)}</select></Field>
       )}
@@ -634,7 +641,7 @@ function MonthNav({ monthKey, onChange, maxMonthKey, minMonthKey }) {
   return (
     <div className="flex items-center gap-2 mb-3">
       <button type="button" aria-label="Previous month" disabled={atMin} onClick={() => !atMin && onChange(shiftMonthKey(monthKey, -1))} className={`flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${atMin ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
-      <span className="text-sm font-medium text-slate-700 min-w-[9.5rem] text-center">{monthLabel(monthKey)}</span>
+      <span className="text-sm font-medium text-slate-700 min-w-[9.5rem] text-center">{ethiopianMonthLabelForGcMonthKey(monthKey)} <span className="text-slate-400 text-xs">({monthLabel(monthKey)})</span></span>
       <button type="button" aria-label="Next month" disabled={atMax} onClick={() => !atMax && onChange(shiftMonthKey(monthKey, 1))} className={`flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${atMax ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
     </div>
   );
@@ -984,11 +991,11 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
           <Card className="p-5">
             <h3 className="text-sm font-semibold text-slate-700 mb-3">Class — {formatAcademicYearLabel(selectedYear)}</h3>
             <p className="text-sm text-slate-600">{displayGrade}{displaySection || ""}</p>
-            <p className="text-xs text-slate-400 mt-1">Enrolled {fmtDate(selectedEnrollment?.enrollmentDate || s.admissionDate)}</p>
+            <p className="text-xs text-slate-400 mt-1">Enrolled {ecDate(selectedEnrollment?.enrollmentDate || s.admissionDate)}</p>
             {displaySuspension && (
               <div className="mt-3 bg-red-50 border border-red-100 rounded-lg p-3 text-xs text-red-700">
                 <p className="font-semibold uppercase tracking-wide">Suspended</p>
-                <p className="text-red-600 mt-1">{fmtDate(displaySuspension.startDate)} – {fmtDate(displaySuspension.endDate)}</p>
+                <p className="text-red-600 mt-1">{ecDate(displaySuspension.startDate)} – {ecDate(displaySuspension.endDate)}</p>
                 <p className="font-medium mt-1.5">{displaySuspension.reason}</p>
                 {displaySuspension.notes && <p className="text-red-500 mt-1">{displaySuspension.notes}</p>}
               </div>
@@ -1058,7 +1065,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
           <MonthNav monthKey={attMonth} onChange={setAttMonth} maxMonthKey={todayKeyStr().slice(0, 7)} />
           {overlapsMonth(displaySuspension, attMonth) && (
             <div className="mb-3 bg-red-50 border border-red-100 rounded-lg px-3.5 py-2.5 text-xs text-red-700">
-              Suspended {fmtDate(displaySuspension.startDate)} – {fmtDate(displaySuspension.endDate)}: {displaySuspension.reason}. These days aren't counted as ordinary absences.
+              Suspended {ecDate(displaySuspension.startDate)} – {ecDate(displaySuspension.endDate)}: {displaySuspension.reason}. These days aren't counted as ordinary absences.
             </div>
           )}
           {(() => {
@@ -1227,7 +1234,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
             {installmentStatus.feeType && (
               <Card className="p-4">
                 <h3 className="text-sm font-semibold text-slate-700 mb-2">School Fee Schedule</h3>
-                <FeeScheduleList rows={installmentStatus.rows.map((r) => ({ label: `${installmentStatus.feeType.name} ${r.installment.label}`, dueLabel: `Due ${fmtDateLong(r.installment.dueDate)}`, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} />
+                <FeeScheduleList rows={installmentStatus.rows.map((r) => ({ label: `${installmentStatus.feeType.name} ${ethiopianMonthLabelForGcMonthKey((r.installment.periodMonth || r.installment.dueDate || "").slice(0, 7))} (${r.installment.label})`, dueLabel: `Due ${ecDate(r.installment.dueDate)}`, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} />
               </Card>
             )}
             <Card className="p-4">
@@ -3199,14 +3206,26 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
         <input className={inputCls} value={form.yearName} onChange={(e) => set("yearName", e.target.value)} placeholder="e.g. 2026/2027" />
       </Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
-        <Field label="Academic year start" required><input type="date" className={inputCls} value={form.yearStart} onChange={(e) => set("yearStart", e.target.value)} /></Field>
-        <Field label="Academic year end" required><input type="date" className={inputCls} value={form.yearEnd} onChange={(e) => set("yearEnd", e.target.value)} /></Field>
+        <Field label="Academic year start" required>
+          <input type="date" className={inputCls} value={form.yearStart} onChange={(e) => set("yearStart", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.yearStart, { withAmharic: true })} E.C.</p>
+        </Field>
+        <Field label="Academic year end" required>
+          <input type="date" className={inputCls} value={form.yearEnd} onChange={(e) => set("yearEnd", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.yearEnd, { withAmharic: true })} E.C.</p>
+        </Field>
       </div>
 
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-1">Semester 1</p>
       <div className="grid sm:grid-cols-2 gap-x-4">
-        <Field label="Semester 1 start date" required><input type="date" className={inputCls} value={form.sem1Start} onChange={(e) => set("sem1Start", e.target.value)} /></Field>
-        <Field label="Semester 1 end date" required><input type="date" className={inputCls} value={form.sem1End} onChange={(e) => set("sem1End", e.target.value)} /></Field>
+        <Field label="Semester 1 start date" required>
+          <input type="date" className={inputCls} value={form.sem1Start} onChange={(e) => set("sem1Start", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem1Start, { withAmharic: true })} E.C.</p>
+        </Field>
+        <Field label="Semester 1 end date" required>
+          <input type="date" className={inputCls} value={form.sem1End} onChange={(e) => set("sem1End", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem1End, { withAmharic: true })} E.C.</p>
+        </Field>
       </div>
 
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-1">Semester Break</p>
@@ -3222,8 +3241,12 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Semester 2 start date">
           <div className={`${inputCls} bg-slate-100 text-slate-500 flex items-center`}>{fmtDate(sem2Start)}</div>
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(sem2Start, { withAmharic: true })} E.C.</p>
         </Field>
-        <Field label="Semester 2 end date" required><input type="date" className={inputCls} value={form.sem2End} onChange={(e) => set("sem2End", e.target.value)} /></Field>
+        <Field label="Semester 2 end date" required>
+          <input type="date" className={inputCls} value={form.sem2End} onChange={(e) => set("sem2End", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem2End, { withAmharic: true })} E.C.</p>
+        </Field>
       </div>
       <p className="text-xs text-slate-400 -mt-2 mb-3">Calculated automatically — the day after the school break ends.</p>
 
@@ -3236,10 +3259,10 @@ function AcademicCalendarSettingsModal({ open, onClose }) {
       <Card className="p-4 mt-1 bg-slate-50">
         <p className="text-sm font-semibold text-slate-700 mb-2">{form.yearName || "Academic Calendar"} Preview</p>
         <div className="space-y-2 text-xs text-slate-600">
-          <div><span className="font-medium text-slate-700">Academic Year</span><br />{fmtDate(form.yearStart)} — {fmtDate(form.yearEnd)}</div>
-          <div><span className="font-medium text-slate-700">Semester 1</span><br />{fmtDate(form.sem1Start)} — {fmtDate(form.sem1End)}</div>
-          <div><span className="font-medium text-amber-700">School Break</span><br />{fmtDate(breakStart)} — {fmtDate(breakEnd)} ({form.breakDays} days)</div>
-          <div><span className="font-medium text-slate-700">Semester 2</span><br />{fmtDate(sem2Start)} — {fmtDate(form.sem2End)}</div>
+          <div><span className="font-medium text-slate-700">Academic Year</span><br />{formatEthiopianDateFromKey(form.yearStart)} — {formatEthiopianDateFromKey(form.yearEnd)} E.C.<br /><span className="text-slate-400">({fmtDate(form.yearStart)} — {fmtDate(form.yearEnd)} G.C.)</span></div>
+          <div><span className="font-medium text-slate-700">Semester 1</span><br />{formatEthiopianDateFromKey(form.sem1Start)} — {formatEthiopianDateFromKey(form.sem1End)} E.C.<br /><span className="text-slate-400">({fmtDate(form.sem1Start)} — {fmtDate(form.sem1End)} G.C.)</span></div>
+          <div><span className="font-medium text-amber-700">School Break</span><br />{formatEthiopianDateFromKey(breakStart)} — {formatEthiopianDateFromKey(breakEnd)} E.C. ({form.breakDays} days)<br /><span className="text-slate-400">({fmtDate(breakStart)} — {fmtDate(breakEnd)} G.C.)</span></div>
+          <div><span className="font-medium text-slate-700">Semester 2</span><br />{formatEthiopianDateFromKey(sem2Start)} — {formatEthiopianDateFromKey(form.sem2End)} E.C.<br /><span className="text-slate-400">({fmtDate(sem2Start)} — {fmtDate(form.sem2End)} G.C.)</span></div>
         </div>
       </Card>
 
@@ -3274,8 +3297,14 @@ function AcademicYearsPanel() {
   if (!canManageAcademicYears(auth.currentUser)) return null;
   const years = [...data.db.academicYears].sort((a, b) => (b.yearStart || "").localeCompare(a.yearStart || ""));
   const latest = years[0];
+  // Ethiopian Calendar is the primary/default calendar for academic years — the admin picks the
+  // E.C. year directly; the Gregorian start date is derived from it (Meskerem 1 of that E.C. year).
+  const suggestedEcYear = latest
+    ? gregorianToEthiopian(new Date(latest.yearStart + "T00:00:00")).year + 1
+    : getEthiopianToday().year;
   const [creating, setCreating] = useState(false);
-  const [newStart, setNewStart] = useState(latest ? addYearToDateStr(latest.yearStart) : new Date().toISOString().slice(0, 10));
+  const [ecYear, setEcYear] = useState(suggestedEcYear);
+  const newStart = ethiopianToGregorianKey(ecYear, 1, 1);
   const preview = defaultAcademicCalendar(new Date(newStart + "T00:00:00"));
   const { busy, run, isBusy } = useMutationGuard();
 
@@ -3299,8 +3328,21 @@ function AcademicYearsPanel() {
       </div>
       {creating && (
         <Card className="p-3.5 mb-3 bg-slate-50">
-          <Field label="New academic year starts"><input type="date" className={inputCls} value={newStart} onChange={(e) => setNewStart(e.target.value)} /></Field>
-          <p className="text-xs text-slate-500 mb-3">Will be created as <span className="font-medium text-slate-700">{formatAcademicYearLabel(preview)}</span>.</p>
+          <Field label="Academic Year (Ethiopian Calendar)">
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                className={inputCls}
+                style={{ maxWidth: 110 }}
+                value={ecYear}
+                onChange={(e) => setEcYear((prev) => (e.target.value === "" ? "" : parseInt(e.target.value, 10) || prev))}
+              />
+              <span className="text-sm text-slate-500 whitespace-nowrap">– {(Number(ecYear) || suggestedEcYear) + 1} E.C.</span>
+            </div>
+          </Field>
+          <p className="text-xs text-slate-500 mb-3">
+            Will be created as <span className="font-medium text-slate-700">{formatAcademicYearLabel(preview)}</span>, starting Meskerem 1, {ecYear || suggestedEcYear} E.C. ({fmtDate(newStart)} Gregorian).
+          </p>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setCreating(false)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
             <PrimaryButton icon={Check} onClick={create} loading={busy} loadingText="Creating…">Create Year</PrimaryButton>
@@ -3342,7 +3384,7 @@ function SchoolClosuresPanel() {
     run(async () => {
       const result = await data.createSchoolClosure({ date, reason: finalReason }, auth.currentUser.id);
       if (!result.ok) { toast(result.message, "error"); return; }
-      toast(`${fmtDate(date)} marked as a school closure.`, "success");
+      toast(`${ecDate(date)} marked as a school closure.`, "success");
       setCustomReason("");
     }, { key: `create-closure:${date}` });
   }
@@ -3377,7 +3419,7 @@ function SchoolClosuresPanel() {
             <div key={c.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
               <div className="flex items-center gap-2">
                 <School size={14} className="text-red-500 shrink-0" />
-                <span className="text-slate-600">{fmtDate(c.date)}</span>
+                <span className="text-slate-600">{ecDate(c.date)}</span>
                 <span className="text-xs text-slate-400">{c.reason}</span>
               </div>
               <button disabled={isBusy(`delete-closure:${c.id}`)} onClick={() => run(async () => { const r = await data.deleteSchoolClosure(c.id); if (r && !r.ok) toast(r.message || "Couldn't remove the closure.", "error"); }, { key: `delete-closure:${c.id}` })} className="text-slate-400 hover:text-red-500 p-1 disabled:opacity-40" title="Remove closure"><Trash2 size={14} /></button>
@@ -3727,7 +3769,7 @@ function OwnerLeavePanel() {
         <Card className="divide-y divide-slate-100">
           {log.map((r) => (
             <div key={r.id} className="px-4 py-2.5 text-sm">
-              <span className="text-slate-600">{r.status} · {fmtDate(r.fromDate)} – {fmtDate(r.toDate)}</span>
+              <span className="text-slate-600">{r.status} · {ecDate(r.fromDate)} – {ecDate(r.toDate)}</span>
               {r.note && <p className="text-xs text-slate-400 mt-0.5">{r.note}</p>}
             </div>
           ))}
@@ -3823,7 +3865,7 @@ function LeaveApprovalsPage() {
                 <div key={r.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-700">{subjectName(r)}</p>
-                    <p className="text-xs text-slate-400">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {fmtDate(r.fromDate)} – {fmtDate(r.toDate)} · requested by {requesterName(r)}</p>
+                    <p className="text-xs text-slate-400">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {ecDate(r.fromDate)} – {ecDate(r.toDate)} · requested by {requesterName(r)}</p>
                     {r.note && <p className="text-xs text-slate-400 mt-0.5">{r.note}</p>}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -3842,7 +3884,7 @@ function LeaveApprovalsPage() {
                 <div key={r.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
                   <div className="min-w-0">
                     <span className="text-slate-600">{subjectName(r)}</span>
-                    <span className="text-xs text-slate-400 ml-2">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {fmtDate(r.fromDate)} – {fmtDate(r.toDate)}</span>
+                    <span className="text-xs text-slate-400 ml-2">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {ecDate(r.fromDate)} – {ecDate(r.toDate)}</span>
                     {r.approvalStatus === "REJECTED" && r.rejectionReason && <p className="text-xs text-red-500 mt-0.5">Reason: {r.rejectionReason}</p>}
                   </div>
                   <Badge tone={r.approvalStatus === "APPROVED" ? "green" : "red"}>{r.approvalStatus === "APPROVED" ? "Approved" : "Rejected"}</Badge>
@@ -4052,7 +4094,7 @@ function ResultsPage({ role, focus, clearFocus }) {
             {[...db.examAnnouncements].sort((a, b) => b.createdAt - a.createdAt).slice(0, 4).map((a) => (
               <div key={a.id} className="flex items-center justify-between text-xs bg-slate-50 rounded-lg px-3 py-2">
                 <div><span className="font-medium text-slate-700">{a.title}</span><span className="text-slate-400"> — {a.audience.type === "ALL" ? "Whole school" : a.audience.type === "GRADE" ? a.audience.grade : `${a.audience.grade}${a.audience.section}`}</span></div>
-                <span className="text-slate-400">{fmtDate(a.examDate)}</span>
+                <span className="text-slate-400">{ecDate(a.examDate)}</span>
               </div>
             ))}
           </div>
@@ -5171,8 +5213,7 @@ function PaymentsPage({ onOpenStudent }) {
   // reads as "what's due as of <this month>" instead of the ambiguous "Outstanding Balance". The
   // underlying figure is unchanged (dueStatusForStudent's "due now" total, current month and
   // earlier only — never future months).
-  const [curMonthYear, curMonthNum] = todayKeyStr().slice(0, 7).split("-").map(Number);
-  const currentMonthName = new Date(curMonthYear, curMonthNum - 1, 1).toLocaleDateString("en-US", { month: "long" });
+  const currentMonthName = ethiopianMonthLabelForGcMonthKey(todayKeyStr().slice(0, 7)).replace(/\s\d+$/, "");
   const currentMonthOutstandingLabel = totalOutstanding > 0 ? `${currentMonthName} Outstanding` : `${currentMonthName} — Fully Paid`;
 
   function unpaidParentIds() {
@@ -5251,7 +5292,7 @@ function PaymentsPage({ onOpenStudent }) {
                 <tbody>
                   {monthly.rows.map((r) => (
                     <tr key={r.monthKey} className="border-b border-slate-50">
-                      <td className="py-1.5 pr-3 text-slate-600">{monthLabel(r.monthKey)}</td>
+                      <td className="py-1.5 pr-3 text-slate-600">{ethiopianMonthLabelForGcMonthKey(r.monthKey)} <span className="text-slate-400">({monthLabel(r.monthKey)})</span></td>
                       <td className="py-1.5 px-3 text-right text-slate-600">{formatMoney(r.school)}</td>
                       <td className="py-1.5 px-3 text-right text-slate-600">{formatMoney(r.bus)}</td>
                       <td className="py-1.5 px-3 text-right text-slate-600">{r.other ? formatMoney(r.other) : "—"}</td>
@@ -5433,7 +5474,7 @@ function PaymentsPage({ onOpenStudent }) {
                                   <div key={b.paymentId} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
                                     <div className="min-w-0">
                                       <p className="font-medium text-slate-700">Receipt #{b.receiptNo}</p>
-                                      <p className="text-xs text-slate-400">{fmtDate(b.date)}</p>
+                                      <p className="text-xs text-slate-400">{ecDate(b.date)}</p>
                                     </div>
                                     <div className="flex items-center gap-2.5 shrink-0">
                                       <p className="font-semibold text-slate-700">{formatMoney(b.total)}</p>
@@ -5477,7 +5518,7 @@ function PaymentsPage({ onOpenStudent }) {
         onClose={() => setReceiptPaymentId(null)}
         pages={receipt?.pages || []}
         receiptNo={receipt?.receiptNo || ""}
-        date={receipt ? fmtDate(receipt.date) : ""}
+        date={receipt ? ecDate(receipt.date) : ""}
         method={receipt?.method || ""}
         cashierName={receipt?.cashierName || ""}
         voidedLines={receipt?.voidedLines || []}
@@ -5654,9 +5695,10 @@ function monthAnchorsForYear(year) {
   const out = [];
   let y = sy, m = sm;
   while (y < ey || (y === ey && m <= em)) {
+    const anchor = `${y}-${String(m).padStart(2, "0")}-01`;
     out.push({
-      anchor: `${y}-${String(m).padStart(2, "0")}-01`,
-      label: new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" }),
+      anchor,
+      label: `${ethiopianMonthLabelForGcMonthKey(anchor.slice(0, 7))} (${new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" })})`,
     });
     m += 1;
     if (m > 12) { m = 1; y += 1; }
@@ -5782,7 +5824,7 @@ function RolloutFeeTypeModal({ open, onClose, feeType }) {
           )}
           {MonthGrid}
           {toRemove.length > 0 && (
-            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-1">Removing: {toRemove.map((a) => monthLabel(a.slice(0, 7))).join(", ")} — their obligations will be deleted (blocked if any payment/adjustment exists).</p>
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-1">Removing: {toRemove.map((a) => ethiopianMonthLabelForGcMonthKey(a.slice(0, 7))).join(", ")} — their obligations will be deleted (blocked if any payment/adjustment exists).</p>
           )}
           <div className="flex justify-end gap-2 pt-3">
             <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
@@ -5988,7 +6030,7 @@ function RecentPaymentsCard() {
         onClose={() => setReceiptPaymentId(null)}
         pages={receipt?.pages || []}
         receiptNo={receipt?.receiptNo || ""}
-        date={receipt ? fmtDate(receipt.date) : ""}
+        date={receipt ? ecDate(receipt.date) : ""}
         method={receipt?.method || ""}
         cashierName={receipt?.cashierName || ""}
         voidedLines={receipt?.voidedLines || []}
@@ -6265,7 +6307,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
               </select>
             </Field>
             <Field label="Payment received on">
-              <input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} />
+              <EthiopianDateField value={date} onChange={setDate} />
               <p className="text-[11px] text-slate-400 mt-1">The date the money was received — separate from the fee months selected above.</p>
             </Field>
           </div>
@@ -6278,7 +6320,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
           {previewTotal > 0 && (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 space-y-1">
               <p className="font-medium text-slate-700">Review this payment</p>
-              <p>Payment received on {fmtDateLong(date)} · {finalMethod || "no method"}</p>
+              <p>Payment received on {ecDate(date)} · {finalMethod || "no method"}</p>
               {selectedIds.map((sid) => {
                 const stu = candidates.find((c) => c.id === sid);
                 const draft = drafts[sid];
@@ -6311,7 +6353,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
         onClose={closeAll}
         pages={receiptPages || []}
         receiptNo={receiptNo}
-        date={fmtDate(date)}
+        date={ecDate(date)}
         method={finalMethod}
         cashierName={auth.currentUser.name}
         copyType="customer"
@@ -6480,7 +6522,7 @@ function monthlyFeeRows(installmentStatus, busSchedule) {
     const first = m.school[0] || m.bus[0];
     return {
       key: m.key,
-      label: m.key ? new Date(`${m.key}-01T00:00:00`).toLocaleDateString("en-US", { month: "long", year: "numeric" }) : (first?.installment?.label || first?.label || "Fee"),
+      label: m.key ? `${ethiopianMonthLabelForGcMonthKey(m.key)} (${monthLabel(m.key)})` : (first?.installment?.label || first?.label || "Fee"),
       dueDate: m.school[0]?.installment?.dueDate || m.bus[0]?.dueDate || null,
       school, bus,
       amountDue: sum.amountDue, paid: sum.paid, remaining: sum.remaining, status: statusOf(sum),
@@ -6552,7 +6594,7 @@ function MonthlyFeeStatement({ months }) {
                 <p className="text-sm font-semibold text-slate-800">{m.label}</p>
                 {m.current && <span className="shrink-0 text-[10px] font-medium text-brand-600 bg-brand-50 border border-brand-100 px-1.5 py-0.5 rounded-full">Current</span>}
               </div>
-              {m.dueDate && <p className="text-xs text-slate-400">Due {fmtDateLong(m.dueDate)}</p>}
+              {m.dueDate && <p className="text-xs text-slate-400">Due {ecDate(m.dueDate)}</p>}
             </div>
             <div className="text-right shrink-0">
               <p className="text-sm font-semibold text-slate-800">{formatMoney(m.amountDue)}</p>
@@ -6689,7 +6731,7 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
         onClose={() => setReceiptPaymentId(null)}
         pages={receipt?.pages || []}
         receiptNo={receipt?.receiptNo || ""}
-        date={receipt ? fmtDate(receipt.date) : ""}
+        date={receipt ? ecDate(receipt.date) : ""}
         method={receipt?.method || ""}
         cashierName={receipt?.cashierName || ""}
         voidedLines={receipt?.voidedLines || []}
@@ -6867,7 +6909,8 @@ function payslipFor(data, paymentId) {
   const row = summary?.rows.find((r) => r.month === payment.month);
   return {
     payment, staff,
-    monthLabel: monthLabel(payment.month),
+    monthLabel: `${ethiopianMonthLabelForGcMonthKey(payment.month)} (${monthLabel(payment.month)})`,
+    gcMonthLabel: monthLabel(payment.month),
     status: row?.status || "PARTIAL",
     remaining: row?.remaining ?? 0,
     recordedByName: data.userIdentity(payment.recordedBy).display,
@@ -6893,7 +6936,7 @@ function PayslipModal({ paymentId, onClose }) {
     if (!printRef.current || !slip) return;
     setDownloading(true);
     try {
-      await downloadElementAsPdf(printRef.current, `Payslip-${slip.staff.name}-${slip.monthLabel}.pdf`);
+      await downloadElementAsPdf(printRef.current, `Payslip-${slip.staff.name}-${slip.gcMonthLabel}.pdf`);
     } finally {
       setDownloading(false);
     }
@@ -6914,7 +6957,7 @@ function PayslipModal({ paymentId, onClose }) {
             <PayslipRow label="Employee" value={data.staffIdentity(slip.staff).display} />
             <PayslipRow label="Position" value={slip.staff.position} />
             <PayslipRow label="Pay Period" value={slip.monthLabel} />
-            <PayslipRow label="Payment Date" value={fmtDate(slip.payment.date)} />
+            <PayslipRow label="Payment Date" value={ecDate(slip.payment.date)} />
             <PayslipRow label="Payment Method" value={slip.payment.method} />
             {slip.payment.allowances > 0 && <PayslipRow label="Allowances" value={formatMoney(slip.payment.allowances)} />}
             {slip.payment.deductions > 0 && <PayslipRow label="Deductions" value={`-${formatMoney(slip.payment.deductions)}`} />}
@@ -7059,7 +7102,7 @@ function NotificationsPage({ onOpen }) {
         onClose={() => setReceiptPaymentId(null)}
         pages={receipt?.pages || []}
         receiptNo={receipt?.receiptNo || ""}
-        date={receipt ? fmtDate(receipt.date) : ""}
+        date={receipt ? ecDate(receipt.date) : ""}
         method={receipt?.method || ""}
         cashierName={receipt?.cashierName || ""}
         voidedLines={receipt?.voidedLines || []}

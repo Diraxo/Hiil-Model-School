@@ -19,6 +19,13 @@ import {
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor,
 } from "../../utils/helpers";
+import { formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date, keep
+// the Gregorian date visible alongside it.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, NoSchoolTodayBanner,
@@ -120,7 +127,7 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
           <div className="flex items-center gap-2 text-red-700 font-semibold text-sm mb-2"><ShieldAlert size={18} /> {data.studentFullName(child)} is currently suspended</div>
           {child.suspension && (
             <>
-              <p className="text-sm text-red-700">{fmtDate(child.suspension.startDate)} – {fmtDate(child.suspension.endDate)}</p>
+              <p className="text-sm text-red-700">{ecDate(child.suspension.startDate)} – {ecDate(child.suspension.endDate)}</p>
               <p className="text-sm text-red-600 mt-2">{child.suspension.reason}</p>
               {child.suspension.notes && <p className="text-xs text-red-500 mt-1">{child.suspension.notes}</p>}
             </>
@@ -168,7 +175,7 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
                 <div>
                   <p className="text-sm font-semibold text-amber-800">Upcoming Exam: {a.title}</p>
                   <p className="text-xs text-amber-700 mt-0.5">{a.message}</p>
-                  <p className="text-xs text-amber-600 mt-1 font-medium">{fmtDate(a.examDate)} ({new Date(a.examDate).toLocaleDateString("en-GB", { weekday: "long" })})</p>
+                  <p className="text-xs text-amber-600 mt-1 font-medium">{ecDate(a.examDate)} ({new Date(a.examDate).toLocaleDateString("en-GB", { weekday: "long" })})</p>
                 </div>
               </div>
             </Card>
@@ -200,7 +207,7 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
               <School size={16} className="shrink-0 mt-0.5 text-slate-400" />
               <div className="text-xs">
                 <p className="font-semibold text-slate-700">{todayInfo.label}</p>
-                <p className="text-slate-400 mt-0.5">{new Date(todayKey + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" })}, {fmtDate(todayKey)}</p>
+                <p className="text-slate-400 mt-0.5">{new Date(todayKey + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" })}, {ecDate(todayKey)}</p>
                 {todayInfo.message && <p className="text-slate-400 mt-0.5">{todayInfo.message}</p>}
               </div>
             </div>
@@ -367,7 +374,7 @@ function ParentAttendancePage({ activeChildId, setActiveChildId, focus, clearFoc
       {att.length === 0 ? <EmptyState title="No attendance recorded" /> : (
         <Card className="divide-y divide-slate-100">
           {att.map((a) => (
-            <div key={a.id} className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-slate-600">{fmtDate(a.date)}</span><Badge tone={statusTone(a.status)}>{a.status}</Badge></div>
+            <div key={a.id} className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-slate-600">{ecDate(a.date)}</span><Badge tone={statusTone(a.status)}>{a.status}</Badge></div>
           ))}
         </Card>
       )}

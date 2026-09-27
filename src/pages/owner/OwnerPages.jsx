@@ -10,10 +10,20 @@ import {
   STAFF_SHIFT_PERIOD_LABEL, staffGroupLabel,
 } from "../../utils/constants";
 import { generatePassword, copyText, timeAgo, fmtDate, fullName, monthLabel } from "../../utils/helpers";
+import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
 import {
   inputCls, Badge, Avatar, Modal, ConfirmDialog, EmptyState, Field, Card, StatCard,
   Toolbar, SearchInput, PrimaryButton, GhostButton, PaymentStatusBadge, MonthCalendarGrid, statusTone, todayKeyStr, NoSchoolTodayBanner,
 } from "../../components/ui";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC salary-
+// period label, keep the existing Gregorian `monthLabel` visible alongside it.
+function ecMonthLabel(monthKey) {
+  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
+}
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import { DocumentViewerModal, inferFileType } from "../../components/DocumentViewer";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
 import { RecentActivityFeed } from "../../components/RecentActivity";
@@ -625,7 +635,7 @@ function EmployeeAttendanceCard({ staff }) {
         <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5"><ClipboardEdit size={15} /> Attendance</h3>
         <div className="flex items-center gap-2">
           <button disabled={!canGoPrevMonth()} onClick={() => shiftMonth(-1)} className={`p-1.5 rounded-lg border ${!canGoPrevMonth() ? "border-slate-100 text-slate-300" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={15} /></button>
-          <span className="text-sm font-medium text-slate-600 w-32 text-center">{monthLabel(monthKey)}</span>
+          <span className="text-sm font-medium text-slate-600 w-56 text-center">{ecMonthLabel(monthKey)}</span>
           <button disabled={!canGoNextMonth()} onClick={() => shiftMonth(1)} className={`p-1.5 rounded-lg border ${!canGoNextMonth() ? "border-slate-100 text-slate-300" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={15} /></button>
         </div>
       </div>
@@ -635,7 +645,7 @@ function EmployeeAttendanceCard({ staff }) {
       </div>
       <MonthCalendarGrid year={viewYear} month={viewMonth} getDayInfo={getDayInfo} onSelectDay={setDayDetail} minDate={staff.employmentDate} maxDate={todayKeyStr()} />
       {dayDetail && (
-        <Modal open={!!dayDetail} onClose={() => setDayDetail(null)} title={fmtDate(dayDetail)}>
+        <Modal open={!!dayDetail} onClose={() => setDayDetail(null)} title={ecDate(dayDetail)}>
           {dayRecords.length === 0 ? <p className="text-sm text-slate-400">No attendance record for this day.</p> : (
             <div className="space-y-2">
               {dayRecords.map((r) => (
@@ -695,8 +705,8 @@ function StaffProfilePage({ staffId, onBack }) {
               <p className="text-sm text-slate-400">{staff.phone || "No phone on file"}{staff.employeeNumber ? ` · ${staff.employeeNumber}` : ""}</p>
               <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                 <Badge tone={staff.status === "ACTIVE" ? "green" : "slate"}>{staff.status}</Badge>
-                {staff.employmentStatus === "ENDED" && <Badge tone="red">Employment Ended {fmtDate(staff.employmentEndDate)}</Badge>}
-                <span className="text-xs text-slate-400">Started {fmtDate(staff.employmentDate)}{canPayroll ? ` · ${formatMoney(staff.salary)}/mo` : ""}</span>
+                {staff.employmentStatus === "ENDED" && <Badge tone="red">Employment Ended {ecDate(staff.employmentEndDate)}</Badge>}
+                <span className="text-xs text-slate-400">Started {ecDate(staff.employmentDate)}{canPayroll ? ` · ${formatMoney(staff.salary)}/mo` : ""}</span>
               </div>
               {canPayroll && (
                 <p className="text-xs mt-1.5">
@@ -788,11 +798,11 @@ function PayrollHistoryTable({ staff, onPay }) {
         <tbody>
           {[...summary.rows].reverse().map((r) => (
             <tr key={r.month} className="border-t border-slate-100">
-              <td className="px-3 py-2 text-slate-700">{monthLabel(r.month)}</td>
+              <td className="px-3 py-2 text-slate-700">{ecMonthLabel(r.month)}</td>
               <td className="px-3 py-2 text-slate-600">{formatMoney(r.paidThisMonth)}</td>
               <td className="px-3 py-2 text-slate-600">{r.remaining > 0 ? formatMoney(r.remaining) : "—"}</td>
               <td className="px-3 py-2"><PaymentStatusBadge status={r.status} /></td>
-              <td className="px-3 py-2 text-slate-400">{r.payment ? `${fmtDate(r.payment.date)} · ${r.payment.method}` : "—"}</td>
+              <td className="px-3 py-2 text-slate-400">{r.payment ? `${ecDate(r.payment.date)} · ${r.payment.method}` : "—"}</td>
               <td className="px-3 py-2">{onPay && r.status !== "PAID" && <GhostButton onClick={() => onPay(r.month)}>Pay</GhostButton>}</td>
             </tr>
           ))}
@@ -829,7 +839,7 @@ function StaffPayrollModal({ staff, onClose }) {
           </div>
           <div className="flex items-center gap-2">
             <Badge tone={staff.status === "ACTIVE" ? "green" : "slate"}>{staff.status}</Badge>
-            {staff.employmentStatus === "ENDED" && <Badge tone="red">Employment ended {fmtDate(staff.employmentEndDate)}</Badge>}
+            {staff.employmentStatus === "ENDED" && <Badge tone="red">Employment ended {ecDate(staff.employmentEndDate)}</Badge>}
             {canRecordAdvance(auth.realUser) && <GhostButton icon={Banknote} onClick={() => setAdvanceOpen(true)}>Give Advance</GhostButton>}
           </div>
         </div>
@@ -840,7 +850,7 @@ function StaffPayrollModal({ staff, onClose }) {
           </div>
         )}
         <div className={`grid ${advanceGiven > 0 ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3`}>
-          <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Start date</p><p className="text-sm font-semibold text-slate-800">{fmtDate(staff.employmentDate)}</p></div>
+          <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Start date</p><p className="text-sm font-semibold text-slate-800">{ecDate(staff.employmentDate)}</p></div>
           <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Monthly salary</p><p className="text-sm font-semibold text-slate-800">{formatMoney(staff.salary)}</p></div>
           {advanceGiven > 0 && <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">Advances</p><p className="text-sm font-semibold text-indigo-600">{formatMoney(advanceGiven)}</p></div>}
         </div>
@@ -915,12 +925,12 @@ function RecordPayrollModal({ staff, month, onClose }) {
         allowances: Number(form.allowances) || 0, deductions: Number(form.deductions) || 0,
       }, auth.realUser.id);
       if (!result.success) { setError(result.error); return; }
-      toast(`${staff.name}'s salary for ${monthLabel(month)} recorded.`, "success");
+      toast(`${staff.name}'s salary for ${ecMonthLabel(month)} recorded.`, "success");
       onClose();
     }, { key: opKey });
   }
   return (
-    <Modal open={!!month} onClose={onClose} title={`Pay ${staff?.name} — ${monthLabel(month)}`}>
+    <Modal open={!!month} onClose={onClose} title={`Pay ${staff?.name} — ${ecMonthLabel(month)}`}>
       <div className="grid grid-cols-2 gap-x-2">
         <Field label="Allowances (optional)"><input type="number" className={inputCls} value={form.allowances} onChange={(e) => setBreakdown({ allowances: e.target.value })} /></Field>
         <Field label="Deductions (optional)"><input type="number" className={inputCls} value={form.deductions} onChange={(e) => setBreakdown({ deductions: e.target.value })} /></Field>
@@ -935,7 +945,10 @@ function RecordPayrollModal({ staff, month, onClose }) {
       </div>
       <Field label="Amount to Pay (Birr)" required><input type="number" max={cashCap} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
       <Field label="Payment method"><select className={inputCls} value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>{activeMethods.map((m) => <option key={m.id}>{m.name}</option>)}</select></Field>
-      <Field label="Date"><input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></Field>
+      <Field label="Date">
+        <input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+        {form.date && <p className="text-[11px] text-slate-400 mt-1">{formatEthiopianDateFromKey(form.date)} E.C.</p>}
+      </Field>
       <Field label="Note"><input className={inputCls} value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></Field>
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
       <div className="flex justify-end gap-2 pt-3">
@@ -980,17 +993,20 @@ function RecordAdvanceModal({ staff, onClose }) {
     <Modal open={!!staff} onClose={onClose} title={`Give Advance — ${staff.name}`}>
       <Field label="Salary period this advance is for" required>
         <select className={inputCls} value={form.payrollMonth} onChange={(e) => { setForm((f) => ({ ...f, payrollMonth: e.target.value })); setError(""); }}>
-          {monthOptions.map((mk) => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
-          {!monthOptions.includes(form.payrollMonth) && <option value={form.payrollMonth}>{monthLabel(form.payrollMonth)}</option>}
+          {monthOptions.map((mk) => <option key={mk} value={mk}>{ecMonthLabel(mk)}</option>)}
+          {!monthOptions.includes(form.payrollMonth) && <option value={form.payrollMonth}>{ecMonthLabel(form.payrollMonth)}</option>}
         </select>
       </Field>
       <div className="bg-slate-50 rounded-lg p-3 mb-3 space-y-1 text-sm">
         <div className="flex justify-between"><span className="text-slate-400">Monthly Salary</span><span className="text-slate-700 font-medium">{formatMoney(staff.salary)}</span></div>
-        <div className="flex justify-between"><span className="text-slate-400">Still unpaid for {monthLabel(form.payrollMonth)}</span><span className="text-indigo-600 font-semibold">{formatMoney(maxAdvance)}</span></div>
+        <div className="flex justify-between"><span className="text-slate-400">Still unpaid for {ecMonthLabel(form.payrollMonth)}</span><span className="text-indigo-600 font-semibold">{formatMoney(maxAdvance)}</span></div>
       </div>
       <Field label="Amount (Birr)" required><input type="number" max={maxAdvance} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
-      {amountNum > 0 && <p className="text-xs text-slate-400 -mt-2 mb-3">Remaining for {monthLabel(form.payrollMonth)} after this advance: <span className="font-medium text-slate-600">{formatMoney(remainingAfter)}</span></p>}
-      <Field label="Date paid"><input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></Field>
+      {amountNum > 0 && <p className="text-xs text-slate-400 -mt-2 mb-3">Remaining for {ecMonthLabel(form.payrollMonth)} after this advance: <span className="font-medium text-slate-600">{formatMoney(remainingAfter)}</span></p>}
+      <Field label="Date paid">
+        <input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+        {form.date && <p className="text-[11px] text-slate-400 mt-1">{formatEthiopianDateFromKey(form.date)} E.C.</p>}
+      </Field>
       <Field label="Note"><input className={inputCls} value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></Field>
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
       <div className="flex justify-end gap-2 pt-3">
@@ -1016,10 +1032,10 @@ export function AdvanceHistoryList({ staff }) {
           <div key={a.id} className="border border-slate-200 rounded-lg p-3 text-sm">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
-                <p className="text-slate-700 font-medium">{formatMoney(a.amount)} <span className="text-slate-400 font-normal">paid {fmtDate(a.date)}</span></p>
+                <p className="text-slate-700 font-medium">{formatMoney(a.amount)} <span className="text-slate-400 font-normal">paid {ecDate(a.date)}</span></p>
                 {a.note && <p className="text-xs text-slate-400 mt-0.5">{a.note}</p>}
               </div>
-              <Badge tone="indigo">Applied to {monthLabel(a.appliedMonth)}</Badge>
+              <Badge tone="indigo">Applied to {ecMonthLabel(a.appliedMonth)}</Badge>
             </div>
           </div>
         ))}

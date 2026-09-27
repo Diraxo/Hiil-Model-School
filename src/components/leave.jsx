@@ -5,7 +5,14 @@
 import React, { useState } from "react";
 import { Card, Badge, EmptyState, Field, Modal, inputCls } from "./ui";
 import { fmtDate, leaveDurationLabel } from "../utils/helpers";
+import { formatEthiopianDateFromKey } from "../utils/ethiopianCalendar";
 import { useMutationGuard } from "../hooks/useMutationGuard";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date, keep
+// the Gregorian date visible alongside it.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 
 function LeaveRequestHistoryList({ requests }) {
   if (requests.length === 0) return <EmptyState title="No leave requests yet" />;
@@ -14,7 +21,7 @@ function LeaveRequestHistoryList({ requests }) {
       {requests.map((r) => (
         <div key={r.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
           <div>
-            <span className="text-slate-600">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {fmtDate(r.fromDate)} – {fmtDate(r.toDate)}</span>
+            <span className="text-slate-600">{r.status} · {leaveDurationLabel(r.fromDate, r.toDate)} · {ecDate(r.fromDate)} – {ecDate(r.toDate)}</span>
             {r.note && <p className="text-xs text-slate-400 mt-0.5">{r.note}</p>}
             {r.approvalStatus === "REJECTED" && r.rejectionReason && <p className="text-xs text-red-500 mt-0.5">Reason: {r.rejectionReason}</p>}
           </div>

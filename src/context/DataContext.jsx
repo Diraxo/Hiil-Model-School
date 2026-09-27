@@ -11,6 +11,16 @@ import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule,
   leaveDurationLabel, joinWithAnd, monthLabel,
 } from "../utils/helpers";
+import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../utils/ethiopianCalendar";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC period/date,
+// keep the Gregorian equivalent alongside it in generated notification/activity text.
+function ecMonthLabel(monthKey) {
+  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
+}
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import {
   studentIdentity as computeStudentIdentity, staffIdentity as computeStaffIdentity,
   userIdentity as computeUserIdentity, leaveSubjectIdentity as computeLeaveSubjectIdentity,
@@ -309,10 +319,14 @@ function describeAllocation(dbLike, allocation) {
   const schedule = installment && dbLike.feeSchedules.find((s) => s.id === installment.feeScheduleId);
   const feeType = schedule && dbLike.feeTypes.find((f) => f.id === schedule.feeTypeId);
   if (!feeType || !installment) return "Fee";
+  // Ethiopian Calendar is primary (AGENTS.md): lead with the EC month, keep the installment's
+  // stored Gregorian month label (baked at generation time) visible alongside it.
+  const monthKey = (installment.periodMonth || installment.dueDate || "").slice(0, 7);
+  const label = monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${installment.label})` : installment.label;
   // TRANSPORT keeps the old " – <month>" separator (not a space) — AdminPages.jsx's
   // groupLinesByStudent parses this exact format to pull just the covered month out for the
   // receipt's dedicated Bus Fee line.
-  return feeType.category === "TRANSPORT" ? `${feeType.name} – ${installment.label}` : `${feeType.name} ${installment.label}`;
+  return feeType.category === "TRANSPORT" ? `${feeType.name} – ${label}` : `${feeType.name} ${label}`;
 }
 function describePaymentAllocations(dbLike, payment) {
   const labels = dbLike.paymentAllocations.filter((a) => a.paymentId === payment.id).map((a) => describeAllocation(dbLike, a));
@@ -1456,7 +1470,13 @@ function DataProvider({ children }) {
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
       return {
         feeType: feeTypeYearView(db, feeType, yearId),
-        rows: rows.map((r) => ({ installmentId: r.installment.id, label: r.installment.label, dueDate: r.installment.dueDate, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId })),
+        rows: rows.map((r) => {
+          // Ethiopian Calendar is primary (AGENTS.md): lead with the EC month, keep the
+          // installment's stored Gregorian month label (baked at generation time) alongside it.
+          const monthKey = (r.installment.periodMonth || r.installment.dueDate || "").slice(0, 7);
+          const label = monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${r.installment.label})` : r.installment.label;
+          return { installmentId: r.installment.id, label, dueDate: r.installment.dueDate, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId };
+        }),
         currentIndex,
       };
     }
@@ -1474,7 +1494,12 @@ function DataProvider({ children }) {
       const feeType = busFeeTypeForStudent(student, yearId);
       if (!feeType) return { feeType: null, rows: [], currentIndex: -1 };
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
-      const busRows = rows.map((r) => ({ index: r.installment.sequenceIndex, installmentId: r.installment.id, label: r.installment.label, dueDate: r.installment.dueDate, instMonth: r.instMonth, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId }));
+      const busRows = rows.map((r) => {
+        // Ethiopian Calendar is primary (AGENTS.md): lead with the EC month, keep the stored
+        // Gregorian month label alongside it.
+        const label = r.instMonth ? `${ethiopianMonthLabelForGcMonthKey(r.instMonth)} (${r.installment.label})` : r.installment.label;
+        return { index: r.installment.sequenceIndex, installmentId: r.installment.id, label, dueDate: r.installment.dueDate, instMonth: r.instMonth, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId };
+      });
       return { feeType: feeTypeYearView(db, feeType, yearId), rows: busRows, currentIndex };
     }
     // Per-fee-type "what's actually due as of today" — only counts installments up through the
@@ -4368,7 +4393,7 @@ function DataProvider({ children }) {
           });
           await refetchPayrollPayments();
           await logActivityFeed(
-            `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${monthLabel(month)}).`,
+            `${formatMoney(payment.amount)} salary payment recorded for ${s.name} (${ecMonthLabel(month)}).`,
             { page: "payroll", staffId: s.id }, "FINANCE",
           );
           // Phase 6: notify_salary_paid notifies the staff member (server-derived from staff.user_id,
@@ -4377,7 +4402,7 @@ function DataProvider({ children }) {
             await dispatchNotify("notify_salary_paid", {
               p_payroll_payment_id: payment.id,
               p_title: "Salary Paid",
-              p_message: `Your ${monthLabel(month)} salary of ${formatMoney(payment.amount)} has been recorded as paid. Tap to view your payslip.`,
+              p_message: `Your ${ecMonthLabel(month)} salary of ${formatMoney(payment.amount)} has been recorded as paid. Tap to view your payslip.`,
             });
           }
           return { success: true, payment };
@@ -4404,7 +4429,7 @@ function DataProvider({ children }) {
           const advance = await payrollService.recordAdvance({ staffId, amount: cash, date, note, payrollMonth: month, recordedBy });
           await refetchSalaryAdvances();
           await logActivityFeed(
-            `${formatMoney(advance.amount)} salary advance recorded for ${s.name} (${monthLabel(advance.payrollMonth)}).`,
+            `${formatMoney(advance.amount)} salary advance recorded for ${s.name} (${ecMonthLabel(advance.payrollMonth)}).`,
             { page: "payroll", staffId: s.id }, "FINANCE",
           );
           // Phase 6: notify_salary_advance notifies the staff member (server-derived, idempotent
@@ -4413,7 +4438,7 @@ function DataProvider({ children }) {
             await dispatchNotify("notify_salary_advance", {
               p_salary_advance_id: advance.id,
               p_title: "Salary Advance Recorded",
-              p_message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${fmtDate(date)}, applied to your ${monthLabel(advance.payrollMonth)} salary.`,
+              p_message: `An advance of ${formatMoney(advance.amount)} was recorded for you on ${ecDate(date)}, applied to your ${ecMonthLabel(advance.payrollMonth)} salary.`,
             });
           }
           return { success: true, advance };

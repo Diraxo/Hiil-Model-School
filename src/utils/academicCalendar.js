@@ -3,8 +3,14 @@
 // which sort/compare correctly with plain string comparison, so most of this module never
 // touches the Date object at all.
 import { academicYearStart } from "./constants";
-import { ecYearLabelForGcStart } from "./ethiopianCalendar";
+import { ecYearLabelForGcStart, formatEthiopianDateFromKey } from "./ethiopianCalendar";
 import { fmtDateLong } from "./helpers";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date in
+// attendance-availability messages, keep the Gregorian date visible alongside it.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDateLong(dateKey)} G.C.)` : "";
+}
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function toKey(date) { return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; }
@@ -137,11 +143,11 @@ function classifyAttendanceDate(dateKey, cal, todayKey, closuresByDate) {
     return { phase: "future", available: false, label: PHASE_LABEL.future, message: "This date hasn't happened yet." };
   }
   if (dateKey < cal.yearStart) {
-    const countdown = dateKey === todayKey ? ` ${daysLabel(daysBetween(todayKey, cal.yearStart))} until school starts on ${cal.yearStart}.` : "";
+    const countdown = dateKey === todayKey ? ` ${daysLabel(daysBetween(todayKey, cal.yearStart))} until school starts on ${ecDate(cal.yearStart)}.` : "";
     return { phase: "before_year", available: false, label: PHASE_LABEL.before_year, message: `The ${cal.yearName || "current"} academic year hasn't started yet.${countdown}` };
   }
   if (dateKey < cal.sem1Start) {
-    return { phase: "before_semester1", available: false, label: PHASE_LABEL.before_semester1, message: `Attendance hasn't started yet. The first attendance date is ${cal.sem1Start}.` };
+    return { phase: "before_semester1", available: false, label: PHASE_LABEL.before_semester1, message: `Attendance hasn't started yet. The first attendance date is ${ecDate(cal.sem1Start)}.` };
   }
   if (isWeekendDate(dateKey)) {
     const label = dateKey === todayKey ? PHASE_LABEL.closedToday : PHASE_LABEL.weekend;
@@ -153,7 +159,7 @@ function classifyAttendanceDate(dateKey, cal, todayKey, closuresByDate) {
   const { breakStart, breakEnd } = computeBreakRange(cal);
   if (dateKey <= breakEnd) {
     const countdown = dateKey === todayKey ? ` ${daysLabel(daysBetween(todayKey, breakEnd))} remaining.` : "";
-    return { phase: "break", available: false, label: PHASE_LABEL.break, message: `School activities are paused for the break (${breakStart} – ${breakEnd}).${countdown}` };
+    return { phase: "break", available: false, label: PHASE_LABEL.break, message: `School activities are paused for the break (${ecDate(breakStart)} – ${ecDate(breakEnd)}).${countdown}` };
   }
   if (dateKey < cal.sem2Start) {
     return { phase: "gap", available: false, label: PHASE_LABEL.gap, message: "This date isn't part of Semester 1 or Semester 2." };

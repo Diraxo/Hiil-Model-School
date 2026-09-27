@@ -18,6 +18,16 @@ import {
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, monthLabel, sortStudentsByFullName,
 } from "../../utils/helpers";
+import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC salary-
+// period label / date, keep the Gregorian equivalent visible alongside it.
+function ecMonthLabel(monthKey) {
+  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
+}
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, NoSchoolTodayBanner,
@@ -833,8 +843,8 @@ function MySalaryPage() {
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center shrink-0"><Banknote size={15} /></div>
                 <div>
-                  <p className="text-sm font-medium text-slate-700">{monthLabel(r.month)}</p>
-                  <p className="text-xs text-slate-400">{r.payment ? `${fmtDate(r.payment.date)} · ${r.payment.method}` : r.advanceThisMonth > 0 ? `Advance of ${formatMoney(r.advanceThisMonth)} applied` : "No payment recorded yet"}</p>
+                  <p className="text-sm font-medium text-slate-700">{ecMonthLabel(r.month)}</p>
+                  <p className="text-xs text-slate-400">{r.payment ? `${ecDate(r.payment.date)} · ${r.payment.method}` : r.advanceThisMonth > 0 ? `Advance of ${formatMoney(r.advanceThisMonth)} applied` : "No payment recorded yet"}</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
