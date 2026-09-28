@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildBody, buildMessage, clickUrl, classifyFcmResponse, errorCodeOf, isDeadTokenResponse, isFresh, parseServiceAccount,
-  parseWebhook, safeEqual, sendWithRetry, GENERIC_BODY, PUSH_TITLE, TITLE_BY_TYPE, titleFor,
+  parseWebhook, safeEqual, sendWithRetry, GENERIC_BODY, PUSH_TITLE,
 } from "../supabase/functions/push-fanout/logic.ts";
 import { notificationPageKey } from "../src/utils/notifications";
 import { notificationIdFromSearch } from "../src/utils/pushNavigation";
@@ -26,10 +26,8 @@ describe("notification text (privacy-safe, actor-aware)", () => {
     }
   });
   it("homework and messages may name the person but never expose content", () => {
-    expect(buildBody(row({ type: "HOMEWORK", title: "Q3 fractions" }), "Mr Ali")).toBe("Mr Ali posted new homework.");
-    expect(buildBody(row({ type: "HOMEWORK" }), null)).toBe(GENERIC_BODY.HOMEWORK);
-    expect(buildBody(row({ type: "MESSAGE", title: "secret text" }), "Mr Ali")).toBe("Mr Ali sent you a message.");
-    expect(buildBody(row({ type: "MESSAGE" }), null)).toBe(GENERIC_BODY.MESSAGE);
+    expect(buildBody(row({ type: "HOMEWORK", title: "Q3 fractions" }), "Mr Ali")).toBe("Mr Ali: New homework update");
+    expect(buildBody(row({ type: "MESSAGE", title: "secret text" }), "Mr Ali")).toBe("New message from Mr Ali");
   });
   it("unknown types fall back safely; newlines and long headlines are neutralised", () => {
     expect(buildBody(row({ type: "SOMETHING_NEW" }), "X")).toBe("You have a new notification");
@@ -40,40 +38,21 @@ describe("notification text (privacy-safe, actor-aware)", () => {
   });
 });
 
-describe("notification titles (say WHAT happened; body carries the safe detail)", () => {
-  it("every type in GENERIC_BODY has a matching title, distinct from the generic app-identity fallback", () => {
-    for (const type of Object.keys(GENERIC_BODY)) {
-      expect(TITLE_BY_TYPE[type]).toBeTruthy();
-      expect(titleFor(type)).toBe(TITLE_BY_TYPE[type]);
-    }
-  });
-  it("unknown/missing types fall back to the app identity", () => {
-    expect(titleFor("SOMETHING_NEW")).toBe(PUSH_TITLE);
-    expect(titleFor(null)).toBe(PUSH_TITLE);
-    expect(titleFor(undefined)).toBe(PUSH_TITLE);
-  });
-});
-
 describe("FCM HTTP v1 message construction", () => {
-  it("web: DATA-ONLY (rendered by our worker), all values strings, per-type title, click url carries only the id", () => {
-    const { message } = buildMessage(row(), { token: "tok", platform: "web" }, "Amina Hassan", 7);
+  it("web: DATA-ONLY (rendered by our worker), all values strings, branded title, click url carries only the id", () => {
+    const { message } = buildMessage(row(), { token: "tok", platform: "web" }, "Amina Hassan");
     expect(message.token).toBe("tok");
     expect(message.notification).toBeUndefined();
-    expect(message.data).toMatchObject({ title: "New announcement", body: "Amina Hassan: Sports day", notificationId: ID, tag: ID, type: "ANNOUNCEMENT", url: `/?n=${ID}`, badge: "7" });
+    expect(message.data).toMatchObject({ title: PUSH_TITLE, body: "Amina Hassan: Sports day", notificationId: ID, tag: ID, type: "ANNOUNCEMENT", url: `/?n=${ID}` });
     for (const v of Object.values(message.data)) expect(typeof v).toBe("string");
     expect(JSON.parse(message.data.navigation)).toEqual({ page: "announcements" });
     expect(message.webpush.headers).toMatchObject({ TTL: "86400", Urgency: "high" });
     expect(JSON.stringify(message)).not.toMatch(/user_id|"u"/); // recipient id never leaves for Google
   });
-  it("web: badge defaults to \"0\" when no unread count is supplied", () => {
-    const { message } = buildMessage(row(), { token: "tok", platform: "web" }, null);
-    expect(message.data.badge).toBe("0");
-  });
-  it("android/ios keep a native notification block with the same safe text and per-type title", () => {
+  it("android/ios keep a native notification block with the same safe text", () => {
     const { message } = buildMessage(row({ type: "PAYMENT" }), { token: "t", platform: "android" }, "Finance");
-    expect(message.notification).toEqual({ title: TITLE_BY_TYPE.PAYMENT, body: GENERIC_BODY.PAYMENT });
+    expect(message.notification).toEqual({ title: PUSH_TITLE, body: GENERIC_BODY.PAYMENT });
     expect(message.android.notification.tag).toBe(ID);
-    expect(message.data.badge).toBeUndefined(); // badge only ever travels on the web data payload
   });
   it("click routing metadata for every event type (badge page + destination)", () => {
     const cases = { ANNOUNCEMENT: "announcements", ATTENDANCE: null, PAYMENT: "payments", RESULT: "exams", LEAVE: "leaveRequests", HOMEWORK: "homework" };

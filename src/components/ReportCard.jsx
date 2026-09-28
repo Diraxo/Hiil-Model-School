@@ -32,7 +32,7 @@ function ReportCardModal({ student, classId, onClose }) {
   // The card's academic year is the one on its own report-card record (so a historical card keeps
   // showing the year it was actually generated for), falling back to the current year only for a
   // not-yet-generated preview. Never derived from new Date()/the calendar year.
-  const reportYear = data.db.academicYears.find((y) => y.id === rc?.academicYearId) || data.db.workspaceYear;
+  const reportYear = data.db.academicYears.find((y) => y.id === rc?.academicYearId) || currentAcademicYear(data.db.academicYears);
   const academicYearLabel = reportYear ? (reportYear.gcLabel || reportYear.yearName || "") : "";
 
   const rows = required.map((subject) => {

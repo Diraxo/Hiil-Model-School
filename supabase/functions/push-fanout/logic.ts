@@ -19,40 +19,19 @@ export type DeviceRow = { id: string; token: string; platform: DevicePlatform };
 // user authenticates. Keyed by the notification_type enum (20260825181253_comms.sql).
 export const GENERIC_BODY: Record<string, string> = {
   ANNOUNCEMENT: "New announcement from the school",
-  PAYMENT: "A payment update is available.",
+  PAYMENT: "You have a payment update",
   HOMEWORK: "New homework update",
-  BEHAVIOR: "A behavior update is available.",
+  BEHAVIOR: "Important update about your child",
   MESSAGE: "You have a new message",
-  RESULT: "A results update is available.",
-  ATTENDANCE: "There is an attendance update for you.",
-  LEAVE: "Your leave request has been updated.",
+  RESULT: "New results are available",
+  ATTENDANCE: "Attendance update",
+  LEAVE: "Leave request update",
   EXAM: "New exam update",
-  SCHEDULE: "Your timetable has been updated.",
-  PAYROLL: "A payroll update is available.",
+  SCHEDULE: "Timetable update",
+  PAYROLL: "You have a payroll update",
 };
 export const FALLBACK_BODY = "You have a new notification";
 export const PUSH_TITLE = "Hiil Model School";
-
-// One title per notification type -- says WHAT happened; the body (below) says the specific,
-// privacy-safe detail. Falls back to the app identity (PUSH_TITLE) for any type not listed here.
-export const TITLE_BY_TYPE: Record<string, string> = {
-  ANNOUNCEMENT: "New announcement",
-  PAYMENT: "Payment update",
-  HOMEWORK: "New homework",
-  BEHAVIOR: "Behavior update",
-  MESSAGE: "New message",
-  RESULT: "Results update",
-  ATTENDANCE: "Attendance update",
-  LEAVE: "Leave update",
-  EXAM: "Exam update",
-  SCHEDULE: "Timetable update",
-  PAYROLL: "Payroll update",
-};
-
-export function titleFor(type: string | null | undefined): string {
-  const t = type ?? "";
-  return Object.prototype.hasOwnProperty.call(TITLE_BY_TYPE, t) ? TITLE_BY_TYPE[t] : PUSH_TITLE;
-}
 
 // Types where naming the person who caused it is useful and not sensitive. Payments, payroll,
 // attendance, behaviour, leave and results never carry a name on the lock screen.
@@ -66,8 +45,7 @@ export function buildBody(row: Pick<NotificationRow, "type" | "title">, actorNam
   const type = row.type ?? "";
   const generic = Object.prototype.hasOwnProperty.call(GENERIC_BODY, type) ? GENERIC_BODY[type] : FALLBACK_BODY;
   const who = ACTOR_TYPES.has(type) && actorName ? clean(actorName) : "";
-  if (type === "MESSAGE") return who ? `${who} sent you a message.` : generic;
-  if (type === "HOMEWORK") return who ? `${who} posted new homework.` : generic;
+  if (type === "MESSAGE") return who ? `New message from ${who}` : generic;
   if (type === "ANNOUNCEMENT") {
     // A school-wide announcement's headline is public by nature; everything else stays generic.
     const headline = row.title ? clean(row.title).slice(0, MAX_ANNOUNCEMENT_TITLE) : "";
@@ -88,19 +66,10 @@ export function clickUrl(notificationId: string): string {
  *                 click routing are ours, not the SDK's). All values are strings.
  *  android / ios  a `notification` block the OS renders itself (mobile app), same safe text.
  * `tag` = notification id: a redelivered push replaces the first one in the tray instead of stacking.
- * `unreadCount` (web only) is the recipient's CURRENT total unread count, read fresh at send time --
- * it becomes the installed PWA's app-icon badge (public/firebase-messaging-sw.js), so the badge is
- * always the authoritative Supabase count and never a per-push increment.
  */
-export function buildMessage(
-  row: NotificationRow,
-  device: Pick<DeviceRow, "token" | "platform">,
-  actorName?: string | null,
-  unreadCount?: number | null,
-) {
+export function buildMessage(row: NotificationRow, device: Pick<DeviceRow, "token" | "platform">, actorName?: string | null) {
   const page = (row.navigation as { page?: unknown } | null)?.page;
   const body = buildBody(row, actorName);
-  const title = titleFor(row.type);
   const data = {
     notificationId: row.id,
     type: row.type ?? "",
@@ -110,7 +79,7 @@ export function buildMessage(
     return {
       message: {
         token: device.token,
-        data: { ...data, title, body, url: clickUrl(row.id), tag: row.id, badge: String(unreadCount ?? 0) },
+        data: { ...data, title: PUSH_TITLE, body, url: clickUrl(row.id), tag: row.id },
         webpush: { headers: { TTL: "86400", Urgency: "high" } },
       },
     };
@@ -118,7 +87,7 @@ export function buildMessage(
   return {
     message: {
       token: device.token,
-      notification: { title, body },
+      notification: { title: PUSH_TITLE, body },
       data,
       android: { priority: "HIGH", ttl: "86400s", notification: { channel_id: "default", tag: row.id } },
     },

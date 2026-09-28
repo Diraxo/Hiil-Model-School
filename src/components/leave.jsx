@@ -5,8 +5,14 @@
 import React, { useState } from "react";
 import { Card, Badge, EmptyState, Field, Modal, inputCls } from "./ui";
 import { fmtDate, leaveDurationLabel } from "../utils/helpers";
-import { formatEthiopianDateFromKey, formatEthiopianDateWithGc as ecDate } from "../utils/ethiopianCalendar";
+import { formatEthiopianDateFromKey } from "../utils/ethiopianCalendar";
 import { useMutationGuard } from "../hooks/useMutationGuard";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date, keep
+// the Gregorian date visible alongside it.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 
 function LeaveRequestHistoryList({ requests }) {
   if (requests.length === 0) return <EmptyState title="No leave requests yet" />;

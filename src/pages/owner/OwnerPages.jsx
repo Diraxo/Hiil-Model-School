@@ -9,15 +9,21 @@ import {
   ROLES, ROLE_LABEL, STAFF_POSITIONS, formatMoney, ATTENDANCE_STATUSES,
   STAFF_SHIFT_PERIOD_LABEL, staffGroupLabel,
 } from "../../utils/constants";
-import { generatePassword, copyText, timeAgo, fmtDate, fullName } from "../../utils/helpers";
-import {
-  ethiopianMonthLabelWithGc as ecMonthLabel, formatEthiopianDateWithGc as ecDate,
-} from "../../utils/ethiopianCalendar";
+import { generatePassword, copyText, timeAgo, fmtDate, fullName, monthLabel } from "../../utils/helpers";
+import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
 import {
   inputCls, Badge, Avatar, Modal, ConfirmDialog, EmptyState, Field, Card, StatCard,
   Toolbar, SearchInput, PrimaryButton, GhostButton, PaymentStatusBadge, MonthCalendarGrid, statusTone, todayKeyStr, NoSchoolTodayBanner,
-  EthiopianDateField,
 } from "../../components/ui";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC salary-
+// period label, keep the existing Gregorian `monthLabel` visible alongside it.
+function ecMonthLabel(monthKey) {
+  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
+}
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import { DocumentViewerModal, inferFileType } from "../../components/DocumentViewer";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
 import { RecentActivityFeed } from "../../components/RecentActivity";
@@ -31,8 +37,7 @@ import {
 import { canRecordAdvance, canViewPayroll, canSetSalary, canEditDirectorFinancials } from "../../utils/payrollPermissions";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
-import { currentAcademicYear, formatAcademicYearLabel } from "../../utils/academicCalendar";
-import { AcademicYearTag } from "../../components/academicYear";
+import { currentAcademicYear } from "../../utils/academicCalendar";
 
 const STAFF_GROUPS = ["Directors", "Teachers", "Other Staff"];
 // Every screen that lists staff (Staff, Payroll, Staff Attendance) groups the same way — this is
@@ -61,21 +66,18 @@ function groupUsers(userList) {
 function OwnerDashboard({ setPage, onOpenActivity }) {
   const data = useData();
   const { db } = data;
-  // Everything below is for the WORKSPACE academic year (the header selector) — its roll, its collections,
-  // its payroll months, its expenses — never all-time.
-  const activeStudents = data.studentsInYear().filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "ARCHIVED");
-  const yearTotals = data.yearFinanceTotals();
+  const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "ARCHIVED");
   // "Active Staff" means currently employed, not "can log in right now" (Blocker 3) — a staff
   // member with a disabled account but ongoing employment still counts here.
   const activeStaffCount = db.staff.filter((s) => employmentActiveOn(s, todayKeyStr())).length;
-  const totalCollected = yearTotals.collected;
+  const totalCollected = db.payments.filter((p) => p.status !== "VOIDED").reduce((sum, p) => sum + p.amountTotal, 0);
   // Blocker 7: this is the true full-academic-year outstanding figure (every unpaid installment
   // for the whole year, including months not yet due) — see studentPaymentSummary/balanceFor in
   // DataContext. Labeled explicitly with the active academic year so it isn't mistaken for the
   // smaller "due now" figure the Fees & Payments page shows via dueStatusForStudent.
   const totalOutstanding = activeStudents.reduce((sum, s) => sum + data.studentPaymentSummary(s).totalOwed, 0);
-  const activeYear = db.workspaceYear;
-  const outstandingLabel = activeYear ? `Annual Outstanding — ${formatAcademicYearLabel(activeYear)} Academic Year` : "Annual Outstanding";
+  const activeYear = currentAcademicYear(db.academicYears);
+  const outstandingLabel = activeYear ? `Annual Outstanding — ${activeYear.gcLabel} Academic Year` : "Annual Outstanding";
   const payrollNetPay = db.staff.reduce((sum, s) => sum + (data.staffSalarySummary(s.id)?.outstanding || 0), 0);
   const thisMonthKey = new Date().toISOString().slice(0, 7);
   const expensesThisMonth = db.expenses.filter((e) => e.date?.slice(0, 7) === thisMonthKey).reduce((sum, e) => sum + e.totalAmount, 0);
@@ -84,7 +86,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
   // understate every payout. `payrollPayments.amount` is direct salary cash and `salaryAdvances`
   // is advance cash — non-overlapping (an advance is never also a payroll_payments row), so this
   // sum is the complete salary cash outflow with no double-counting.
-  const netPosition = totalCollected - yearTotals.payrollPaid - yearTotals.expenses;
+  const netPosition = totalCollected - db.payrollPayments.reduce((s, p) => s + p.amount, 0) - db.salaryAdvances.reduce((s, a) => s + a.amount, 0) - db.expenses.reduce((s, e) => s + e.totalAmount, 0);
   const todayInfo = data.classifySchoolDay(todayKeyStr());
 
   return (
@@ -92,7 +94,6 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
       <div>
         <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2"><Crown size={20} className="text-amber-500" /> School Dashboard</h1>
         <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — school-wide financial and operational position.</p>
-        <AcademicYearTag className="mt-1" />
       </div>
 
       <NoSchoolTodayBanner classification={todayInfo} />
@@ -118,7 +119,7 @@ function OwnerDashboard({ setPage, onOpenActivity }) {
           <h3 className="text-sm font-semibold text-slate-700 mb-4">Expenses</h3>
           <div className="grid sm:grid-cols-2 gap-3">
             <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">This month</p><p className="text-lg font-semibold text-slate-800">{formatMoney(expensesThisMonth)}</p></div>
-            <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">This academic year</p><p className="text-lg font-semibold text-slate-800">{formatMoney(yearTotals.expenses)}</p></div>
+            <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-400 mb-1">All time</p><p className="text-lg font-semibold text-slate-800">{formatMoney(db.expenses.reduce((s, e) => s + e.totalAmount, 0))}</p></div>
           </div>
           <button onClick={() => setPage("expenses")} className="mt-3 text-xs font-medium text-brand-600 hover:text-brand-700">View Expenses →</button>
         </Card>
@@ -945,7 +946,8 @@ function RecordPayrollModal({ staff, month, onClose }) {
       <Field label="Amount to Pay (Birr)" required><input type="number" max={cashCap} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
       <Field label="Payment method"><select className={inputCls} value={form.method} onChange={(e) => setForm((f) => ({ ...f, method: e.target.value }))}>{activeMethods.map((m) => <option key={m.id}>{m.name}</option>)}</select></Field>
       <Field label="Date">
-        <EthiopianDateField value={form.date} onChange={(v) => setForm((f) => ({ ...f, date: v }))} />
+        <input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+        {form.date && <p className="text-[11px] text-slate-400 mt-1">{formatEthiopianDateFromKey(form.date)} E.C.</p>}
       </Field>
       <Field label="Note"><input className={inputCls} value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></Field>
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
@@ -1002,7 +1004,8 @@ function RecordAdvanceModal({ staff, onClose }) {
       <Field label="Amount (Birr)" required><input type="number" max={maxAdvance} className={inputCls} value={form.amount} onChange={(e) => { setForm((f) => ({ ...f, amount: e.target.value })); setError(""); }} /></Field>
       {amountNum > 0 && <p className="text-xs text-slate-400 -mt-2 mb-3">Remaining for {ecMonthLabel(form.payrollMonth)} after this advance: <span className="font-medium text-slate-600">{formatMoney(remainingAfter)}</span></p>}
       <Field label="Date paid">
-        <EthiopianDateField value={form.date} onChange={(v) => setForm((f) => ({ ...f, date: v }))} />
+        <input type="date" className={inputCls} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+        {form.date && <p className="text-[11px] text-slate-400 mt-1">{formatEthiopianDateFromKey(form.date)} E.C.</p>}
       </Field>
       <Field label="Note"><input className={inputCls} value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></Field>
       {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
@@ -1073,7 +1076,6 @@ function PayrollPage({ onOpen }) {
   return (
     <div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Payroll</h1>
-      <AcademicYearTag className="mb-1" />
       <p className="text-sm text-slate-400 mb-4">Total net pay owed: <span className="font-semibold text-amber-600">{formatMoney(totalNetPay)}</span></p>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         {PAYROLL_STATUS_FILTERS.map((f) => (

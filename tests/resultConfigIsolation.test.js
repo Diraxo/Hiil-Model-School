@@ -74,15 +74,9 @@ describe("effectiveConfigFor — Add Image / save score agree with the gradebook
     expect(effectiveConfigFor({ id: "r1", configuration: null }, all, Y26, "S1", "Grade 10").id).toBe("c10x");
     expect(effectiveConfigFor({ id: "r1", configuration: undefined }, all, Y26, "S1", "Grade 10")).not.toBeNull();
   });
-  it("a RECORDED result pinned to an older structure keeps it", () => {
+  it("a result pinned to an older structure keeps it", () => {
     const old = cfg("old", Y26, "S1", "Grade 10", [comp("o", "Old", 100)], "CLOSED", 0);
-    const recorded = { id: "r1", configuration: old, publishStatus: "DRAFT", componentRows: [{ assessmentId: "o", score: 40 }] };
-    expect(effectiveConfigFor(recorded, all, Y26, "S1", "Grade 10").id).toBe("old");
-  });
-  it("an EMPTY draft pinned to an older structure holds nothing to preserve, so it follows the active structure", () => {
-    const old = cfg("old", Y26, "S1", "Grade 10", [comp("o", "Old", 100)], "CLOSED", 0);
-    expect(effectiveConfigFor({ id: "r1", configuration: old, publishStatus: "DRAFT", componentRows: [] }, all, Y26, "S1", "Grade 10").id).toBe("c10x");
-    expect(effectiveConfigFor({ id: "r1", configuration: old, publishStatus: "DRAFT", componentRows: [{ assessmentId: "o", score: null }] }, [], Y26, "S1", "Grade 10")).toBeNull();
+    expect(effectiveConfigFor({ id: "r1", configuration: old }, all, Y26, "S1", "Grade 10").id).toBe("old");
   });
   it("grades resolve independently; unconfigured grades are null", () => {
     expect(["Grade 9", "Grade 10", "Grade 11", "Grade 12"].map((g) => effectiveConfigFor(null, all, Y26, "S1", g)?.id ?? null)).toEqual(["c9x", "c10x", null, null]);

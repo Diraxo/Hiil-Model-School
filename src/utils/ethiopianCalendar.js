@@ -14,8 +14,6 @@
 // documented anchors: the Ethiopian Millennium (Meskerem 1, 2000 EC = 12 Sept 2007 GC), Meskerem
 // 1, 2018 EC = 11 Sept 2025 GC, and Ethiopian Christmas (Tahsas 29 = 7 Jan).
 
-import { fmtDate, fmtDateLong, monthLabel } from "./helpers";
-
 const ETHIOPIAN_MONTHS = [
   { en: "Meskerem", am: "መስከረም" },
   { en: "Tikimt", am: "ጥቅምት" },
@@ -112,21 +110,9 @@ function formatEthiopianDateFromKey(dateKey, opts) {
 }
 
 // The E.C. label for the school year that starts on `gcStartDate` (a Gregorian Date, typically
-// around September) — e.g. "2019-2020" for a school year starting September 2026.
-//
-// A school year that starts in early September (e.g. 1 Sept 2026) begins a few days BEFORE the
-// Ethiopian New Year (1 Meskerem = 11 Sept), i.e. still in Nehasse/Pagumen of the previous E.C.
-// year, yet it is the school year of the E.C. year that starts days later. So the label follows
-// the Ethiopian New Year nearest to the start date, not the E.C. year the start date falls in.
+// around September) — e.g. "2018-2019" for a school year starting September 2026.
 function ecYearLabelForGcStart(gcStartDate) {
-  const gy = gcStartDate.getFullYear();
-  let nearestGcYear = gy;
-  let nearestDistance = Infinity;
-  for (const candidate of [gy - 1, gy, gy + 1]) {
-    const distance = Math.abs(gcStartDate.getTime() - newYearInGregorianYear(candidate).getTime());
-    if (distance < nearestDistance) { nearestDistance = distance; nearestGcYear = candidate; }
-  }
-  const year = nearestGcYear - 7; // E.C. year that begins on that Gregorian year's Meskerem 1
+  const { year } = gregorianToEthiopian(gcStartDate);
   return `${year}-${year + 1}`;
 }
 
@@ -150,60 +136,6 @@ function ethiopianMonthLabelForGcMonthKey(monthKey, { withAmharic = false } = {}
   return `${ethiopianMonthName(month, { withAmharic })} ${year}`;
 }
 
-// An Ethiopian month is a billing/payroll period of a date range when the range covers at least HALF
-// of its 30 days. That makes Meskerem 1 -> Sene 30 exactly 10 periods, and stops a sloppy edge from
-// dragging in a neighbouring school year's month: a year that starts on 1 Sept (Nehasse 26 — five days
-// of the previous E.C. year) does NOT bill Nehasse, and one that ends on Hamle 1 does NOT bill Hamle.
-const MIN_MONTH_COVERAGE_DAYS = 15;
-
-function keyToDate(key) { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d); }
-function keyDaysBetween(a, b) { return Math.round((keyToDate(b) - keyToDate(a)) / 86400000); }
-
-// The Ethiopian months (1-12; never Pagumen) that the date range [startKey, endKey] covers, oldest
-// first: [{ ecYear, ecMonth, monthKey, anchor, spanStart, spanEnd, coveredDays }]. `anchor`
-// ("YYYY-MM-01") is the Gregorian civil month that carries the Ethiopian month's label under
-// ethiopianMonthLabelForGcMonthKey (the month holding its 16th day) — the key
-// fee_installments.period_month / payroll_payments.month / fee_schedules.billed_months use.
-// Mirrored in SQL by public.academic_year_billing_months (supabase migration 20260929000000).
-function ethiopianMonthsCoveredBy(startKey, endKey) {
-  if (!startKey || !endKey || startKey > endKey) return [];
-  const first = gregorianToEthiopian(keyToDate(startKey));
-  const last = gregorianToEthiopian(keyToDate(endKey));
-  const out = [];
-  let y = first.year, m = first.month;
-  while (y < last.year || (y === last.year && m <= last.month)) {
-    if (m <= 12) {
-      const spanStart = ethiopianToGregorianKey(y, m, 1), spanEnd = ethiopianToGregorianKey(y, m, 30);
-      const from = spanStart > startKey ? spanStart : startKey;
-      const to = spanEnd < endKey ? spanEnd : endKey;
-      const coveredDays = keyDaysBetween(from, to) + 1;
-      if (coveredDays >= MIN_MONTH_COVERAGE_DAYS) {
-        const mid = ethiopianToGregorian(y, m, 16);
-        const monthKey = `${mid.getFullYear()}-${pad2(mid.getMonth() + 1)}`;
-        out.push({ ecYear: y, ecMonth: m, monthKey, anchor: `${monthKey}-01`, spanStart, spanEnd, coveredDays });
-      }
-    }
-    m += 1;
-    if (m > 13) { m = 1; y += 1; }
-  }
-  return out;
-}
-
-// The school's standard dual-calendar date caption, EC-first: "Meskerem 12, 2018 E.C. (12
-// September 2026 G.C.)". Pass { long: true } for the full-month-name Gregorian variant (default
-// is the short "12 Sep 2026" form). Consolidates what used to be a near-identical private
-// `ecDate` helper copy-pasted across half a dozen page files.
-function formatEthiopianDateWithGc(dateKey, { long = false } = {}) {
-  if (!dateKey) return "";
-  return `${formatEthiopianDateFromKey(dateKey)} E.C. (${(long ? fmtDateLong : fmtDate)(dateKey)} G.C.)`;
-}
-
-// Dual-calendar month/period caption: "Meskerem 2018 (September 2026)". Consolidates the
-// previously copy-pasted private `ecMonthLabel` helper.
-function ethiopianMonthLabelWithGc(monthKey) {
-  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
-}
-
 export {
   ETHIOPIAN_MONTHS,
   isGregorianLeapYear,
@@ -220,8 +152,4 @@ export {
   ecYearLabelForGcStart,
   daysInEthiopianMonth,
   ethiopianMonthLabelForGcMonthKey,
-  ethiopianMonthsCoveredBy,
-  MIN_MONTH_COVERAGE_DAYS,
-  formatEthiopianDateWithGc,
-  ethiopianMonthLabelWithGc,
 };

@@ -15,13 +15,7 @@ import {
   ecYearLabelForGcStart,
   daysInEthiopianMonth,
   ethiopianMonthLabelForGcMonthKey,
-  formatEthiopianDateFromKey,
-  formatEthiopianDateWithGc,
-  ethiopianMonthLabelWithGc,
-  ethiopianToGregorianKey,
-  toDateKey,
 } from "../src/utils/ethiopianCalendar";
-import { fmtDate, fmtDateLong, monthLabel } from "../src/utils/helpers";
 
 describe("Ethiopian months", () => {
   it("has exactly 13 months, Meskerem through Pagumen", () => {
@@ -163,33 +157,11 @@ describe("formatEthiopianDate", () => {
 });
 
 describe("Academic year EC label", () => {
-  it("labels the 2026-2027 G.C. school year 2019-2020 E.C.", () => {
-    // 1 Sept 2026 is still Nehasse/Pagumen 2018 E.C., but the school year that starts then is the
-    // school year of the E.C. year beginning 11 Sept 2026 (Meskerem 1, 2019).
-    expect(ecYearLabelForGcStart(new Date(2026, 8, 1))).toBe("2019-2020");
-    // Starting on / after the New Year gives the same answer.
-    expect(ecYearLabelForGcStart(new Date(2026, 8, 11))).toBe("2019-2020");
+  it("derives the EC year label from a Gregorian school-year start date", () => {
+    // A school year starting 1 September 2026 (GC) falls in EC year 2019 (New Year is 11 Sept 2026).
+    expect(ecYearLabelForGcStart(new Date(2026, 8, 1))).toBe("2018-2019");
+    // A school year starting after the EC New Year (e.g. mid-September) falls in the new EC year.
     expect(ecYearLabelForGcStart(new Date(2026, 8, 15))).toBe("2019-2020");
-  });
-
-  it("agrees with the Meskerem 2019 month label used for September 2026", () => {
-    expect(ethiopianMonthLabelForGcMonthKey("2026-09")).toBe("Meskerem 2019");
-    const ecStartYear = Number(ecYearLabelForGcStart(new Date(2026, 8, 1)).split("-")[0]);
-    expect(ecStartYear).toBe(gregorianToEthiopian(new Date(2026, 8, 11)).year);
-  });
-
-  it("handles the Ethiopian New Year boundary (10/11 Sept 2026, 11/12 Sept 2027)", () => {
-    expect(gregorianToEthiopian(new Date(2026, 8, 10))).toMatchObject({ year: 2018, month: 13, day: 5 });
-    expect(gregorianToEthiopian(new Date(2026, 8, 11))).toMatchObject({ year: 2019, month: 1, day: 1 });
-    expect(ecYearLabelForGcStart(new Date(2026, 8, 10))).toBe("2019-2020");
-    // Gregorian leap year next year → 2027's New Year is 12 Sept.
-    expect(ecYearLabelForGcStart(new Date(2027, 8, 1))).toBe("2020-2021");
-    expect(ecYearLabelForGcStart(new Date(2027, 8, 12))).toBe("2020-2021");
-  });
-
-  it("keeps the previous school years correct (2025-2026 G.C. → 2018-2019 E.C.)", () => {
-    expect(ecYearLabelForGcStart(new Date(2025, 8, 1))).toBe("2018-2019");
-    expect(ecYearLabelForGcStart(new Date(2025, 8, 11))).toBe("2018-2019");
   });
 });
 
@@ -248,73 +220,5 @@ describe("ethiopianMonthLabelForGcMonthKey", () => {
   it("returns an empty string for a missing/invalid key", () => {
     expect(ethiopianMonthLabelForGcMonthKey("")).toBe("");
     expect(ethiopianMonthLabelForGcMonthKey(null)).toBe("");
-  });
-});
-
-describe("formatEthiopianDateWithGc / ethiopianMonthLabelWithGc (EC-first dual captions)", () => {
-  it("leads with the EC date and keeps the GC date secondary, in parentheses", () => {
-    // 2026-09-11 is Ethiopian New Year 2019 (2027 is not a Gregorian leap year -> Sept 11).
-    const s = formatEthiopianDateWithGc("2026-09-11");
-    expect(s.startsWith("Meskerem 1, 2019 E.C. (")).toBe(true);
-    expect(s).toBe(`Meskerem 1, 2019 E.C. (${fmtDate("2026-09-11")} G.C.)`);
-    expect(s.indexOf("E.C.")).toBeLessThan(s.indexOf("G.C."));
-  });
-
-  it("uses the same conversion engine as formatEthiopianDateFromKey (no separate implementation)", () => {
-    ["2026-09-27", "2027-09-12", "2028-01-01", "2026-09-10", "2027-09-06"].forEach((k) => {
-      expect(formatEthiopianDateWithGc(k)).toBe(`${formatEthiopianDateFromKey(k)} E.C. (${fmtDate(k)} G.C.)`);
-    });
-  });
-
-  it("handles the Pagumen / New Year boundary", () => {
-    // Pagumen 5, 2018 (non-leap) is 2026-09-10; the next day is Meskerem 1, 2019.
-    expect(formatEthiopianDateWithGc("2026-09-10").startsWith("Pagumen 5, 2018 E.C.")).toBe(true);
-    expect(formatEthiopianDateWithGc("2026-09-11").startsWith("Meskerem 1, 2019 E.C.")).toBe(true);
-    // Before a Gregorian leap year the New Year moves to Sept 12 (Pagumen has 6 days).
-    expect(formatEthiopianDateWithGc("2027-09-11").startsWith("Pagumen 6, 2019 E.C.")).toBe(true);
-    expect(formatEthiopianDateWithGc("2027-09-12").startsWith("Meskerem 1, 2020 E.C.")).toBe(true);
-  });
-
-  it("supports the long Gregorian form", () => {
-    expect(formatEthiopianDateWithGc("2026-09-27", { long: true })).toBe(`${formatEthiopianDateFromKey("2026-09-27")} E.C. (${fmtDateLong("2026-09-27")} G.C.)`);
-  });
-
-  it("returns an empty string for a missing date", () => {
-    expect(formatEthiopianDateWithGc("")).toBe("");
-    expect(formatEthiopianDateWithGc(null)).toBe("");
-    expect(formatEthiopianDateWithGc(undefined)).toBe("");
-  });
-
-  it("ethiopianMonthLabelWithGc leads with the EC month and keeps the GC month secondary", () => {
-    expect(ethiopianMonthLabelWithGc("2026-09")).toBe(`Meskerem 2019 (${monthLabel("2026-09")})`);
-    expect(ethiopianMonthLabelWithGc("2026-10")).toBe(`Tikimt 2019 (${monthLabel("2026-10")})`);
-    expect(ethiopianMonthLabelWithGc("2027-08")).toBe(`Nehasse 2019 (${monthLabel("2027-08")})`);
-    expect(ethiopianMonthLabelWithGc("")).toBe("");
-    expect(ethiopianMonthLabelWithGc(null)).toBe("");
-  });
-});
-
-describe("EC month coverage and boundary dates via formatEthiopianDateFromKey", () => {
-  it("renders representative dates for all 13 Ethiopian months", () => {
-    // Meskerem 1, 2019 = 2026-09-11; each following month starts 30 days later (Pagumen last).
-    const start = new Date(2026, 8, 11);
-    ETHIOPIAN_MONTHS.forEach((m, i) => {
-      const d = new Date(start);
-      d.setDate(d.getDate() + i * 30);
-      const key = toDateKey(d);
-      expect(formatEthiopianDateFromKey(key)).toBe(`${m.en} 1, 2019`);
-    });
-  });
-
-  it("Gregorian year boundary: 2026-12-31 / 2027-01-01 stay in the same Ethiopian year", () => {
-    expect(formatEthiopianDateFromKey("2026-12-31")).toBe("Tahsas 22, 2019");
-    expect(formatEthiopianDateFromKey("2027-01-01")).toBe("Tahsas 23, 2019");
-  });
-
-  it("round-trips through ethiopianToGregorianKey", () => {
-    ["2026-09-11", "2027-09-11", "2027-09-12", "2026-12-31", "2028-02-29"].forEach((k) => {
-      const { year, month, day } = gregorianToEthiopian(new Date(k + "T00:00:00"));
-      expect(ethiopianToGregorianKey(year, month, day)).toBe(k);
-    });
   });
 });

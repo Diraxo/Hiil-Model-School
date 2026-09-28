@@ -14,7 +14,7 @@ function loadWorker({ clients = [], ua = "Mozilla/5.0 (Linux; Android 14) Chrome
   const self = {
     location: { origin: ORIGIN },
     navigator: { userAgent: ua },
-    registration: { showNotification: vi.fn(async () => {}), setAppBadge: vi.fn(async () => {}), clearAppBadge: vi.fn(async () => {}) },
+    registration: { showNotification: vi.fn(async () => {}) },
     clients: { matchAll: vi.fn(async () => clients), claim: vi.fn(async () => {}), openWindow: vi.fn(async () => {}) },
     skipWaiting: vi.fn(),
     addEventListener: (type, fn) => { handlers[type] = fn; },
@@ -57,24 +57,16 @@ describe("service worker registration surface", () => {
     expect(SW_SRC).toContain(icon192);
     expect(SW_SRC).not.toMatch(/apiKey|private_key|BEGIN PRIVATE|client_email/i);
   });
-
-  it("the Android status-bar badge icon is a dedicated asset, never the full-color content icon", () => {
-    expect(fs.existsSync(path.join(ROOT, "public", "icons", "notification-badge.png"))).toBe(true);
-    const iconMatch = SW_SRC.match(/HIIL_ICON\s*=\s*"([^"]+)"/);
-    const badgeMatch = SW_SRC.match(/HIIL_BADGE\s*=\s*"([^"]+)"/);
-    expect(iconMatch[1]).not.toBe(badgeMatch[1]);
-    expect(badgeMatch[1]).toMatch(/notification-badge\.png/);
-  });
 });
 
 describe("background / closed-app push", () => {
   it("closed app (no windows): shows an OS notification branded Hiil Model School with the app icon, tag and click url", async () => {
     const { fire, self } = loadWorker({ clients: [] });
-    await fire("push", pushEvent({ data: { title: "Hiil Model School", body: "Amina Hassan: New announcement", url: "/?n=abc", tag: "n1", notificationId: "n1", type: "ANNOUNCEMENT", badge: "3" } }));
+    await fire("push", pushEvent({ data: { title: "Hiil Model School", body: "Amina Hassan: New announcement", url: "/?n=abc", tag: "n1", notificationId: "n1", type: "ANNOUNCEMENT" } }));
     expect(self.registration.showNotification).toHaveBeenCalledTimes(1);
     const [title, opts] = self.registration.showNotification.mock.calls[0];
     expect(title).toBe("Hiil Model School");
-    expect(opts).toMatchObject({ body: "Amina Hassan: New announcement", icon: "/icons/icon-192.png?v=hiil1", badge: "/icons/notification-badge.png?v=hiil1", tag: "n1", data: { url: "/?n=abc", notificationId: "n1", type: "ANNOUNCEMENT" } });
+    expect(opts).toMatchObject({ body: "Amina Hassan: New announcement", icon: "/icons/icon-192.png?v=hiil1", tag: "n1", data: { url: "/?n=abc", notificationId: "n1", type: "ANNOUNCEMENT" } });
   });
 
   it("backgrounded / minimized page (window exists but hidden): still shows the OS notification", async () => {
@@ -101,41 +93,6 @@ describe("background / closed-app push", () => {
     expect(self.registration.showNotification.mock.calls[0][0]).toBe("Hiil Model School");
     expect(self.registration.showNotification.mock.calls[0][1].body).toBe("plain text");
     expect(self.registration.showNotification.mock.calls[1][1].body).toBe("You have a new notification");
-  });
-});
-
-describe("app-icon badge (Badging API)", () => {
-  it("sets the badge to the server's authoritative unread count, not a per-push increment", async () => {
-    const { fire, self } = loadWorker({ clients: [] });
-    await fire("push", pushEvent({ data: { body: "b", notificationId: "n5", badge: "7" } }));
-    expect(self.registration.setAppBadge).toHaveBeenCalledWith(7);
-    expect(self.registration.clearAppBadge).not.toHaveBeenCalled();
-  });
-  it("clears the badge when the authoritative count is zero", async () => {
-    const { fire, self } = loadWorker({ clients: [] });
-    await fire("push", pushEvent({ data: { body: "b", notificationId: "n6", badge: "0" } }));
-    expect(self.registration.clearAppBadge).toHaveBeenCalled();
-    expect(self.registration.setAppBadge).not.toHaveBeenCalled();
-  });
-  it("no badge field: leaves the badge untouched rather than guessing", async () => {
-    const { fire, self } = loadWorker({ clients: [] });
-    await fire("push", pushEvent({ data: { body: "b", notificationId: "n7" } }));
-    expect(self.registration.setAppBadge).not.toHaveBeenCalled();
-    expect(self.registration.clearAppBadge).not.toHaveBeenCalled();
-  });
-  it("applies even when the OS banner is suppressed for a visible foreground tab", async () => {
-    const c = client({ visibilityState: "visible" });
-    const { fire, self } = loadWorker({ clients: [c] });
-    await fire("push", pushEvent({ data: { body: "b", notificationId: "n8", badge: "2" } }));
-    expect(self.registration.showNotification).not.toHaveBeenCalled();
-    expect(self.registration.setAppBadge).toHaveBeenCalledWith(2);
-  });
-  it("a missing Badging API (e.g. iOS Safari) never throws or blocks the OS notification", async () => {
-    const { fire, self } = loadWorker({ clients: [] });
-    delete self.registration.setAppBadge;
-    delete self.registration.clearAppBadge;
-    await fire("push", pushEvent({ data: { body: "b", notificationId: "n9", badge: "1" } }));
-    expect(self.registration.showNotification).toHaveBeenCalledTimes(1);
   });
 });
 

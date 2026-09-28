@@ -16,11 +16,18 @@ import {
   BRAND, LOGO_DATA_URI,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, sortStudentsByFullName,
+  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, monthLabel, sortStudentsByFullName,
 } from "../../utils/helpers";
-import {
-  ethiopianMonthLabelWithGc as ecMonthLabel, formatEthiopianDateWithGc as ecDate,
-} from "../../utils/ethiopianCalendar";
+import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC salary-
+// period label / date, keep the Gregorian equivalent visible alongside it.
+function ecMonthLabel(monthKey) {
+  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
+}
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, NoSchoolTodayBanner,

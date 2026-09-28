@@ -19,11 +19,17 @@ import {
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor,
 } from "../../utils/helpers";
-import { formatEthiopianDateWithGc as ecDate } from "../../utils/ethiopianCalendar";
+import { formatEthiopianDateFromKey } from "../../utils/ethiopianCalendar";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date, keep
+// the Gregorian date visible alongside it.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
   CopyIdChip, Field, Card, StatCard, SimpleBar, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, NoSchoolTodayBanner,
-  Toolbar, SearchInput, Select, PrimaryButton, GhostButton, EthiopianDateField,
+  Toolbar, SearchInput, Select, PrimaryButton, GhostButton,
 } from "../../components/ui";
 import { useData } from "../../context/DataContext";
 import { useToast } from "../../context/ToastContext";
@@ -462,8 +468,8 @@ function StudentLeaveRequestPage({ activeChildId, setActiveChildId }) {
             </select>
           </Field>
           <div />
-          <Field label="From" required><EthiopianDateField value={form.fromDate} onChange={(v) => set("fromDate", v)} /></Field>
-          <Field label="To" required><EthiopianDateField value={form.toDate} onChange={(v) => set("toDate", v)} /></Field>
+          <Field label="From" required><input type="date" className={inputCls} value={form.fromDate} onChange={(e) => set("fromDate", e.target.value)} /></Field>
+          <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
         </div>
         <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details for the school" /></Field>
         <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Submitting…">Submit Request</PrimaryButton></div>

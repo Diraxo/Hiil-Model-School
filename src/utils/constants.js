@@ -79,12 +79,6 @@ function gradeSectionCompare(a, b) {
   const gi = GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade);
   return gi !== 0 ? gi : (a.section || "").localeCompare(b.section || "");
 }
-// THE grade ordering for every list of grades (selectors, tabs, overview rows, apply targets): KG1, KG2,
-// Grade 1 ... Grade 12 by GRADES; a grade GRADES doesn't know sorts after the known ones, numerically.
-// Never sort grade labels as text — that gives "Grade 10, 11, 12, 9".
-function gradeRank(g) { const i = GRADES.indexOf(g); return i === -1 ? GRADES.length : i; }
-function compareGrades(a, b) { return gradeRank(a) - gradeRank(b) || String(a).localeCompare(String(b), undefined, { numeric: true }); }
-function sortGrades(list) { return [...list].sort(compareGrades); }
 const STORAGE_KEY = "tma_school_db_v1";
 const CURRENCY = "Birr";
 const DEFAULT_PAYMENT_METHODS = ["Cash", "EVC Plus", "eDahab", "Zaad", "Bank Transfer", "Other"];
@@ -155,7 +149,7 @@ export {
   ATTENDANCE_STATUSES, ATTENDANCE_STATUS_TONE, TEACHER_UNAVAILABLE_STATUSES, STAFF_SHIFT_PERIODS, STAFF_SHIFT_PERIOD_LABEL, LEAVE_STATUSES, LEAVE_REQUEST_REASONS,
   CLOSURE_REASON_PRESETS, staffGroupLabel, SCHOOL_DAYS,
   todayDayName, dayNameForDate, academicYearStart, addMonthsFloat, feeCoverage,
-  SUBJECTS, GRADES, SECTIONS, sectionLabel, gradeSectionCompare, gradeRank, compareGrades, sortGrades,
+  SUBJECTS, GRADES, SECTIONS, sectionLabel, gradeSectionCompare,
   MIN_PERIODS, MAX_PERIODS, DEFAULT_TIMETABLE_CONFIG,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI, REPORT_CARD_STATUS,

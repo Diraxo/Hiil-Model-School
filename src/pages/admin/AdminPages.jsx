@@ -19,7 +19,7 @@ import {
   SEMESTERS, SEMESTER_LABEL, RESULT_TOTAL_WEIGHT, ASSESSMENT_KIND, ASSESSMENT_KIND_LABEL,
 } from "../../utils/constants";
 import {
-  uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, sortStudentsByFullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
+  uid, fmtDate, fmtDateLong, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, sortStudentsByFullName, splitFullName, studentProfileCompletion, ageFromDob, computePeriodSchedule,
   leaveDurationLabel, amountInWords, monthLabel,
 } from "../../utils/helpers";
 import {
@@ -29,7 +29,7 @@ import {
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList, EthiopianDateField,
 } from "../../components/ui";
-import { activeAssessments, planRecordingScreen, resultStateOf, RESULT_STATE_LABEL } from "../../utils/resultConfig";
+import { activeAssessments } from "../../utils/resultConfig";
 import { attendanceStatusForClassDate } from "../../utils/attendanceStatus";
 import { ResultsSettingsPage } from "./ResultsSettings";
 import { CashReceiptModal } from "../../components/Receipt";
@@ -45,9 +45,8 @@ import { ReportCardModal } from "../../components/ReportCard";
 import { RecentActivityFeed } from "../../components/RecentActivity";
 import { LeaveRequestHistoryList, RejectLeaveModal } from "../../components/leave";
 import { AnnouncementDetailModal, audienceLabel, AnnouncementAttachmentField, AnnouncementAttachmentChip, isAnnouncementLive, announcementReadStats } from "../../components/announcements";
-import { computeBreakRange, suggestSemester2, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel, academicYearStatus, addDays } from "../../utils/academicCalendar";
-import { formatEthiopianDateFromKey, ethiopianMonthLabelForGcMonthKey, formatEthiopianDateWithGc as ecDate } from "../../utils/ethiopianCalendar";
-import { academicYearDateProblems, academicYearBillingPeriods, anchorsOutsideYear } from "../../utils/billingPeriods";
+import { computeBreakRange, suggestSemester2, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel, defaultAcademicCalendar, addDays } from "../../utils/academicCalendar";
+import { ethiopianToGregorianKey, getEthiopianToday, gregorianToEthiopian, formatEthiopianDateFromKey, ethiopianMonthLabelForGcMonthKey } from "../../utils/ethiopianCalendar";
 import { downloadElementAsPdf } from "../../utils/pdf";
 import {
   canEditStudent, canDeleteStudent, canSuspendStudent, canChangeStudentPhoto,
@@ -58,8 +57,14 @@ import { ExamEvidenceStrip } from "../../components/ResultEvidence";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 import { PushStatusCard } from "../../components/PushOptIn";
-import { AcademicYearSettingsModal, AcademicYearTag } from "../../components/academicYear";
 import { getPendingNotification, clearPendingNotification, subscribePendingNotification } from "../../utils/pushNavigation";
+
+// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — this single-line caption
+// leads with the EC date and keeps the Gregorian date visible parenthetically, for inline spots
+// (table cells, toasts, list rows) too tight for a stacked two-line date.
+function ecDate(dateKey) {
+  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
+}
 
 function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
   const data = useData();
@@ -76,14 +81,13 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
   // disagree with the rest of the app whenever a class had a late arrival.
   const attendedToday = todaysAttendance.filter((a) => a.status === "Present" || a.status === "Late").length;
   const attendancePct = todaysAttendance.length ? Math.round((attendedToday / todaysAttendance.length) * 100) : 0;
-  const yearRoll = data.studentsInYear();
-  const activeStudents = yearRoll.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "ARCHIVED");
+  const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "ARCHIVED");
   const teachers = db.users.filter((u) => u.role === ROLES.TEACHER && u.status !== "INACTIVE" && u.status !== "DISABLED");
   const parents = db.users.filter((u) => u.role === ROLES.PARENT);
   const pendingIssues = db.behaviorRecords.filter((b) => ["Warning", "Fighting", "Disrespect"].includes(b.type) && Date.now() - b.createdAt < 7 * 86400000).length;
   const homeworkToday = db.homework.filter((h) => new Date(h.createdAt).toDateString() === new Date().toDateString()).length;
   const upcomingExamAnnouncements = db.examAnnouncements.filter((a) => new Date(a.examDate) >= new Date(new Date().toDateString())).sort((a, b) => new Date(a.examDate) - new Date(b.examDate));
-  const gradeDist = data.gradeOptions().map((g) => ({ label: g, value: yearRoll.filter((s) => s.grade === g).length }));
+  const gradeDist = data.gradeOptions().map((g) => ({ label: g, value: db.students.filter((s) => s.grade === g).length }));
   const maxGrade = Math.max(...gradeDist.map((g) => g.value), 1);
   // Payments/Payroll/Expenses are all off-limits to the Educational Director (see role matrix),
   // so Recent Activity here must never surface those entries — they carry raw dollar figures in
@@ -95,7 +99,6 @@ function AdminDashboard({ openStudent, onOpenActivity, setPage }) {
       <div>
         <h1 className="text-xl font-semibold text-slate-800">Good morning, Administrator</h1>
         <p className="text-sm text-slate-400 mt-0.5">Hiil Model School — here's what's happening today, {fmtDate(new Date())}.</p>
-        <AcademicYearTag className="mt-1" />
       </div>
 
       <NoSchoolTodayBanner classification={todayInfo} />
@@ -246,7 +249,7 @@ function StudentsPage({ onOpen }) {
   const data = useData();
   const toast = useToast();
   const { db } = data;
-  const currentYear = db.workspaceYear;
+  const currentYear = currentAcademicYear(db.academicYears);
   const [q, setQ] = useState("");
   const [grade, setGrade] = useState("");
   const [status, setStatus] = useState("ACTIVE"); // default view: active students, per spec §19 — not a mix of every status
@@ -274,7 +277,6 @@ function StudentsPage({ onOpen }) {
         <h1 className="text-lg font-semibold text-slate-800">Students</h1>
         <PrimaryButton onClick={() => setAddOpen(true)}>Add Student</PrimaryButton>
       </div>
-      <AcademicYearTag className="mb-1" />
       <p className="text-sm text-slate-400 mb-4">{headline} across {db.classes.length} classes{sortedYears.length > 1 ? ` — ${formatAcademicYearLabel(db.academicYears.find((y) => y.id === academicYearId)) || "all years"}` : ""}.</p>
 
       <Toolbar>
@@ -832,7 +834,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
   const [hwMonth, setHwMonth] = useState(todayKeyStr().slice(0, 7));
 
   const enrollments = s ? data.enrollmentsForStudent(s.id) : [];
-  const defaultYear = data.db.workspaceYear;
+  const defaultYear = currentAcademicYear(data.db.academicYears);
   const [selectedYearId, setSelectedYearId] = useState(defaultYear ? defaultYear.id : "");
   useEffect(() => { setSelectedYearId(defaultYear ? defaultYear.id : ""); /* reset when opening a different student */ }, [studentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1232,7 +1234,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
             {installmentStatus.feeType && (
               <Card className="p-4">
                 <h3 className="text-sm font-semibold text-slate-700 mb-2">School Fee Schedule</h3>
-                <FeeScheduleList rows={(installmentStatus.periods || installmentStatus.rows).map((r) => ({ label: `${installmentStatus.feeType.name} ${ethiopianMonthLabelForGcMonthKey((r.installment.periodMonth || r.installment.dueDate || "").slice(0, 7))} (${r.installment.label})`, dueLabel: `Due ${ecDate(r.installment.dueDate)}`, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, voided: r.voided, status: r.status, current: r.isCurrent }))} />
+                <FeeScheduleList rows={installmentStatus.rows.map((r) => ({ label: `${installmentStatus.feeType.name} ${ethiopianMonthLabelForGcMonthKey((r.installment.periodMonth || r.installment.dueDate || "").slice(0, 7))} (${r.installment.label})`, dueLabel: `Due ${ecDate(r.installment.dueDate)}`, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} />
               </Card>
             )}
             <Card className="p-4">
@@ -1241,11 +1243,11 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                 {!s.usesBus && <Badge tone="slate">No Bus</Badge>}
                 {s.usesBus && busBalance && <Badge tone="sky">{formatMoney(busSchedule.feeType.unitAmount)}/month</Badge>}
               </div>
-              {s.usesBus ? <FeeScheduleList rows={(busSchedule.periods || busSchedule.rows).map((r) => ({ label: r.label, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, voided: r.voided, status: r.status, current: r.isCurrent }))} /> : <p className="text-xs text-slate-400">This student does not use the school bus.</p>}
+              {s.usesBus ? <FeeScheduleList rows={busSchedule.rows.map((r) => ({ label: r.label, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, current: r.isCurrent }))} /> : <p className="text-xs text-slate-400">This student does not use the school bus.</p>}
             </Card>
             <div className="grid sm:grid-cols-2 gap-3">
               {paymentSummary.balances.map((b) => {
-                const coverage = feeCoverage(b.paid, b.feeType, activeYearStartDate(data.db.workspaceYear ? [data.db.workspaceYear] : data.db.academicYears));
+                const coverage = feeCoverage(b.paid, b.feeType, activeYearStartDate(data.db.academicYears));
                 const due = data.dueStatusForFeeType(s, b.feeType, selectedYear?.id);
                 return (
                   <Card key={b.feeType.id} className="p-4">
@@ -1255,12 +1257,12 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                     </div>
                     <p className="text-xs text-slate-400">Paid {b.paid} of {b.feeType.unitsPerYear} cycles</p>
                     {coverage.coveredThrough ? (
-                      <p className="text-xs text-emerald-700 mt-1">Paid through {ecDate(coverage.coveredThrough)}</p>
+                      <p className="text-xs text-emerald-700 mt-1">Paid through {fmtDateLong(coverage.coveredThrough)}</p>
                     ) : (
                       <p className="text-xs text-slate-400 mt-1">No payment made yet this year</p>
                     )}
                     {coverage.remainingMonths > 0 && coverage.remainingTo && (
-                      <p className="text-xs text-amber-700">{Math.round(coverage.remainingMonths * 10) / 10} months remaining ({ecDate(coverage.remainingFrom)} – {ecDate(coverage.remainingTo)})</p>
+                      <p className="text-xs text-amber-700">{Math.round(coverage.remainingMonths * 10) / 10} months remaining ({fmtDateLong(coverage.remainingFrom)} – {fmtDateLong(coverage.remainingTo)})</p>
                     )}
                     {b.amountOwed > 0 && <p className="text-sm font-semibold text-slate-700 mt-1">{formatMoney(b.amountOwed)} remaining</p>}
                   </Card>
@@ -1275,7 +1277,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                     <div key={p.id} className="flex items-center justify-between px-4 py-3 text-sm">
                       <div>
                         <p className={`font-medium ${voided ? "text-slate-400 line-through" : "text-slate-700"}`}>{data.describePayment(p)}</p>
-                        <p className="text-xs text-slate-400">{data.paymentMethodName(p)} • {ecDate(p.date)}{p.receiptNo ? ` • Receipt #${p.receiptNo}` : ""}</p>
+                        <p className="text-xs text-slate-400">{data.paymentMethodName(p)} • {fmtDate(p.date)}{p.receiptNo ? ` • Receipt #${p.receiptNo}` : ""}</p>
                         {voided && (
                           <p className="text-xs text-red-600 mt-0.5">
                             Voided {fmtDate(new Date(p.voidedAt).toISOString().slice(0, 10))} by {data.getUser(p.voidedBy)?.name || "Unknown"} — {p.voidReason}
@@ -1317,7 +1319,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
           onClose={() => setReceiptPaymentId(null)}
           pages={studentReceipt?.pages || []}
           receiptNo={studentReceipt?.receiptNo || ""}
-          date={studentReceipt ? ecDate(studentReceipt.date) : ""}
+          date={studentReceipt ? fmtDate(studentReceipt.date) : ""}
           method={studentReceipt?.method || ""}
           cashierName={studentReceipt?.cashierName || ""}
           voidedLines={studentReceipt?.voidedLines || []}
@@ -1734,7 +1736,6 @@ function TeachersPage({ onMessage }) {
   const [endEmploymentTarget, setEndEmploymentTarget] = useState(null); // staff record
   const teachers = db.users.filter((u) => u.role === ROLES.TEACHER);
   const filtered = teachers.filter((t) => t.name.toLowerCase().includes(q.toLowerCase()));
-  const yearAssign = data.teacherAssignmentsInYear();
 
   async function confirmDelete() {
     if (!deleteTarget) return;
@@ -1746,25 +1747,15 @@ function TeachersPage({ onMessage }) {
   return (
     <div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Teachers</h1>
-      <p className="text-sm text-slate-400 mb-1">{teachers.length} teachers on staff.</p>
-      <AcademicYearTag className="mb-3" />
-      {yearAssign.historical && (
-        <p className="text-xs text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 mb-3">Subjects and classes are shown as they stood when this academic year was closed.</p>
-      )}
+      <p className="text-sm text-slate-400 mb-4">{teachers.length} teachers on staff.</p>
       <Toolbar>
         <SearchInput value={q} onChange={setQ} placeholder="Search teacher name…" />
         <PrimaryButton onClick={() => setAddOpen(true)}>Add Teacher</PrimaryButton>
       </Toolbar>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map((t) => {
-          // Another (closed) year shows who taught what THEN (the snapshot taken when it closed); the
-          // current year shows the live assignments.
-          const classes = yearAssign.historical
-            ? db.classes.filter((c) => yearAssign.rows.some((r) => r.teacherId === t.id && r.classId === c.id))
-            : db.classes.filter((c) => c.subjectTeacherIds.includes(t.id) || c.headTeacherId === t.id);
-          const subjects = yearAssign.historical
-            ? [...new Set(yearAssign.rows.filter((r) => r.teacherId === t.id).map((r) => r.subject).filter(Boolean))]
-            : data.teacherSubjects(t.id);
+          const classes = db.classes.filter((c) => c.subjectTeacherIds.includes(t.id) || c.headTeacherId === t.id);
+          const subjects = data.teacherSubjects(t.id);
           const staffRec = db.staff.find((s) => s.userId === t.id);
           const employmentEnded = staffRec?.employmentStatus === "ENDED";
           return (
@@ -2885,9 +2876,8 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
         <div>
           <h1 className="text-lg font-semibold text-slate-800 mb-1">Student Attendance</h1>
           <p className="text-sm text-slate-400">School-wide attendance by class.</p>
-          <AcademicYearTag className="mt-1" />
         </div>
-        <GhostButton icon={Settings} onClick={() => setSettingsOpen(true)}>Academic Year & Calendar</GhostButton>
+        <GhostButton icon={Settings} onClick={() => setSettingsOpen(true)}>Academic Calendar & Settings</GhostButton>
       </div>
 
       <DateNav date={dateKey} onChange={setDateKey} minDate={bounds.min} maxDate={bounds.max} skipDates={(d) => !data.classifyAttendanceDay(d).available} />
@@ -2914,7 +2904,7 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
                 )}
                 <ClassAttendanceStatus
                   status={status}
-                  unavailable={!classification.available && classification.phase !== "year_closed"}
+                  unavailable={!classification.available}
                   noStudents={students.length === 0}
                   canEdit={canTake}
                   onOpen={(mode) => setEditor({ classId: c.id, dateKey, mode })}
@@ -2937,7 +2927,7 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
         canManage={(() => { const c = db.classes.find((x) => x.id === registerFor); return c ? data.canTakeClassAttendance(c, auth.currentUser) : false; })()}
       />
       <AttendanceEditorModal classId={editor?.classId} dateKey={editor?.dateKey} mode={editor?.mode} onClose={() => setEditor(null)} />
-      <AcademicYearSettings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <AcademicCalendarSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
@@ -3162,18 +3152,15 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
 // Lets the Owner/Educational Director define the school year's semesters and break, which the
 // shared attendance-calendar rules (src/utils/academicCalendar.js) then use everywhere attendance
 // is recorded or viewed. Never touches existing attendance records — only the availability rules.
-function AcademicCalendarSettingsModal({ open, onClose, year }) {
+function AcademicCalendarSettingsModal({ open, onClose }) {
   const data = useData();
   const auth = useAuth();
   const toast = useToast();
-  // The year being edited: the one Academic Year settings passes (the current year), else the workspace year.
-  const workspaceCal = data.db.academicCalendar;
-  const cal = year ? { ...year, readOnly: academicYearStatus(year, todayKeyStr()) === "previous" } : workspaceCal;
+  const cal = data.db.academicCalendar;
   const [form, setForm] = useState(cal);
-  const [orphanedMonths, setOrphanedMonths] = useState(null); // month anchors billed today that the new dates would leave outside the year
   const { busy, run } = useMutationGuard();
 
-  useEffect(() => { if (open) { setForm(cal); setOrphanedMonths(null); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) setForm(cal); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function set(field, value) { setForm((f) => ({ ...f, [field]: value })); }
 
@@ -3182,40 +3169,26 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
   // admin typing a start date that disagrees with the break. Only the end date is editable.
   const { breakStart, breakEnd } = computeBreakRange(form);
   const sem2Start = addDays(breakEnd, 1);
-  const generatedYearLabel = form.yearStart && form.yearEnd ? formatAcademicYearLabel({ yearStart: form.yearStart, yearEnd: form.yearEnd }) : "";
 
   function suggestSemester2End() {
     setForm((f) => ({ ...f, sem2End: suggestSemester2(f).sem2End }));
   }
 
-  async function save({ confirmed = false } = {}) {
-    if (cal.readOnly) { toast("This academic year is closed (read-only). Reopen it from Academic Years before changing its calendar.", "error"); return; }
+  async function save() {
+    if (!form.yearName.trim()) { toast("Please give the academic year a name.", "error"); return; }
     if (!(form.yearStart < form.yearEnd)) { toast("The academic year's start date must be before its end date.", "error"); return; }
     if (!(form.sem1Start >= form.yearStart)) { toast("Semester 1 can't start before the academic year begins.", "error"); return; }
     if (!(form.sem1Start < form.sem1End)) { toast("Semester 1's start date must be before its end date.", "error"); return; }
     if (!(form.sem1End <= form.yearEnd)) { toast("Semester 1 must end on or before the academic year ends.", "error"); return; }
     if (!(form.sem2End > sem2Start)) { toast("Semester 2's end date must be after the school break ends.", "error"); return; }
     if (!(form.sem2End <= form.yearEnd)) { toast("Semester 2 must end on or before the academic year ends.", "error"); return; }
-    // The academic year must be ONE school year: fee billing periods are generated from these dates,
-    // so a start date left in the previous year would put two years' months on the fee screen.
-    const problems = academicYearDateProblems(form);
-    if (problems.length > 0) { toast(problems[0].message, "error"); return; }
-    // Fee months already billed for this year that the new dates would leave outside it. Nothing is
-    // deleted either way — the records stay attached to this academic year — but say so first.
-    if (!confirmed) {
-      const scheduleIds = new Set(data.db.feeSchedules.filter((s) => s.academicYearId === cal.id).map((s) => s.id));
-      const billed = data.db.feeInstallments.filter((i) => scheduleIds.has(i.feeScheduleId)).map((i) => (i.periodMonth || i.dueDate || "").slice(0, 7) + "-01");
-      const outside = anchorsOutsideYear(form, billed);
-      if (outside.length > 0) { setOrphanedMonths(outside); return; }
-    }
-    setOrphanedMonths(null);
     await run(async () => {
       const res = await data.saveAcademicCalendar({
-        yearStart: form.yearStart, yearEnd: form.yearEnd,
+        yearName: form.yearName.trim(), yearStart: form.yearStart, yearEnd: form.yearEnd,
         sem1Start: form.sem1Start, sem1End: form.sem1End, breakDays: Number(form.breakDays) || 0,
         sem2Start, sem2End: form.sem2End,
         resultFinalizationGraceDays: Math.max(0, parseInt(form.resultFinalizationGraceDays, 10) || 0),
-      }, auth.currentUser.id, cal.id);
+      }, auth.currentUser.id);
       if (!res.ok) { toast(res.message, "error"); return; }
       toast("Academic calendar updated.", "success");
       onClose();
@@ -3227,33 +3200,31 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
       <div className="rounded-lg bg-brand-50 border border-brand-200 px-3.5 py-2.5 text-xs text-brand-800 mb-4">
         Changing the academic calendar may affect which dates are available for attendance. Existing attendance records will not be deleted.
       </div>
-      {cal.readOnly && (
-        <div role="alert" className="rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5 text-xs text-amber-800 mb-4">
-          This academic year is closed (read-only). Its calendar can't be changed unless an owner reopens it from Academic Years.
-        </div>
-      )}
 
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Academic Year</p>
+      <Field label="Academic year name" required>
+        <input className={inputCls} value={form.yearName} onChange={(e) => set("yearName", e.target.value)} placeholder="e.g. 2026/2027" />
+      </Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Academic year start" required>
-          <EthiopianDateField value={form.yearStart} onChange={(v) => set("yearStart", v)} />
+          <input type="date" className={inputCls} value={form.yearStart} onChange={(e) => set("yearStart", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.yearStart, { withAmharic: true })} E.C.</p>
         </Field>
         <Field label="Academic year end" required>
-          <EthiopianDateField value={form.yearEnd} onChange={(v) => set("yearEnd", v)} />
+          <input type="date" className={inputCls} value={form.yearEnd} onChange={(e) => set("yearEnd", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.yearEnd, { withAmharic: true })} E.C.</p>
         </Field>
       </div>
-      <p className="text-xs text-slate-500 -mt-2 mb-3">
-        Academic year: <span className="font-medium text-slate-700">{generatedYearLabel || "—"}</span>
-        <span className="text-slate-400"> — generated from the start and end dates.</span>
-      </p>
 
       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-1">Semester 1</p>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Semester 1 start date" required>
-          <EthiopianDateField value={form.sem1Start} onChange={(v) => set("sem1Start", v)} />
+          <input type="date" className={inputCls} value={form.sem1Start} onChange={(e) => set("sem1Start", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem1Start, { withAmharic: true })} E.C.</p>
         </Field>
         <Field label="Semester 1 end date" required>
-          <EthiopianDateField value={form.sem1End} onChange={(v) => set("sem1End", v)} />
+          <input type="date" className={inputCls} value={form.sem1End} onChange={(e) => set("sem1End", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem1End, { withAmharic: true })} E.C.</p>
         </Field>
       </div>
 
@@ -3273,7 +3244,8 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
           <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(sem2Start, { withAmharic: true })} E.C.</p>
         </Field>
         <Field label="Semester 2 end date" required>
-          <EthiopianDateField value={form.sem2End} onChange={(v) => set("sem2End", v)} />
+          <input type="date" className={inputCls} value={form.sem2End} onChange={(e) => set("sem2End", e.target.value)} />
+          <p className="text-xs text-slate-400 mt-1">{formatEthiopianDateFromKey(form.sem2End, { withAmharic: true })} E.C.</p>
         </Field>
       </div>
       <p className="text-xs text-slate-400 -mt-2 mb-3">Calculated automatically — the day after the school break ends.</p>
@@ -3285,7 +3257,7 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
       <p className="text-xs text-slate-400 -mt-2 mb-3">Teachers can still enter or edit results for this many days after a semester ends — or, for Semester 1, until Semester 2 begins, whichever comes first.</p>
 
       <Card className="p-4 mt-1 bg-slate-50">
-        <p className="text-sm font-semibold text-slate-700 mb-2">{generatedYearLabel || "Academic Calendar"} Preview</p>
+        <p className="text-sm font-semibold text-slate-700 mb-2">{form.yearName || "Academic Calendar"} Preview</p>
         <div className="space-y-2 text-xs text-slate-600">
           <div><span className="font-medium text-slate-700">Academic Year</span><br />{formatEthiopianDateFromKey(form.yearStart)} — {formatEthiopianDateFromKey(form.yearEnd)} E.C.<br /><span className="text-slate-400">({fmtDate(form.yearStart)} — {fmtDate(form.yearEnd)} G.C.)</span></div>
           <div><span className="font-medium text-slate-700">Semester 1</span><br />{formatEthiopianDateFromKey(form.sem1Start)} — {formatEthiopianDateFromKey(form.sem1End)} E.C.<br /><span className="text-slate-400">({fmtDate(form.sem1Start)} — {fmtDate(form.sem1End)} G.C.)</span></div>
@@ -3296,12 +3268,12 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
 
       <div className="flex justify-end gap-2 mt-5 mb-5">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-        <PrimaryButton icon={Check} onClick={() => save()} loading={busy} loadingText="Saving…" disabled={!!cal.readOnly}>Save Calendar</PrimaryButton>
+        <PrimaryButton icon={Check} onClick={save} loading={busy} loadingText="Saving…">Save Calendar</PrimaryButton>
       </div>
-      <ConfirmDialog open={!!orphanedMonths} onClose={() => setOrphanedMonths(null)} confirmLabel="Save dates anyway"
-        title="Some billed months would fall outside this academic year"
-        description={orphanedMonths ? `Fees are already billed for ${orphanedMonths.map((a) => ethiopianMonthLabelForGcMonthKey(a.slice(0, 7))).join(", ")}, which the new dates no longer cover. Nothing is deleted — those fees, balances and payments stay attached to this academic year exactly as recorded — but they will no longer appear in the fee month picker and can't be edited from it. Continue?` : ""}
-        onConfirm={() => save({ confirmed: true })} />
+
+      <div className="border-t border-slate-100 pt-4 mb-4">
+        <AcademicYearsPanel />
+      </div>
 
       <div className="border-t border-slate-100 pt-4">
         <SchoolClosuresPanel />
@@ -3310,16 +3282,85 @@ function AcademicCalendarSettingsModal({ open, onClose, year }) {
   );
 }
 
-// The compact Academic Year screen (current year summary, previous / upcoming years, Make Current, the
-// Create-next-year wizard). "Edit Academic Calendar" is the only thing that opens the full date form above.
-function AcademicYearSettings({ open, onClose, startWizard = false }) {
+function addYearToDateStr(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return `${y + 1}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+// Real, id'd, multi-year academic years (spec §1/§2) — the school moves on to a new one here
+// without losing the previous one; every student's enrollment history stays keyed to whichever
+// year was current when it happened.
+function AcademicYearsPanel() {
+  const data = useData();
+  const auth = useAuth();
+  const toast = useToast();
+  if (!canManageAcademicYears(auth.currentUser)) return null;
+  const years = [...data.db.academicYears].sort((a, b) => (b.yearStart || "").localeCompare(a.yearStart || ""));
+  const latest = years[0];
+  // Ethiopian Calendar is the primary/default calendar for academic years — the admin picks the
+  // E.C. year directly; the Gregorian start date is derived from it (Meskerem 1 of that E.C. year).
+  const suggestedEcYear = latest
+    ? gregorianToEthiopian(new Date(latest.yearStart + "T00:00:00")).year + 1
+    : getEthiopianToday().year;
+  const [creating, setCreating] = useState(false);
+  const [ecYear, setEcYear] = useState(suggestedEcYear);
+  const newStart = ethiopianToGregorianKey(ecYear, 1, 1);
+  const preview = defaultAcademicCalendar(new Date(newStart + "T00:00:00"));
+  const { busy, run, isBusy } = useMutationGuard();
+
+  async function create() {
+    await run(async () => {
+      const result = await data.createAcademicYear({ yearStart: newStart }, auth.currentUser.id);
+      if (result.ok) {
+        toast(`${formatAcademicYearLabel(preview)} was created.`, "success");
+        setCreating(false);
+      } else {
+        toast(result.message || "Couldn't create the academic year.", "error");
+      }
+    }, { key: `create-academic-year:${newStart}` });
+  }
+
   return (
-    <AcademicYearSettingsModal
-      open={open}
-      onClose={onClose}
-      startWizard={startWizard}
-      renderCalendarEditor={(p) => <AcademicCalendarSettingsModal {...p} />}
-    />
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Academic Years</p>
+        {!creating && <button type="button" onClick={() => setCreating(true)} className="text-xs text-brand-600 font-medium">+ Create New Academic Year</button>}
+      </div>
+      {creating && (
+        <Card className="p-3.5 mb-3 bg-slate-50">
+          <Field label="Academic Year (Ethiopian Calendar)">
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                className={inputCls}
+                style={{ maxWidth: 110 }}
+                value={ecYear}
+                onChange={(e) => setEcYear((prev) => (e.target.value === "" ? "" : parseInt(e.target.value, 10) || prev))}
+              />
+              <span className="text-sm text-slate-500 whitespace-nowrap">– {(Number(ecYear) || suggestedEcYear) + 1} E.C.</span>
+            </div>
+          </Field>
+          <p className="text-xs text-slate-500 mb-3">
+            Will be created as <span className="font-medium text-slate-700">{formatAcademicYearLabel(preview)}</span>, starting Meskerem 1, {ecYear || suggestedEcYear} E.C. ({fmtDate(newStart)} Gregorian).
+          </p>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setCreating(false)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
+            <PrimaryButton icon={Check} onClick={create} loading={busy} loadingText="Creating…">Create Year</PrimaryButton>
+          </div>
+        </Card>
+      )}
+      <div className="space-y-1.5">
+        {years.map((y) => (
+          <div key={y.id} className="flex items-center justify-between text-sm px-3 py-2 rounded-lg border border-slate-100">
+            <span className="text-slate-700">{formatAcademicYearLabel(y)}</span>
+            {y.isCurrent ? <Badge tone="sky">Current</Badge> : <button type="button" disabled={isBusy(`set-current-year:${y.id}`)} onClick={() => run(async () => {
+              const result = await data.setCurrentAcademicYear(y.id);
+              toast(result.ok ? `${formatAcademicYearLabel(y)} is now current.` : (result.message || "Couldn't update the current academic year."), result.ok ? "success" : "error");
+            }, { key: `set-current-year:${y.id}` })} className="text-xs text-brand-600 font-medium disabled:opacity-50">Set as Current</button>}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3357,7 +3398,7 @@ function SchoolClosuresPanel() {
       </p>
       <Card className="p-4 mb-3">
         <div className="grid sm:grid-cols-2 gap-x-3">
-          <Field label="Date" required><EthiopianDateField value={date} onChange={setDate} /></Field>
+          <Field label="Date" required><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
           <Field label="Reason" required>
             <select className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)}>
               {CLOSURE_REASON_PRESETS.map((r) => <option key={r}>{r}</option>)}
@@ -3678,8 +3719,8 @@ function StaffLeaveRequestForm({ staffId, requestedBy, onSubmitted }) {
           </select>
         </Field>
         <div />
-        <Field label="From" required><EthiopianDateField value={form.fromDate} onChange={(v) => set("fromDate", v)} /></Field>
-        <Field label="To" required><EthiopianDateField value={form.toDate} onChange={(v) => set("toDate", v)} /></Field>
+        <Field label="From" required><input type="date" className={inputCls} value={form.fromDate} onChange={(e) => set("fromDate", e.target.value)} /></Field>
+        <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
       </div>
       <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details for whoever decides this" /></Field>
       <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Submitting…">Submit Request</PrimaryButton></div>
@@ -3717,8 +3758,8 @@ function OwnerLeavePanel() {
             </select>
           </Field>
           <div />
-          <Field label="From" required><EthiopianDateField value={form.fromDate} onChange={(v) => set("fromDate", v)} /></Field>
-          <Field label="To" required><EthiopianDateField value={form.toDate} onChange={(v) => set("toDate", v)} /></Field>
+          <Field label="From" required><input type="date" className={inputCls} value={form.fromDate} onChange={(e) => set("fromDate", e.target.value)} /></Field>
+          <Field label="To" required><input type="date" className={inputCls} value={form.toDate} onChange={(e) => set("toDate", e.target.value)} /></Field>
         </div>
         <Field label="Note"><textarea className={inputCls} rows={2} value={form.note} onChange={(e) => set("note", e.target.value)} placeholder="Optional details" /></Field>
         <div className="flex justify-end"><PrimaryButton icon={Check} onClick={submit} loading={busy} loadingText="Logging…">Log Leave</PrimaryButton></div>
@@ -3931,10 +3972,10 @@ function ResultsPage({ role, focus, clearFocus }) {
   const [announceOpen, setAnnounceOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selected, setSelected] = useState(null); // { classId, subject, semester, academicYearId } | null
-  const [yearId, setYearId] = useState((db.workspaceYear || {}).id || null);
+  const [yearId, setYearId] = useState((currentAcademicYear(db.academicYears) || {}).id || null);
   // Open on the semester that is actually running — Semester 2 as soon as it starts — taken from the
   // academic year's own calendar, so nobody has to switch it by hand every time.
-  const [semester, setSemester] = useState(() => data.currentResultSemester((db.workspaceYear || {}).id));
+  const [semester, setSemester] = useState(() => data.currentResultSemester((currentAcademicYear(db.academicYears) || {}).id));
 
   const isStaff = role === ROLES.OWNER || role === ROLES.ADMIN;
   // Subject-level ownership (teacherAssignments), not headTeacherId — a head teacher doesn't
@@ -3958,16 +3999,7 @@ function ResultsPage({ role, focus, clearFocus }) {
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // "View affected results" from a refused structure delete: back to Results on that grade, semester and year.
-  function openAffectedResults({ grade, semester: sem, academicYearId }) {
-    setShowSettings(false);
-    if (academicYearId) setYearId(academicYearId);
-    setSemester(sem);
-    const target = browsableClasses.find((c) => c.grade === grade);
-    if (target) setClassTab(target.id);
-  }
-
-  if (showSettings && isStaff) return <ResultsSettingsPage onBack={() => setShowSettings(false)} onViewResults={openAffectedResults} />;
+  if (showSettings && isStaff) return <ResultsSettingsPage onBack={() => setShowSettings(false)} />;
 
   if (selected) {
     return (
@@ -4013,10 +4045,7 @@ function ResultsPage({ role, focus, clearFocus }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-        <div>
-          <h1 className="text-lg font-semibold text-slate-800">Results</h1>
-          <AcademicYearTag />
-        </div>
+        <h1 className="text-lg font-semibold text-slate-800">Results</h1>
         {isStaff && (
           <div className="flex items-center gap-2 flex-wrap">
             <GhostButton icon={Settings} onClick={() => setShowSettings(true)}>Results Settings</GhostButton>
@@ -4268,7 +4297,7 @@ function AnnounceExamModal({ open, onClose }) {
               <option value="SECTION">One section</option>
             </select>
           </Field>
-          <Field label="Date" required><EthiopianDateField value={form.date} onChange={(v) => set("date", v)} /></Field>
+          <Field label="Date" required><input type="date" className={inputCls} value={form.date} onChange={(e) => set("date", e.target.value)} /></Field>
         </div>
         {(form.audienceType === "GRADE" || form.audienceType === "SECTION") && (
           <div className="grid grid-cols-2 gap-x-3">
@@ -4294,7 +4323,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   const toast = useToast();
   const { db } = data;
   const cls = data.getClass(classId);
-  const yearId = academicYearId || (db.workspaceYear || {}).id || null;
+  const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
   const students = data.studentsForClassYear(classId, yearId);
   const [selectedIds, setSelectedIds] = useState([]);
   const [historyFor, setHistoryFor] = useState(null); // studentId | null
@@ -4315,20 +4344,23 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     return data.getResult(studentId, classId, subject, semester, yearId);
   }
 
-  // The columns come from the configured structure — never from code. What a row means depends on what is
-  // RECORDED, not on a result row merely existing (opening a student creates an empty draft):
-  //   * nothing recorded  -> "Not started", recorded against the ACTIVE structure (or unrecordable if none)
-  //   * recorded          -> stays on the structure it was recorded under; while a newer version is active it
-  //                          is its own "earlier structure" table; if that structure is closed with NO active
-  //                          successor it is HISTORY: shown read-only, separately, never in a recording table.
-  // planRecordingScreen also names which of the screen states this is (see utils/resultConfig.js).
+  // The columns come from the configured structure — never from code. Students with no result yet
+  // use the ACTIVE structure for this grade/semester/year; a student whose result was recorded under
+  // an earlier version of the structure stays on THAT version (its own table below), so changing the
+  // structure later never reinterprets old scores.
   const activeConfig = data.resultStructureForClass(classId, semester, yearId);
-  const evidence = db.resultEvidence;
-  const plan = planRecordingScreen({ students, recordFor, activeConfig, evidence });
-  const unassignedStudents = plan.unrecordable;
-  const historicalRows = plan.historical;
-  const groups = plan.groups.map((g) => ({ ...g, assessments: activeAssessments(g.config) }));
+  const groupMap = new Map();
+  for (const s of students) {
+    const record = recordFor(s.id);
+    const config = (record && record.configuration) || activeConfig;
+    if (!config) continue;
+    if (!groupMap.has(config.id)) groupMap.set(config.id, { config, assessments: activeAssessments(config), students: [] });
+    groupMap.get(config.id).students.push(s);
+  }
+  if (activeConfig && !groupMap.has(activeConfig.id)) groupMap.set(activeConfig.id, { config: activeConfig, assessments: activeAssessments(activeConfig), students: [] });
+  const groups = [...groupMap.values()].sort((a, b) => (b.config.status === "ACTIVE") - (a.config.status === "ACTIVE") || b.config.version - a.config.version);
   const assessmentById = new Map(groups.flatMap((g) => g.assessments.map((a) => [a.id, a])));
+  const anyRecorded = students.some((s) => resultTotals(recordFor(s.id)).count > 0);
 
   function draftKey(studentId, assessmentId) { return `${studentId}::${assessmentId}`; }
   function savedScoreStr(studentId, assessmentId) {
@@ -4427,9 +4459,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   function toggleSelect(studentId) {
     setSelectedIds((ids) => (ids.includes(studentId) ? ids.filter((id) => id !== studentId) : [...ids, studentId]));
   }
-  // Only students in an editable table can be published: never historical rows, never students with no structure.
-  const inTables = new Set(groups.flatMap((g) => g.students.map((s) => s.id)));
-  const selectableIds = students.filter((s) => inTables.has(s.id) && recordFor(s.id)?.publishStatus !== "LOCKED").map((s) => s.id);
+  const selectableIds = students.filter((s) => recordFor(s.id)?.publishStatus !== "LOCKED").map((s) => s.id);
   function publishSelected() {
     if (selectedIds.length === 0) { toast("Select at least one student to publish.", "error"); return; }
     if (dirtyKeys.length > 0) { toast("You have unsaved score changes — click Save before publishing.", "error"); return; }
@@ -4483,115 +4513,20 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     </div>
   );
 
-  // Students with nothing recorded and no active structure to record against. Not results and not
-  // recordable: kept one click away (collapsed) so the roster is never lost, and never shown as data.
-  const unassignedCard = unassignedStudents.length > 0 && (
-    <div className="mb-5">
-      <p className="text-xs font-medium text-amber-700 mb-1.5">
-        No active Results Structure — {unassignedStudents.length} {unassignedStudents.length === 1 ? "student has" : "students have"} nothing to record against yet
-        {onOpenSettings ? <> · <button type="button" onClick={onOpenSettings} className="underline font-medium">Open Results Settings</button></> : ""}
-      </p>
-      <details className="rounded-lg border border-slate-200 bg-white">
-        <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-slate-500">Enrolled students ({unassignedStudents.length}) — not recordable until a structure is configured</summary>
-        <div className="overflow-x-auto border-t border-slate-100">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-xs">
-              <tr>
-                <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
-                <th className="text-left font-medium px-4 py-2.5">Student</th>
-                <th className="text-left font-medium px-3 py-2.5">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {unassignedStudents.map((s, i) => (
-                <tr key={s.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 text-slate-400">{i + 1}</td>
-                  <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{data.studentFullName(s)}</td>
-                  <td className="px-3 py-2 text-xs text-slate-400">Structure not configured</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
-    </div>
-  );
-
-  // Results recorded under a structure that is now closed with nothing active in its place. History:
-  // readable, clearly labelled, and deliberately without inputs, checkboxes or evidence controls.
-  const historicalByConfig = new Map();
-  for (const row of historicalRows) {
-    const key = row.config ? row.config.id : "unavailable";
-    if (!historicalByConfig.has(key)) historicalByConfig.set(key, { config: row.config, rows: [] });
-    historicalByConfig.get(key).rows.push(row);
-  }
-  const historicalSection = historicalRows.length > 0 && (
-    <div className="mb-5" data-testid="historical-results">
-      <p className="text-sm font-semibold text-slate-700 mb-0.5">Historical results under previous structure</p>
-      <p className="text-xs text-slate-400 mb-2">{historicalRows.length} {historicalRows.length === 1 ? "student has" : "students have"} results recorded under a structure that has since been closed. They are kept as history — they are not current results and cannot be edited{isStaff ? "; set up a new structure for new entries" : ""}.</p>
-      {[...historicalByConfig.values()].map(({ config, rows }) => {
-        const assessments = activeAssessments(config);
-        return (
-          <Card key={config ? config.id : "unavailable"} className="overflow-hidden mb-3">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-slate-500 text-xs">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
-                    <th className="text-left font-medium px-4 py-2.5">Student</th>
-                    {assessments.map((a) => (
-                      <th key={a.id} className="text-left font-medium px-3 py-2.5 whitespace-nowrap"><span className="block text-slate-600">{a.name}</span><span className="block font-normal text-slate-400">/{a.weight}</span></th>
-                    ))}
-                    <th className="text-left font-medium px-3 py-2.5 whitespace-nowrap">Total /{RESULT_TOTAL_WEIGHT}</th>
-                    <th className="text-left font-medium px-3 py-2.5">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map(({ student, record }, i) => {
-                    const totals = resultTotals(record);
-                    return (
-                      <tr key={student.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2 text-slate-400">{i + 1}</td>
-                        <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{data.studentFullName(student)}</td>
-                        {assessments.map((a) => {
-                          const sc = record.components?.[a.id]?.score;
-                          return <td key={a.id} className="px-3 py-2 text-slate-600">{sc != null ? sc : "—"}</td>;
-                        })}
-                        <td className="px-3 py-2 whitespace-nowrap text-slate-600">{totals.count > 0 ? (totals.completionStatus === "COMPLETE" ? totals.total : `${totals.entered} / ${totals.totalMax}`) : "—"}</td>
-                        <td className="px-3 py-2"><Badge tone="slate">{RESULT_STATE_LABEL[resultStateOf(record, evidence)]}</Badge><p className="text-[10px] mt-0.5 text-slate-400">{config ? `Structure v${config.version} — closed` : "Structure no longer available"} · read-only</p></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        );
-      })}
-    </div>
-  );
-
-  // Nothing to record against: no students, or no ACTIVE structure (with or without history). Each case
-  // says exactly which it is (never one generic message) and no phantom "result" rows are shown.
-  if (plan.state === "E_NO_STUDENTS" || groups.length === 0) {
-    const noStudents = plan.state === "E_NO_STUDENTS";
-    const gradeText = cls ? cls.grade : "this grade";
+  // No structure for this grade + semester (and nothing already recorded under an older one): no
+  // fields, no fallback columns, nothing to type into.
+  if (groups.length === 0) {
     return (
       <div>
         {backButton}
         <div className="mb-3">{titleRow}</div>
         <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
-        {noStudents ? (
-          <EmptyState icon={ShieldAlert} title="No students in this class" description={`No students are enrolled in ${cls ? data.classLabel(cls) : "this class"} for this academic year, so there is nothing to record.`} />
-        ) : (
-          <EmptyState
-            icon={ShieldAlert}
-            title="No Results Structure Configured"
-            description={`${plan.state === "D_HISTORY_ONLY" ? "No active assessment structure." : "Assessment structure not configured."} No Results Structure is active for ${gradeText} for ${SEMESTER_LABEL[semester]}. ${plan.state === "D_HISTORY_ONLY" ? "Earlier results are kept below as history." : "No results recorded."} ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
-            action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
-          />
-        )}
-        <div className="mt-4">{historicalSection}{unassignedCard}</div>
+        <EmptyState
+          icon={ShieldAlert}
+          title="No Results Structure Configured"
+          description={`No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
+          action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
+        />
       </div>
     );
   }
@@ -4614,8 +4549,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       </p>
 
       <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
-      {plan.state === "A_CONFIGURED_EMPTY" && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">Assessment structure configured. No results recorded yet — all {students.length} enrolled {students.length === 1 ? "student is" : "students are"} ready to record.</p>}
-      {plan.state === "B_CONFIGURED_RESULTS" && <p className="text-xs text-slate-400 mb-3">{[plan.counts.saved ? `${plan.counts.saved} saved` : null, plan.counts.locked ? `${plan.counts.locked} locked` : null, plan.counts.draft ? `${plan.counts.draft} draft` : null, `${plan.counts.notStarted} not started`].filter(Boolean).join(" · ")}</p>}
+      {!anyRecorded && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">No Results Recorded Yet — the structure is configured, but no student has a result.</p>}
 
       {groups.map((group) => {
         const { config, assessments } = group;
@@ -4657,7 +4591,6 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                       const canEdit = canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !rowLock.locked;
                       const locked = record?.publishStatus === "LOCKED";
                       const progress = totals.count === 0 ? "Not started" : totals.completionStatus === "COMPLETE" ? "Complete" : "In progress";
-                      const rowState = resultStateOf(record, evidence);
                       return (
                         <tr key={s.id} className="border-t border-slate-100">
                           {canPublish && (
@@ -4746,8 +4679,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                                 : <span className="text-slate-300">—</span>}
                           </td>
                           <td className="px-3 py-2">
-                            <Badge tone={rowState === "LOCKED" ? "red" : rowState === "SAVED" ? "green" : rowState === "DRAFT" ? "amber" : "slate"}>{RESULT_STATE_LABEL[rowState]}</Badge>
-                            {rowState !== "NOT_STARTED" && <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>}
+                            <Badge tone={record?.publishStatus === "LOCKED" ? "red" : record?.publishStatus === "PUBLISHED" ? "green" : "slate"}>{record?.publishStatus || "DRAFT"}</Badge>
+                            <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex justify-end gap-1.5">
@@ -4773,8 +4706,6 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
           </div>
         );
       })}
-      {historicalSection}
-      {unassignedCard}
       <p className="text-xs text-slate-400 mt-3">Test assessments take a photo or screenshot of the marked paper — it is required before the result can be published. Non-test assessments need no photo. Parents only see a photo once you mark it as shared.</p>
 
       {/* Phones: keep Save in reach while scrolling a long class list. */}
@@ -4859,7 +4790,6 @@ function ReportCardsPage() {
   return (
     <div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Report Cards</h1>
-      <AcademicYearTag className="mb-1" />
       <p className="text-sm text-slate-400 mb-4">One report card per student per year — it becomes available once every subject's Semester 2 result is complete. Generate → set the promotion decision → Publish → Lock to prevent further changes.</p>
       {db.classes.length === 0 ? <EmptyState icon={School} title="No classes yet" /> : (
         <>
@@ -4943,7 +4873,7 @@ function PromotionModal({ student, classId, onClose }) {
   // Scope the S2 lookup to the year this report card belongs to — classId alone collides for a
   // repeating/retained student who keeps the same classId across years (same fallback pattern as
   // DataContext.computeReportReadiness). Never derive the year from the calendar date.
-  const yearId = rc.academicYearId || (data.db.workspaceYear || {}).id || null;
+  const yearId = rc.academicYearId || (currentAcademicYear(data.db.academicYears) || {}).id || null;
   const readiness = data.computeReportReadiness(student.id, classId, yearId);
   const s2Pcts = readiness.required
     .map((subject) => resultTotals(data.db.results.find((r) => r.studentId === student.id && r.classId === classId && r.subject === subject && r.semester === "S2" && (!r.academicYearId || r.academicYearId === yearId))).pct)
@@ -5261,7 +5191,7 @@ function PaymentsPage({ onOpenStudent }) {
   const [segGrade, setSegGrade] = useState(""); // "" = every grade
   const monthly = data.monthlyFinanceReport();
 
-  const activeStudents = data.studentsInYear().filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
+  const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
   const families = data.familyGroups().map((fam) => ({ ...fam, financials: familyFinancials(fam.children, data) }));
 
   const filtered = families.filter((fam) => {
@@ -5321,10 +5251,7 @@ function PaymentsPage({ onOpenStudent }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-        <div>
-          <h1 className="text-lg font-semibold text-slate-800">Fees & Payments</h1>
-          <AcademicYearTag />
-        </div>
+        <h1 className="text-lg font-semibold text-slate-800">Fees & Payments</h1>
         <div className="flex gap-2">
           <GhostButton icon={Settings} onClick={() => setFeeSettingsOpen(true)}>Fee Settings</GhostButton>
           <PrimaryButton icon={BellRing} onClick={() => setReminderTarget("ALL")}>Remind All Unpaid</PrimaryButton>
@@ -5612,7 +5539,6 @@ function FeeSettingsModal({ open, onClose }) {
   const [editing, setEditing] = useState(null); // catalog fee type object or "new"
   const [rollingOut, setRollingOut] = useState(null); // catalog fee type object
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [feeYearId, setFeeYearId] = useState(null); // null = the current academic year
   const empty = { name: "", category: "TUITION", description: "", defaultUnitAmount: "" };
   const [form, setForm] = useState(empty);
   const { busy, run } = useMutationGuard();
@@ -5678,11 +5604,7 @@ function FeeSettingsModal({ open, onClose }) {
     );
   }
 
-  // Fee plans belong to ONE academic year. Defaults to the current year; the Owner / Finance
-  // Director can pick another (e.g. to set up next year's fees ahead of time) — fee rows, the
-  // rollout month picker and the conflict check below all follow the picked year.
-  const feeYears = [...db.academicYears].sort((a, b) => (b.yearStart || "").localeCompare(a.yearStart || ""));
-  const currentYear = feeYears.find((y) => y.id === feeYearId) || db.workspaceYear;
+  const currentYear = currentAcademicYear(db.academicYears);
 
   return (
     <>
@@ -5692,13 +5614,6 @@ function FeeSettingsModal({ open, onClose }) {
             <p className="text-xs text-slate-400">Fee types are a reusable catalog — roll each one out for an academic year to set its actual pricing and due dates.</p>
             <PrimaryButton icon={Plus} onClick={() => setEditing("new")}>Add Fee Type</PrimaryButton>
           </div>
-          {feeYears.length > 1 && currentYear && (
-            <Field label="Academic year">
-              <select className={inputCls + " sm:w-80"} value={currentYear.id} onChange={(e) => setFeeYearId(e.target.value)}>
-                {feeYears.map((y) => <option key={y.id} value={y.id}>{formatAcademicYearLabel(y)}{y.isCurrent ? " — current" : ""}</option>)}
-              </select>
-            </Field>
-          )}
           {(() => {
             // BLOCKER 7 §7: warn when two rolled-out school (TUITION) schedules both cover the same
             // grade for the current year — that's the ambiguous config a payment can't be recorded
@@ -5755,7 +5670,7 @@ function FeeSettingsModal({ open, onClose }) {
           title="Delete this fee type?" description={deleteTarget ? `This removes "${deleteTarget.name}" from the fee list. Fee types with any fee schedule are archived instead of deleted, to keep financial history intact.` : ""}
           onConfirm={confirmDelete} />
       </Modal>
-      {rollingOut && <RolloutFeeTypeModal open={!!rollingOut} onClose={() => setRollingOut(null)} feeType={rollingOut} year={currentYear} />}
+      {rollingOut && <RolloutFeeTypeModal open={!!rollingOut} onClose={() => setRollingOut(null)} feeType={rollingOut} />}
     </>
   );
 }
@@ -5767,29 +5682,47 @@ function FeeSettingsModal({ open, onClose }) {
 // themselves are generated server-side by generate_monthly_fee_installments from the academic
 // year's real year_start / year_end (one row per calendar month, spanning two calendar years if
 // the year does) — never hand-entered, never quarterly, never browser-clock math.
-// The billable months come from the academic year's own dates (see utils/billingPeriods.js) — the
-// year is the single source of truth, so no month outside it can ever be offered.
-function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
+function monthsForYear(year) {
+  return monthAnchorsForYear(year).map((a) => a.label);
+}
+// BLOCKER 6: month anchors ([{ anchor: "YYYY-MM-01", label: "September 2026" }, ...]) for the
+// academic year — the source for both the rollout month picker and the fee-schedule billed_months.
+function monthAnchorsForYear(year) {
+  if (!year || !year.yearStart || !year.yearEnd) return [];
+  const [sy, sm] = String(year.yearStart).split("-").map(Number);
+  const [ey, em] = String(year.yearEnd).split("-").map(Number);
+  if (!sy || !sm || !ey || !em) return [];
+  const out = [];
+  let y = sy, m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    const anchor = `${y}-${String(m).padStart(2, "0")}-01`;
+    out.push({
+      anchor,
+      label: `${ethiopianMonthLabelForGcMonthKey(anchor.slice(0, 7))} (${new Date(y, m - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" })})`,
+    });
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    if (out.length > 24) break;
+  }
+  return out;
+}
+
+function RolloutFeeTypeModal({ open, onClose, feeType }) {
   const data = useData();
   const auth = useAuth();
   const toast = useToast();
   const { db } = data;
-  const currentYear = year || db.workspaceYear;
+  const currentYear = currentAcademicYear(db.academicYears);
   const existingSchedule = currentYear ? db.feeSchedules.find((s) => s.feeTypeId === feeType.id && s.academicYearId === currentYear.id) : null;
   const [unitAmount, setUnitAmount] = useState(String(feeType.defaultUnitAmount || ""));
   const { busy, run } = useMutationGuard();
-  const billing = academicYearBillingPeriods(currentYear);
-  const monthAnchors = billing.periods; // [{ anchor, label, start, end, partial, ... }]
+  const monthAnchors = monthAnchorsForYear(currentYear);
   const months = monthAnchors.map((a) => a.label);
   // BLOCKER 6 §11: which months of the year this fee is billed for. Defaults to all for a new
   // rollout; for an existing schedule, seeded from its current installment months.
   const existingInstallmentAnchors = existingSchedule
     ? db.feeInstallments.filter((i) => i.feeScheduleId === existingSchedule.id).map((i) => (i.periodMonth || i.dueDate || "").slice(0, 7) + "-01").filter((a) => a.length === 10)
     : [];
-  // Installments that already exist outside the year's dates (the year's dates were changed after
-  // billing began). They keep their obligations and payments — shown read-only, never touched here.
-  const legacyAnchors = anchorsOutsideYear(currentYear, existingInstallmentAnchors);
-  const inYearInstallmentAnchors = existingInstallmentAnchors.filter((a) => !legacyAnchors.includes(a));
   const [billedAnchors, setBilledAnchors] = useState(() => monthAnchors.map((a) => a.anchor));
   // BLOCKER 7: school (TUITION) fees are billed only to the grades chosen here. Bus/TRANSPORT fees
   // are never grade-targeted (eligibility is "Uses Bus" only) so this grid is hidden for them.
@@ -5799,10 +5732,10 @@ function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
   useEffect(() => {
     if (!open) return;
     setUnitAmount(String(feeType.defaultUnitAmount || ""));
-    setBilledAnchors(existingSchedule && inYearInstallmentAnchors.length ? inYearInstallmentAnchors : monthAnchors.map((a) => a.anchor));
+    setBilledAnchors(existingSchedule && existingInstallmentAnchors.length ? existingInstallmentAnchors : monthAnchorsForYear(currentYear).map((a) => a.anchor));
     setGradeSel(existingSchedule && Array.isArray(existingSchedule.applicableGrades) ? existingSchedule.applicableGrades.slice() : []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, feeType.id, existingSchedule?.id, currentYear?.id, currentYear?.yearStart, currentYear?.yearEnd]);
+  }, [open, feeType.id, existingSchedule?.id]);
 
   if (!currentYear) return null;
 
@@ -5831,17 +5764,10 @@ function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
       </div>
     </Field>
   );
-  const InvalidYearNotice = !billing.valid && (
-    <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
-      <p className="font-semibold mb-1">This academic year's dates need fixing before fees can be set up.</p>
-      {billing.problems.map((p) => <p key={p.code} className="mb-1">{p.message}</p>)}
-      <p>Open <strong>Academic Calendar &amp; Attendance</strong> and correct the dates. No existing payment or fee record is changed by this.</p>
-    </div>
-  );
-  const MonthGrid = !billing.valid ? InvalidYearNotice : (
+  const MonthGrid = (
     <Field label="Months this fee applies to">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[11px] text-slate-400">{billedAnchors.length} of {monthAnchors.length} academic months selected</span>
+        <span className="text-[11px] text-slate-400">{billedAnchors.length} of {monthAnchors.length} selected</span>
         <div className="flex gap-2">
           <button type="button" className="text-[11px] font-medium text-brand-600" onClick={() => setBilledAnchors(monthAnchors.map((a) => a.anchor))}>All</button>
           <button type="button" className="text-[11px] font-medium text-slate-400" onClick={() => setBilledAnchors([])}>None</button>
@@ -5853,33 +5779,25 @@ function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
           return (
             <label key={a.anchor} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs cursor-pointer ${on ? "border-brand-300 bg-brand-50 text-slate-700" : "border-slate-200 text-slate-500"}`}>
               <input type="checkbox" checked={on} onChange={() => toggleAnchor(a.anchor)} className="rounded border-slate-300 text-brand-600" />
-              <span className="min-w-0">
-                <span className="block truncate">{a.label}</span>
-                {a.partial && <span className="block text-[10px] text-slate-400 truncate">Partial: {fmtDate(a.start)} – {fmtDate(a.end)}</span>}
-              </span>
+              <span className="truncate">{a.label}</span>
             </label>
           );
         })}
       </div>
-      {legacyAnchors.length > 0 && (
-        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mt-2">
-          Already billed outside this academic year's dates: {legacyAnchors.map((a) => ethiopianMonthLabelForGcMonthKey(a.slice(0, 7))).join(", ")}. Their fees and payments are kept exactly as recorded and can't be changed here.
-        </p>
-      )}
     </Field>
   );
 
   if (existingSchedule) {
     const rows = db.feeInstallments.filter((i) => i.feeScheduleId === existingSchedule.id).sort((a, b) => a.sequenceIndex - b.sequenceIndex);
-    const currentAnchorSet = new Set(inYearInstallmentAnchors);
+    const currentAnchorSet = new Set(existingInstallmentAnchors);
     const targetSet = new Set(billedAnchors);
     const toAdd = billedAnchors.filter((a) => !currentAnchorSet.has(a));
-    const toRemove = inYearInstallmentAnchors.filter((a) => !targetSet.has(a));
+    const toRemove = existingInstallmentAnchors.filter((a) => !targetSet.has(a));
     const curGrades = (existingSchedule.applicableGrades || []).slice().sort().join("|");
     const nextGrades = gradeSel.slice().sort().join("|");
     const gradesDirty = isSchoolFee && nextGrades !== curGrades;
     const droppedGrades = isSchoolFee ? (existingSchedule.applicableGrades || []).filter((g) => !gradeSel.includes(g)) : [];
-    const dirty = billing.valid && (toAdd.length > 0 || toRemove.length > 0 || gradesDirty);
+    const dirty = toAdd.length > 0 || toRemove.length > 0 || gradesDirty;
     function saveMonths() {
       if (billedAnchors.length === 0) { toast("Select at least one month.", "error"); return; }
       if (gradesDirty && gradeSel.length === 0) { toast("Select at least one grade this fee applies to.", "error"); return; }
@@ -5919,7 +5837,6 @@ function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
 
   function submit(e) {
     e && e.preventDefault && e.preventDefault();
-    if (!billing.valid) { toast("Fix this academic year's dates in Academic Calendar & Attendance before rolling out fees.", "error"); return; }
     if (!unitAmount || Number(unitAmount) <= 0) { toast("Please enter the monthly amount.", "error"); return; }
     if (billedAnchors.length === 0) { toast("Select at least one month this fee applies to.", "error"); return; }
     if (isSchoolFee && gradeSel.length === 0) { toast("Select at least one grade this school fee applies to.", "error"); return; }
@@ -5936,16 +5853,16 @@ function RolloutFeeTypeModal({ open, onClose, feeType, year }) {
     <Modal open={open} onClose={onClose} title={`Roll Out ${feeType.name} — ${formatAcademicYearLabel(currentYear)}`}>
       <div>
         <p className="text-xs text-slate-400 -mt-1 mb-2">
-          {feeType.category === "TRANSPORT" ? "Charged monthly to students who use the bus." : "Charged monthly."} One installment is generated for each month you select below{months.length > 0 ? <> ({formatAcademicYearLabel(currentYear)} runs {months[0]} – {months[months.length - 1]})</> : null}.
+          {feeType.category === "TRANSPORT" ? "Charged monthly to students who use the bus." : "Charged monthly."} One installment is generated for each month you select below ({formatAcademicYearLabel(currentYear)} runs {months[0]} – {months[months.length - 1]}).
         </p>
         <Field label={`Amount per month (${CURRENCY})`} required>
           <input type="number" min="0" className={inputCls} value={unitAmount} onChange={(e) => setUnitAmount(e.target.value)} />
         </Field>
         {isSchoolFee && GradeGrid}
-        {MonthGrid}
+        {monthAnchors.length > 0 && MonthGrid}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-          <PrimaryButton type="button" onClick={submit} icon={Check} disabled={!billing.valid} loading={busy} loadingText="Rolling out…">Roll Out</PrimaryButton>
+          <PrimaryButton type="button" onClick={submit} icon={Check} loading={busy} loadingText="Rolling out…">Roll Out</PrimaryButton>
         </div>
       </div>
     </Modal>
@@ -6138,15 +6055,6 @@ function FeeMonthGrid({ rows, lines, onToggle, onAmount }) {
         const line = byId.get(r.installmentId);
         const on = !!line;
         const fullyPaid = r.status === "PAID";
-        // A month the student was never billed for: neutral, disabled, labelled in words.
-        if (r.status === "NOT_APPLICABLE") {
-          return (
-            <div key={r.installmentId} data-status="NOT_APPLICABLE" aria-disabled="true" className="rounded-lg border border-slate-100 bg-slate-50 p-2 opacity-70">
-              <span className="block text-xs font-medium text-slate-400 truncate">{r.label}</span>
-              <span className="block text-[11px] text-slate-400">Not applicable</span>
-            </div>
-          );
-        }
         return (
           <div key={r.installmentId} className={`rounded-lg border p-2 ${on ? "border-brand-300 bg-brand-50" : fullyPaid ? "border-slate-100 bg-slate-50" : "border-slate-200"}`}>
             <label className={`flex items-start gap-1.5 ${fullyPaid ? "cursor-default" : "cursor-pointer"}`}>
@@ -6186,11 +6094,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
   const [note, setNote] = useState("");
   const [receiptPages, setReceiptPages] = useState(null);
   const [receiptNo, setReceiptNo] = useState("");
-  const [historicalReason, setHistoricalReason] = useState("");
   const { busy, run } = useMutationGuard();
-  // Viewing a CLOSED year: a payment here is a historical adjustment (owner only, reason required, audited).
-  const closedYear = !!(data.db.yearScope && data.db.yearScope.isReadOnlyYear);
-  const isOwner = auth.realUser && auth.realUser.role === ROLES.OWNER;
 
   // Every fee type that applies to this student this year, each with its month rows normalized to
   // { installmentId, label, remaining, status, isCurrent }. TRANSPORT is only included when the
@@ -6203,11 +6107,9 @@ function RecordPaymentModal({ open, onClose, student, students }) {
       .sort((a, b) => (a.category === "TRANSPORT" ? 1 : 0) - (b.category === "TRANSPORT" ? 1 : 0))
       .map((ft) => {
         const g = data.feeInstallmentRowsForStudent(stu, ft);
-        // every month of the year, in order: the ones this student was never billed for come through as
-        // NOT_APPLICABLE (shown, but not selectable and never payable)
-        return { feeType: g.feeType, rows: (g.periods || g.rows).map((r) => ({ installmentId: r.installmentId, label: r.label, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent })) };
+        return { feeType: g.feeType, rows: g.rows.map((r) => ({ installmentId: r.installmentId, label: r.label, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent })) };
       })
-      .filter((g) => g.rows.some((r) => r.status !== "NOT_APPLICABLE"));
+      .filter((g) => g.rows.length > 0);
   }
 
   useEffect(() => {
@@ -6218,8 +6120,8 @@ function RecordPaymentModal({ open, onClose, student, students }) {
       // §37: preselect the current month if it has an unpaid balance — never auto-submit it.
       const groups = feeGroupsFor(c);
       const pick = (rows) => {
-        const cur = rows.find((r) => r.isCurrent && r.status !== "PAID" && r.status !== "NOT_APPLICABLE");
-        const first = cur || rows.find((r) => r.status !== "PAID" && r.status !== "NOT_APPLICABLE");
+        const cur = rows.find((r) => r.isCurrent && r.status !== "PAID");
+        const first = cur || rows.find((r) => r.status !== "PAID");
         return first ? [{ installmentId: first.installmentId, amount: first.remaining }] : [];
       };
       nextDrafts[c.id] = Object.fromEntries(groups.map((g) => [g.feeType.id, pick(g.rows)]));
@@ -6231,7 +6133,6 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     setNote("");
     setReceiptPages(null);
     setReceiptNo("");
-    setHistoricalReason("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, student, students]);
 
@@ -6310,13 +6211,9 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     // Financial mutation: guard hard against double-submit. The key encodes this exact
     // intentional action (who/how-much/when/how) so a rapid second click or repeated Enter
     // is dropped, while a genuinely separate later payment for the same family still runs.
-    if (closedYear && !isOwner) { toast("This academic year is closed. Only the Owner can record a payment into it.", "error"); return; }
-    if (closedYear && !historicalReason.trim()) { toast("Give a reason for recording a payment into a closed academic year.", "error"); return; }
     const opKey = `record-payment:${selectedIds.slice().sort().join(",")}:${date}:${finalMethod}:${lines.reduce((s, l) => s + l.amount, 0)}:${lines.length}`;
     run(async () => {
-      const result = closedYear
-        ? await data.recordHistoricalPayment(lines, auth.realUser.id, historicalReason)
-        : await data.recordPaymentBatch(lines, auth.realUser.id);
+      const result = await data.recordPaymentBatch(lines, auth.realUser.id);
       if (!result.receiptNo) { toast(result.error || "Couldn't record this payment.", "error"); return; }
       const rows = result.entries.map((entry) => ({ studentId: entry.studentId, studentName: entry.studentName, grade: entry.grade, amount: entry.amount, isBus: entry.isBus, label: entry.description }));
       setReceiptPages(buildReceiptPages(rows));
@@ -6334,17 +6231,6 @@ function RecordPaymentModal({ open, onClose, student, students }) {
     <>
       <Modal open={open && !receiptPages} onClose={closeAll} wide title={candidates.length > 1 ? "Record Family Payment" : `Record Payment — ${data.studentFullName(candidates[0])}`}>
         <div>
-          {closedYear && (
-            <div role="alert" className="text-xs text-slate-700 bg-slate-100 border border-slate-300 rounded-lg px-3 py-2 mb-3">
-              <p className="font-semibold mb-1">Historical adjustment — this academic year is closed.</p>
-              {isOwner ? (
-                <>
-                  <p className="mb-2">The payment is recorded against this closed year (not the current one) and written to the audit log. Give the reason.</p>
-                  <input className={inputCls} value={historicalReason} onChange={(e) => setHistoricalReason(e.target.value)} placeholder="e.g. Arrears collected after the year ended" aria-label="Reason for the historical adjustment" />
-                </>
-              ) : <p>Only the Owner can record a payment into a closed academic year.</p>}
-            </div>
-          )}
           {conflictStudents.length > 0 && (
             <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
               <strong>Fee configuration conflict.</strong> {conflictStudents.map((c) => `${data.studentFullName(c.stu)} (${c.stu.grade}) is set up under ${c.fees.map((f) => f.name).join(" + ")}`).join("; ")}.
@@ -6456,7 +6342,7 @@ function RecordPaymentModal({ open, onClose, student, students }) {
             <p className="text-sm font-semibold text-slate-700">Total: {formatMoney(previewTotal)}</p>
             <div className="flex gap-2">
               <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
-              <PrimaryButton type="button" onClick={submit} icon={Check} disabled={conflictStudents.length > 0 || (closedYear && !isOwner)} loading={busy} loadingText="Recording…">{closedYear ? "Record Historical Payment" : "Record Payment"}</PrimaryButton>
+              <PrimaryButton type="button" onClick={submit} icon={Check} disabled={conflictStudents.length > 0} loading={busy} loadingText="Recording…">Record Payment</PrimaryButton>
             </div>
           </div>
         </div>
@@ -6588,7 +6474,7 @@ function VoidPaymentModal({ open, onClose, payment }) {
         <div>
           <Card className="p-3 mb-3 bg-slate-50">
             <p className="text-sm font-medium text-slate-700">{studentNames} — {description}</p>
-            <p className="text-xs text-slate-400 mt-0.5">{methodName} • {ecDate(payment.date)}{payment.receiptNo ? ` • Receipt #${payment.receiptNo}` : ""}</p>
+            <p className="text-xs text-slate-400 mt-0.5">{methodName} • {fmtDate(payment.date)}{payment.receiptNo ? ` • Receipt #${payment.receiptNo}` : ""}</p>
             <p className="text-sm font-semibold text-slate-700 mt-1">{formatMoney(payment.amountTotal)}</p>
           </Card>
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
@@ -6732,7 +6618,7 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
   const data = useData();
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
   const [receiptPaymentId, setReceiptPaymentId] = useState(null);
-  const defaultYear = data.db.workspaceYear;
+  const defaultYear = currentAcademicYear(data.db.academicYears);
   const [selectedYearId, setSelectedYearId] = useState(defaultYear ? defaultYear.id : "");
   useEffect(() => { setSelectedYearId(defaultYear ? defaultYear.id : ""); /* reset when switching children */ }, [child?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!child) return <EmptyState title="No children connected" description="Connect a child from Settings to view payments." />;
@@ -6794,7 +6680,7 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
       {otherBalances.length > 0 && <h3 className="text-sm font-semibold text-slate-700 mb-2">Other Fees</h3>}
       <div className={`grid sm:grid-cols-2 gap-3 ${otherBalances.length > 0 ? "mb-4" : ""}`}>
         {otherBalances.map((b) => {
-          const coverage = feeCoverage(b.paid, b.feeType, activeYearStartDate(data.db.workspaceYear ? [data.db.workspaceYear] : data.db.academicYears));
+          const coverage = feeCoverage(b.paid, b.feeType, activeYearStartDate(data.db.academicYears));
           const feeDue = data.dueStatusForFeeType(child, b.feeType, selectedYear?.id);
           return (
             <Card key={b.feeType.id} className="p-4">
@@ -6804,12 +6690,12 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
               </div>
               <p className="text-xs text-slate-400">Paid {Math.round((b.paid || 0) * 10) / 10} of {b.feeType.unitsPerYear} months</p>
               {coverage.coveredThrough ? (
-                <p className="text-xs text-emerald-700 mt-1">Paid through {ecDate(coverage.coveredThrough)}</p>
+                <p className="text-xs text-emerald-700 mt-1">Paid through {fmtDateLong(coverage.coveredThrough)}</p>
               ) : (
                 <p className="text-xs text-slate-400 mt-1">No payment made yet this year</p>
               )}
               {coverage.remainingMonths > 0 && coverage.remainingTo && (
-                <p className="text-xs text-amber-700">{Math.round(coverage.remainingMonths * 10) / 10} months remaining ({ecDate(coverage.remainingFrom)} – {ecDate(coverage.remainingTo)})</p>
+                <p className="text-xs text-amber-700">{Math.round(coverage.remainingMonths * 10) / 10} months remaining ({fmtDateLong(coverage.remainingFrom)} – {fmtDateLong(coverage.remainingTo)})</p>
               )}
               {b.amountOwed > 0 && <p className="text-sm font-semibold text-slate-700 mt-1">{formatMoney(b.amountOwed)} remaining</p>}
             </Card>
@@ -6826,7 +6712,7 @@ function ParentPaymentsPage({ activeChildId, setActiveChildId }) {
               <div key={p.id} className="flex items-center justify-between px-4 py-3 text-sm">
                 <div>
                   <p className={`font-medium ${voided ? "text-slate-400 line-through" : "text-slate-700"}`}>{data.describePayment(p)}</p>
-                  <p className="text-xs text-slate-400">{data.paymentMethodName(p)} • {ecDate(p.date)}{p.receiptNo ? ` • Receipt #${p.receiptNo}` : ""}</p>
+                  <p className="text-xs text-slate-400">{data.paymentMethodName(p)} • {fmtDate(p.date)}{p.receiptNo ? ` • Receipt #${p.receiptNo}` : ""}</p>
                   {voided && <p className="text-xs text-red-600 mt-0.5">This payment was voided and does not count toward the balance.</p>}
                 </div>
                 <div className="flex items-center gap-2.5">
@@ -7240,23 +7126,12 @@ function ReportsPage() {
   // shown on every student profile and the parent portal). Counting only "Present" here made
   // Reports disagree with the rest of the app for any class that had a late arrival.
   const isPresentLike = (a) => a.status === "Present" || a.status === "Late";
-  // A report never silently mixes years: attendance, results, incidents and class lists are all the
-  // WORKSPACE year's. In the current year the attendance card is "today"; for any other year there is no
-  // "today", so it is that year's overall rate.
-  const year = db.workspaceYear;
-  const isCurrent = data.db.yearScope.isCurrentYear;
-  const inYear = (dateKey) => !!year && dateKey >= year.yearStart && dateKey <= year.yearEnd;
-  const yearAttendance = db.attendance.filter((a) => inYear(a.date));
-  const attendanceRows = isCurrent ? yearAttendance.filter((a) => a.date === todayKey) : yearAttendance;
-  const roll = data.studentsInYear();
   const attendanceRate = (() => {
-    const t = attendanceRows;
+    const t = db.attendance.filter((a) => a.date === todayKey);
     return t.length ? Math.round((t.filter(isPresentLike).length / t.length) * 100) : null;
   })();
-  const yearResults = db.results.filter((r) => !year || !r.academicYearId || r.academicYearId === year.id);
-  const yearBehavior = db.behaviorRecords.filter((b) => !b.createdAt || inYear(new Date(b.createdAt).toISOString().slice(0, 10)));
   const avgResult = (() => {
-    const withTotals = yearResults.map((r) => resultTotals(r)).filter((t) => t.count > 0 && t.pct !== null);
+    const withTotals = db.results.map((r) => resultTotals(r)).filter((t) => t.count > 0 && t.pct !== null);
     if (!withTotals.length) return null;
     return Math.round(withTotals.reduce((a, t) => a + t.pct, 0) / withTotals.length);
   })();
@@ -7264,29 +7139,29 @@ function ReportsPage() {
   // per class, not tracked per student), so a real "completion %" can't be computed. Report the
   // honest figure we do have: homework assigned in the current academic year.
   const homeworkAssigned = (() => {
+    const year = currentAcademicYear(db.academicYears);
     return db.homework.filter((h) => !year || !h.academicYearId || h.academicYearId === year.id).length;
   })();
-  const behaviorByType = BEHAVIOR_TYPES.map((t) => ({ label: t, value: yearBehavior.filter((b) => b.type === t).length })).filter((x) => x.value > 0);
+  const behaviorByType = BEHAVIOR_TYPES.map((t) => ({ label: t, value: db.behaviorRecords.filter((b) => b.type === t).length })).filter((x) => x.value > 0);
   const maxB = Math.max(...behaviorByType.map((b) => b.value), 1);
 
   return (
     <div>
       <h1 className="text-lg font-semibold text-slate-800 mb-1">Reports</h1>
-      <p className="text-sm text-slate-400 mb-1">School-wide performance and activity summaries.</p>
-      <AcademicYearTag className="mb-4" />
+      <p className="text-sm text-slate-400 mb-4">School-wide performance and activity summaries.</p>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <StatCard label={isCurrent ? "Attendance Today" : "Attendance (whole year)"} value={attendanceRate !== null ? `${attendanceRate}%` : "—"} icon={ClipboardCheck} tone="emerald" />
+        <StatCard label="Attendance Today" value={attendanceRate !== null ? `${attendanceRate}%` : "—"} icon={ClipboardCheck} tone="emerald" />
         <StatCard label="Average Academic Result" value={avgResult !== null ? `${avgResult}%` : "—"} icon={FileBarChart} tone="sky" />
         <StatCard label="Homework Assigned" value={homeworkAssigned} icon={ClipboardList} tone="indigo" />
-        <StatCard label="Behavior Incidents" value={yearBehavior.length} icon={AlertTriangle} tone="amber" />
+        <StatCard label="Behavior Incidents" value={db.behaviorRecords.length} icon={AlertTriangle} tone="amber" />
       </div>
       <div className="grid lg:grid-cols-2 gap-4">
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-4">Class Attendance</h3>
           <div className="space-y-3">
             {db.classes.map((c) => {
-              const students = roll.filter((s) => s.classId === c.id);
-              const att = attendanceRows.filter((a) => a.classId === c.id);
+              const students = db.students.filter((s) => s.classId === c.id);
+              const att = db.attendance.filter((a) => a.classId === c.id && a.date === todayKey);
               const pct = att.length ? Math.round((att.filter(isPresentLike).length / att.length) * 100) : null;
               return (
                 <div key={c.id}>
@@ -7330,7 +7205,6 @@ function SettingsPage({ role }) {
   const [profileError, setProfileError] = useState("");
   const { busy: profileBusy, run: runProfile } = useMutationGuard();
   const { busy: pwBusy, run: runPw } = useMutationGuard();
-  const [yearSettingsOpen, setYearSettingsOpen] = useState(false);
 
   useEffect(() => { setName(auth.currentUser.name); setPhone(auth.currentUser.phone || ""); }, [auth.currentUser.id]);
 
@@ -7372,15 +7246,6 @@ function SettingsPage({ role }) {
   return (
     <div className="max-w-2xl">
       <h1 className="text-lg font-semibold text-slate-800 mb-4">Settings</h1>
-
-      {canManageAcademicYears(auth.currentUser) && (
-        <Card className="p-5 mb-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-1">Academic Year</h3>
-          <p className="text-xs text-slate-400 mb-3">The current academic year, its calendar, previous years and starting the next one.</p>
-          <GhostButton icon={CalendarDays} onClick={() => setYearSettingsOpen(true)}>Open Academic Year settings</GhostButton>
-          <AcademicYearSettings open={yearSettingsOpen} onClose={() => setYearSettingsOpen(false)} />
-        </Card>
-      )}
 
       <Card className="p-5 mb-4">
         <h3 className="text-sm font-semibold text-slate-700 mb-3">Profile</h3>
@@ -7463,6 +7328,6 @@ export {
   StaffLeaveRequestForm, LeaveRequestHistoryList, HomeworkAdminPage, ResultsPage,
   AnnounceExamModal, SubjectSemesterResultsEditor, BehaviorAdminPage, AnnouncementsPage,
   CreateAnnouncementModal, PaymentsPage, FeeSettingsModal, RecordPaymentModal, ReminderModal,
-  ParentPaymentsPage, MessagesPage, NotificationsPage, ReportsPage, SettingsPage, ReportCardsPage, AcademicYearSettings,
-  PayslipModal, RecentPaymentsCard, AcademicCalendarSettingsModal,
+  ParentPaymentsPage, MessagesPage, NotificationsPage, ReportsPage, SettingsPage, ReportCardsPage,
+  PayslipModal, RecentPaymentsCard,
 };
