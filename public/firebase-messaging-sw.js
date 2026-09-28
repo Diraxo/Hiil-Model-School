@@ -10,13 +10,18 @@
  * side (src/services/pushService.js) still uses the official Firebase SDK to mint the FCM token.
  *
  * Payload contract (supabase/functions/push-fanout/logic.ts buildMessage, platform "web"):
- *   data-only { title, body, url, tag, notificationId, type, navigation }  -- our backend
- *   notification { title, body }                                            -- Firebase Console "Send test message"
- * The OS notification always carries the Hiil Model School identity (title + app icon). Only a
- * notification id travels in the URL; the app re-checks the signed-in user's access when it opens.
+ *   data-only { title, body, url, tag, notificationId, type, navigation, badge }  -- our backend
+ *   notification { title, body }                                                   -- Firebase Console "Send test message"
+ * `badge` is the recipient's authoritative unread count at send time, applied via the Badging API
+ * (self.registration.setAppBadge/clearAppBadge) -- unsupported browsers (iOS Safari has no Badging API
+ * at all) just skip it. Only a notification id travels in the URL; the app re-checks the signed-in
+ * user's access when it opens.
  */
 var HIIL_ICON = "/icons/icon-192.png?v=hiil1";
-var HIIL_BADGE = "/icons/icon-192.png?v=hiil1";
+// Android's status-bar "badge" icon is alpha-masked by the OS (only the alpha channel is used, tinted
+// to whatever color the system wants) -- it must be a monochrome, mostly-transparent glyph, never the
+// full-color content icon above. Using the same file for both renders as a solid dark blob on Android.
+var HIIL_BADGE = "/icons/notification-badge.png?v=hiil1";
 var HIIL_TITLE = "Hiil Model School";
 
 self.addEventListener("install", function () {
@@ -51,6 +56,11 @@ function hiilParsePayload(event) {
   var d = (j.data && typeof j.data === "object") ? j.data : {};
   var n = (j.notification && typeof j.notification === "object") ? j.notification : {};
   var id = d.notificationId ? String(d.notificationId) : "";
+  var badge = null;
+  if (d.badge !== undefined && d.badge !== null && d.badge !== "") {
+    var n2 = Number(d.badge);
+    if (!isNaN(n2) && n2 >= 0) badge = n2;
+  }
   return {
     title: String(d.title || n.title || HIIL_TITLE),
     body: String(d.body || n.body || "You have a new notification"),
@@ -58,7 +68,19 @@ function hiilParsePayload(event) {
     tag: String(d.tag || id || "hiil-general"),
     notificationId: id,
     type: String(d.type || ""),
+    badge: badge,
   };
+}
+
+/** Best-effort: sets the installed PWA's app-icon badge to the given count (authoritative, sent by the
+ * server -- see supabase/functions/push-fanout/logic.ts buildMessage). Unsupported browsers (desktop
+ * Chrome when not installed, Firefox, iOS Safari) simply have no setAppBadge/clearAppBadge to call. */
+async function hiilSyncBadge(count) {
+  try {
+    if (count === null || count === undefined) return;
+    if (count > 0 && self.registration.setAppBadge) await self.registration.setAppBadge(count);
+    else if (count <= 0 && self.registration.clearAppBadge) await self.registration.clearAppBadge();
+  } catch (e) { /* Badging API not supported here -- no-op */ }
 }
 
 function hiilIsIos() {
@@ -76,6 +98,9 @@ self.addEventListener("push", function (event) {
       // through Supabase Realtime -- no polling).
       wins[i].postMessage({ type: "HIIL_PUSH_RECEIVED", notificationId: p.notificationId, title: p.title, body: p.body, pushType: p.type });
     }
+    // The app-icon badge always reflects the server's authoritative unread count, regardless of
+    // whether the OS banner below is shown or suppressed for a visible foreground tab.
+    await hiilSyncBadge(p.badge);
     // App is open and visible: the in-app toast + notification center already tell the user, so skip
     // the OS banner. iOS/WebKit requires every push to be user-visible (repeated silent pushes can get
     // the subscription revoked), so there we always show it (the tag makes it replace, not stack).

@@ -560,6 +560,9 @@ function PaymentStatusBadge({ status }) {
   if (status === "PARTIAL") return <Badge tone="amber">Partially paid</Badge>;
   // BLOCKER 6: "no fee configured" must never read as "paid in full".
   if (status === "NO_FEE") return <Badge tone="slate">No fee configured</Badge>;
+  // A month the student was never billed for (they enrolled after it). Neutral, and worded — never
+  // colour alone — so it can't be mistaken for a debt.
+  if (status === "NOT_APPLICABLE") return <Badge tone="slate">Not applicable</Badge>;
   return <Badge tone="red">Unpaid</Badge>;
 }
 
@@ -593,21 +596,34 @@ function FeeScheduleList({ rows, emptyLabel = "Nothing configured yet." }) {
   if (!rows || rows.length === 0) return <p className="text-xs text-slate-400 py-2">{emptyLabel}</p>;
   return (
     <div className="divide-y divide-slate-100">
-      {rows.map((r, i) => (
-        <div key={i} className="flex items-center justify-between py-2 text-sm gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <p className="font-medium text-slate-700 truncate">{r.label}</p>
-              {r.current && <span className="shrink-0 text-[10px] font-medium text-brand-600 bg-brand-50 border border-brand-100 px-1.5 py-0.5 rounded-full">Current</span>}
+      {rows.map((r, i) => {
+        // A month this student was never billed for: neutral, disabled-looking, no amounts — it is not a
+        // debt and contributes nothing to any balance.
+        if (r.status === "NOT_APPLICABLE") {
+          return (
+            <div key={i} data-status="NOT_APPLICABLE" aria-disabled="true" className="flex items-center justify-between py-2 text-sm gap-3 opacity-70">
+              <p className="font-medium text-slate-400 truncate min-w-0">{r.label}</p>
+              <PaymentStatusBadge status="NOT_APPLICABLE" />
             </div>
-            {r.dueLabel && <p className="text-xs text-slate-400">{r.dueLabel}</p>}
+          );
+        }
+        return (
+          <div key={i} data-status={r.status} className="flex items-center justify-between py-2 text-sm gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <p className="font-medium text-slate-700 truncate">{r.label}</p>
+                {r.current && <span className="shrink-0 text-[10px] font-medium text-brand-600 bg-brand-50 border border-brand-100 px-1.5 py-0.5 rounded-full">Current</span>}
+              </div>
+              {r.dueLabel && <p className="text-xs text-slate-400">{r.dueLabel}</p>}
+            </div>
+            <div className="text-right shrink-0">
+              <PaymentStatusBadge status={r.status} />
+              <p className="text-xs text-slate-500 mt-0.5">{formatMoney(r.paid)} paid{r.remaining > 0 ? ` • ${formatMoney(r.remaining)} remaining` : ""}</p>
+              {r.voided > 0 && <p className="text-[11px] text-slate-400 mt-0.5">Receipt voided — {formatMoney(r.voided)} not counted</p>}
+            </div>
           </div>
-          <div className="text-right shrink-0">
-            <PaymentStatusBadge status={r.status} />
-            <p className="text-xs text-slate-500 mt-0.5">{formatMoney(r.paid)} paid{r.remaining > 0 ? ` • ${formatMoney(r.remaining)} remaining` : ""}</p>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

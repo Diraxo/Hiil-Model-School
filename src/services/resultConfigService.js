@@ -82,9 +82,22 @@ export function createResultConfigService() {
       return (data || []).map(mapAudit);
     },
 
-    // Deletes the structure for one year + semester + grade. The server picks the safe outcome:
-    // DELETED when no result is recorded under it, ARCHIVED (kept for the recorded results, closed to
-    // new entries) when some are. Returns { grade, semester, version, outcome }.
+    // What deleting the structure would run into, straight from the tables: the students who have SAVED
+    // results under it (any of them blocks the delete) and how many empty drafts would be detached.
+    async deleteImpact({ academicYearId, semester, grade }) {
+      const { data, error } = await supabase.rpc("result_configuration_delete_impact", {
+        p_academic_year_id: academicYearId,
+        p_semester: semester,
+        p_grade: grade,
+      });
+      if (error) throw error;
+      return data;
+    },
+
+    // Deletes the structure for one year + semester + grade. The server REFUSES (error carries the
+    // student count, and `details` the affected-student list) while any saved result exists under it;
+    // otherwise it detaches empty drafts and deletes. Returns { grade, semester, version, outcome: "DELETED",
+    // detachedEmptyDrafts }.
     async remove({ academicYearId, semester, grade }) {
       const { data, error } = await supabase.rpc("delete_result_configuration", {
         p_academic_year_id: academicYearId,

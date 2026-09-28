@@ -3,13 +3,12 @@
 // which sort/compare correctly with plain string comparison, so most of this module never
 // touches the Date object at all.
 import { academicYearStart } from "./constants";
-import { ecYearLabelForGcStart, formatEthiopianDateFromKey } from "./ethiopianCalendar";
-import { fmtDateLong } from "./helpers";
+import { ecYearLabelForGcStart, ethiopianToGregorianKey, formatEthiopianDateWithGc } from "./ethiopianCalendar";
 
 // Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC date in
-// attendance-availability messages, keep the Gregorian date visible alongside it.
+// attendance-availability messages, keep the Gregorian date (long form) visible alongside it.
 function ecDate(dateKey) {
-  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDateLong(dateKey)} G.C.)` : "";
+  return formatEthiopianDateWithGc(dateKey, { long: true });
 }
 
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -41,8 +40,21 @@ const DEFAULT_BREAK_DAYS = 15;
 // per-academic-year setting (academic_years.result_finalization_grace_days); this is only the default.
 const DEFAULT_RESULT_FINALIZATION_GRACE_DAYS = 15;
 
+// The academic year's dates are authoritative; its labels are generated from them and never typed
+// by an admin (the row's UUID `id` is the identifier, the labels are display text only).
+// G.C.: "2026-2027" from the start/end years (a single year if both fall in the same one).
+// E.C.: the school year's Ethiopian label — see ecYearLabelForGcStart for the New-Year convention.
+function deriveAcademicYearLabels(yearStart, yearEnd) {
+  const startYear = Number(String(yearStart).slice(0, 4));
+  const endYear = Number(String(yearEnd || yearStart).slice(0, 4));
+  return {
+    gcLabel: endYear > startYear ? `${startYear}-${endYear}` : `${startYear}`,
+    ecLabel: ecYearLabelForGcStart(new Date(yearStart + "T00:00:00")),
+  };
+}
+
 // Sensible out-of-the-box calendar for a school year starting on `start` (a Date, defaults to the
-// current September-to-September school year) — used both to seed the very first academic year
+// current September-to-July school year) — used both to seed the very first academic year
 // and as a template when an admin creates a new one.
 function defaultAcademicCalendar(start = academicYearStart()) {
   const yearStart = toKey(start);
@@ -51,13 +63,18 @@ function defaultAcademicCalendar(start = academicYearStart()) {
   const breakDays = DEFAULT_BREAK_DAYS;
   const breakEnd = addDays(sem1End, breakDays);
   const sem2Start = addDays(breakEnd, 1);
-  const yearEnd = addDays(yearStart, 333); // ~11 months, end of school year
+  // The school year runs Meskerem -> Sene: 10 Ethiopian months, ending on Sene 30 of the E.C. year the
+  // start date belongs to (Meskerem 1 -> Sene 30 = 11 Sep 2026 -> 7 Jul 2027 for 2019 E.C.). Hamle,
+  // Nehasse and Pagumen are the summer break and are never billing/payroll periods.
+  const ecStartYear = Number(ecYearLabelForGcStart(start).split("-")[0]);
+  const senEnd = ethiopianToGregorianKey(ecStartYear, 10, 30);
+  const yearEnd = senEnd > yearStart ? senEnd : addDays(yearStart, 300);
   const sem2End = yearEnd;
-  const gcLabel = `${start.getFullYear()}-${start.getFullYear() + 1}`;
+  const { gcLabel, ecLabel } = deriveAcademicYearLabels(yearStart, yearEnd);
   return {
     yearName: gcLabel, // kept for back-compat with any code still reading `.yearName`
     gcLabel,
-    ecLabel: ecYearLabelForGcStart(start),
+    ecLabel,
     yearStart, yearEnd,
     sem1Start, sem1End,
     breakDays,
@@ -85,12 +102,29 @@ function activeYearStartDate(academicYears) {
   return year && year.yearStart ? new Date(year.yearStart + "T00:00:00") : academicYearStart();
 }
 
-// "2018-2019 E.C. / 2026-2027 G.C." — the dual-calendar label shown everywhere an academic year
-// is displayed. Falls back gracefully if a year is missing its E.C. label (e.g. old seed data).
+// "2019-2020 E.C. / 2026-2027 G.C." — the dual-calendar label shown everywhere an academic year
+// is displayed. The E.C. part is derived from the year's start date rather than the stored
+// `ecLabel`, because rows saved before the label fix hold a stale value (e.g. "2018-2019" for a
+// year starting 1 Sept 2026). The stored label is only a fallback when there is no start date.
 function formatAcademicYearLabel(year) {
   if (!year) return "";
-  const gc = year.gcLabel || year.yearName || "";
-  return year.ecLabel ? `${year.ecLabel} E.C. / ${gc} G.C.` : gc;
+  // Both parts follow the dates whenever they're known; the stored labels are only fallbacks.
+  const derived = year.yearStart && year.yearEnd ? deriveAcademicYearLabels(year.yearStart, year.yearEnd) : null;
+  const gc = derived ? derived.gcLabel : (year.gcLabel || year.yearName || "");
+  const ec = year.yearStart ? ecYearLabelForGcStart(new Date(year.yearStart + "T00:00:00")) : year.ecLabel;
+  return ec ? `${ec} E.C. / ${gc} G.C.` : gc;
+}
+
+// Where an academic year sits in its lifecycle: "current" (the one operational year), "previous"
+// (closed — read-only history) or "upcoming" (set up but never activated, still editable).
+// Stored facts: `isCurrent` and `closedAt` (set when the year stops being current). A row loaded
+// before the closedAt column exists (`closedAt === undefined`) falls back to the old date rule, so
+// the app behaves the same before and after that migration is applied.
+function academicYearStatus(year, todayKey) {
+  if (year.isCurrent) return "current";
+  if (year.closedAt) return "previous";
+  if (year.closedAt === undefined) return year.yearStart > todayKey ? "upcoming" : "previous";
+  return "upcoming";
 }
 
 function computeBreakRange(cal) {
@@ -119,6 +153,7 @@ const PHASE_LABEL = {
   future: "Future date",
   closed: "No School",
   closedToday: "No School Today",
+  year_closed: "Academic Year Closed",
   weekend: "Weekend",
 };
 
@@ -139,6 +174,8 @@ function classifyAttendanceDate(dateKey, cal, todayKey, closuresByDate) {
     return { phase: "closed", available: false, label, message: closure.reason || "The school is closed on this date." };
   }
   if (!cal) return { phase: "future", available: false, label: PHASE_LABEL.future, message: "No academic calendar has been configured yet." };
+  // A previous (closed) academic year is history: its attendance can be viewed but never recorded.
+  if (cal.readOnly) return { phase: "year_closed", available: false, label: PHASE_LABEL.year_closed, message: "This academic year is closed. Its attendance is read-only." };
   if (dateKey > todayKey) {
     return { phase: "future", available: false, label: PHASE_LABEL.future, message: "This date hasn't happened yet." };
   }
@@ -189,15 +226,16 @@ function minKey(a, b) { return a < b ? a : b; }
 // year ending) arrives first — that boundary always wins regardless of how much grace remains.
 function classifySemesterResultLock(semester, cal, todayKey) {
   if (!cal) return { locked: true, phase: "no_calendar", message: "No academic calendar has been configured yet." };
+  if (cal.readOnly) return { locked: true, phase: "year_closed", message: "This academic year is closed. Results are now read-only." };
   const graceDays = Number.isFinite(cal.resultFinalizationGraceDays) ? cal.resultFinalizationGraceDays : DEFAULT_RESULT_FINALIZATION_GRACE_DAYS;
   const semLabel = semester === "S2" ? "Semester 2" : "Semester 1";
 
   if (semester === "S2") {
     if (todayKey < cal.sem2Start) {
-      return { locked: true, phase: "before_semester", message: `${semLabel} hasn't started yet. It begins on ${fmtDateLong(cal.sem2Start)}.` };
+      return { locked: true, phase: "before_semester", message: `${semLabel} hasn't started yet. It begins on ${ecDate(cal.sem2Start)}.` };
     }
     if (todayKey > cal.yearEnd) {
-      return { locked: true, phase: "year_ended", message: `${semLabel} is locked — the academic year ended on ${fmtDateLong(cal.yearEnd)}. Results are now read-only.` };
+      return { locked: true, phase: "year_ended", message: `${semLabel} is locked — the academic year ended on ${ecDate(cal.yearEnd)}. Results are now read-only.` };
     }
     const ceiling = minKey(addDays(cal.sem2End, graceDays), cal.yearEnd);
     if (todayKey > ceiling) {
@@ -206,8 +244,8 @@ function classifySemesterResultLock(semester, cal, todayKey) {
         locked: true,
         phase: yearIsCeiling ? "year_ended" : "grace_expired",
         message: yearIsCeiling
-          ? `${semLabel} is locked — the academic year ended on ${fmtDateLong(cal.yearEnd)}. Results are now read-only.`
-          : `${semLabel} is locked — ${semLabel} ended on ${fmtDateLong(cal.sem2End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.`,
+          ? `${semLabel} is locked — the academic year ended on ${ecDate(cal.yearEnd)}. Results are now read-only.`
+          : `${semLabel} is locked — ${semLabel} ended on ${ecDate(cal.sem2End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.`,
       };
     }
     if (todayKey <= cal.sem2End) return { locked: false, phase: "active", message: "" };
@@ -216,14 +254,14 @@ function classifySemesterResultLock(semester, cal, todayKey) {
 
   // S1
   if (todayKey < cal.sem1Start) {
-    return { locked: true, phase: "before_semester", message: `${semLabel} hasn't started yet. It begins on ${fmtDateLong(cal.sem1Start)}.` };
+    return { locked: true, phase: "before_semester", message: `${semLabel} hasn't started yet. It begins on ${ecDate(cal.sem1Start)}.` };
   }
   if (todayKey >= cal.sem2Start) { // hard cutoff — wins over the grace period, no exceptions
     return { locked: true, phase: "next_semester_started", message: `${semLabel} is locked — Semester 2 has begun. Results are now read-only.` };
   }
   const ceiling = minKey(addDays(cal.sem1End, graceDays), addDays(cal.sem2Start, -1));
   if (todayKey > ceiling) {
-    return { locked: true, phase: "grace_expired", message: `${semLabel} is locked — ${semLabel} ended on ${fmtDateLong(cal.sem1End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.` };
+    return { locked: true, phase: "grace_expired", message: `${semLabel} is locked — ${semLabel} ended on ${ecDate(cal.sem1End)} and the ${graceDays}-day finalization window has passed. Results are now read-only.` };
   }
   if (todayKey <= cal.sem1End) return { locked: false, phase: "active", message: "" };
   return graceWindow(semLabel, todayKey, ceiling);
@@ -268,9 +306,11 @@ export {
   DEFAULT_BREAK_DAYS,
   DEFAULT_RESULT_FINALIZATION_GRACE_DAYS,
   defaultAcademicCalendar,
+  deriveAcademicYearLabels,
   currentAcademicYear,
   activeYearStartDate,
   formatAcademicYearLabel,
+  academicYearStatus,
   computeBreakRange,
   suggestSemester2,
   classifyAttendanceDate,

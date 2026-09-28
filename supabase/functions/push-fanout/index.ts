@@ -125,6 +125,15 @@ async function handle(req: Request): Promise<Response> {
     actorName = (actor as { full_name?: string } | null)?.full_name ?? null;
   }
 
+  // Authoritative unread count for the app-icon badge (web only, see buildMessage). Read fresh here
+  // rather than trusting anything client-supplied; the (user_id, read) index makes this a cheap count.
+  const { count: unreadCount, error: unreadErr } = await admin
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", n.user_id)
+    .eq("read", false);
+  if (unreadErr) return new Response("db error", { status: 500 });
+
   const parsedSa = parseServiceAccount(Deno.env.get("FCM_SERVICE_ACCOUNT"));
   if (!parsedSa.ok) {
     console.error(`push-fanout: ${parsedSa.reason}`); // fixed strings only, never the secret's content
@@ -148,7 +157,7 @@ async function handle(req: Request): Promise<Response> {
       const res = await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
         method: "POST",
         headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-        body: JSON.stringify(buildMessage(n, d, actorName)),
+        body: JSON.stringify(buildMessage(n, d, actorName, unreadCount ?? 0)),
         signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       });
       return { status: res.status, body: await res.json().catch(() => null) };
