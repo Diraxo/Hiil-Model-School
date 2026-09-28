@@ -29,7 +29,7 @@ import {
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList, EthiopianDateField,
 } from "../../components/ui";
-import { activeAssessments } from "../../utils/resultConfig";
+import { activeAssessments, planRecordingScreen, resultStateOf, RESULT_STATE_LABEL } from "../../utils/resultConfig";
 import { attendanceStatusForClassDate } from "../../utils/attendanceStatus";
 import { ResultsSettingsPage } from "./ResultsSettings";
 import { CashReceiptModal } from "../../components/Receipt";
@@ -3999,7 +3999,16 @@ function ResultsPage({ role, focus, clearFocus }) {
     clearFocus && clearFocus();
   }, [focus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (showSettings && isStaff) return <ResultsSettingsPage onBack={() => setShowSettings(false)} />;
+  // "View affected results" from a refused structure delete: back to Results on that grade, semester and year.
+  function openAffectedResults({ grade, semester: sem, academicYearId }) {
+    setShowSettings(false);
+    if (academicYearId) setYearId(academicYearId);
+    setSemester(sem);
+    const target = browsableClasses.find((c) => c.grade === grade);
+    if (target) setClassTab(target.id);
+  }
+
+  if (showSettings && isStaff) return <ResultsSettingsPage onBack={() => setShowSettings(false)} onViewResults={openAffectedResults} />;
 
   if (selected) {
     return (
@@ -4344,23 +4353,20 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     return data.getResult(studentId, classId, subject, semester, yearId);
   }
 
-  // The columns come from the configured structure — never from code. Students with no result yet
-  // use the ACTIVE structure for this grade/semester/year; a student whose result was recorded under
-  // an earlier version of the structure stays on THAT version (its own table below), so changing the
-  // structure later never reinterprets old scores.
+  // The columns come from the configured structure — never from code. What a row means depends on what is
+  // RECORDED, not on a result row merely existing (opening a student creates an empty draft):
+  //   * nothing recorded  -> "Not started", recorded against the ACTIVE structure (or unrecordable if none)
+  //   * recorded          -> stays on the structure it was recorded under; while a newer version is active it
+  //                          is its own "earlier structure" table; if that structure is closed with NO active
+  //                          successor it is HISTORY: shown read-only, separately, never in a recording table.
+  // planRecordingScreen also names which of the screen states this is (see utils/resultConfig.js).
   const activeConfig = data.resultStructureForClass(classId, semester, yearId);
-  const groupMap = new Map();
-  for (const s of students) {
-    const record = recordFor(s.id);
-    const config = (record && record.configuration) || activeConfig;
-    if (!config) continue;
-    if (!groupMap.has(config.id)) groupMap.set(config.id, { config, assessments: activeAssessments(config), students: [] });
-    groupMap.get(config.id).students.push(s);
-  }
-  if (activeConfig && !groupMap.has(activeConfig.id)) groupMap.set(activeConfig.id, { config: activeConfig, assessments: activeAssessments(activeConfig), students: [] });
-  const groups = [...groupMap.values()].sort((a, b) => (b.config.status === "ACTIVE") - (a.config.status === "ACTIVE") || b.config.version - a.config.version);
+  const evidence = db.resultEvidence;
+  const plan = planRecordingScreen({ students, recordFor, activeConfig, evidence });
+  const unassignedStudents = plan.unrecordable;
+  const historicalRows = plan.historical;
+  const groups = plan.groups.map((g) => ({ ...g, assessments: activeAssessments(g.config) }));
   const assessmentById = new Map(groups.flatMap((g) => g.assessments.map((a) => [a.id, a])));
-  const anyRecorded = students.some((s) => resultTotals(recordFor(s.id)).count > 0);
 
   function draftKey(studentId, assessmentId) { return `${studentId}::${assessmentId}`; }
   function savedScoreStr(studentId, assessmentId) {
@@ -4459,7 +4465,9 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   function toggleSelect(studentId) {
     setSelectedIds((ids) => (ids.includes(studentId) ? ids.filter((id) => id !== studentId) : [...ids, studentId]));
   }
-  const selectableIds = students.filter((s) => recordFor(s.id)?.publishStatus !== "LOCKED").map((s) => s.id);
+  // Only students in an editable table can be published: never historical rows, never students with no structure.
+  const inTables = new Set(groups.flatMap((g) => g.students.map((s) => s.id)));
+  const selectableIds = students.filter((s) => inTables.has(s.id) && recordFor(s.id)?.publishStatus !== "LOCKED").map((s) => s.id);
   function publishSelected() {
     if (selectedIds.length === 0) { toast("Select at least one student to publish.", "error"); return; }
     if (dirtyKeys.length > 0) { toast("You have unsaved score changes — click Save before publishing.", "error"); return; }
@@ -4513,20 +4521,115 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     </div>
   );
 
-  // No structure for this grade + semester (and nothing already recorded under an older one): no
-  // fields, no fallback columns, nothing to type into.
-  if (groups.length === 0) {
+  // Students with nothing recorded and no active structure to record against. Not results and not
+  // recordable: kept one click away (collapsed) so the roster is never lost, and never shown as data.
+  const unassignedCard = unassignedStudents.length > 0 && (
+    <div className="mb-5">
+      <p className="text-xs font-medium text-amber-700 mb-1.5">
+        No active Results Structure — {unassignedStudents.length} {unassignedStudents.length === 1 ? "student has" : "students have"} nothing to record against yet
+        {onOpenSettings ? <> · <button type="button" onClick={onOpenSettings} className="underline font-medium">Open Results Settings</button></> : ""}
+      </p>
+      <details className="rounded-lg border border-slate-200 bg-white">
+        <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-slate-500">Enrolled students ({unassignedStudents.length}) — not recordable until a structure is configured</summary>
+        <div className="overflow-x-auto border-t border-slate-100">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs">
+              <tr>
+                <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
+                <th className="text-left font-medium px-4 py-2.5">Student</th>
+                <th className="text-left font-medium px-3 py-2.5">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unassignedStudents.map((s, i) => (
+                <tr key={s.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                  <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{data.studentFullName(s)}</td>
+                  <td className="px-3 py-2 text-xs text-slate-400">Structure not configured</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  );
+
+  // Results recorded under a structure that is now closed with nothing active in its place. History:
+  // readable, clearly labelled, and deliberately without inputs, checkboxes or evidence controls.
+  const historicalByConfig = new Map();
+  for (const row of historicalRows) {
+    const key = row.config ? row.config.id : "unavailable";
+    if (!historicalByConfig.has(key)) historicalByConfig.set(key, { config: row.config, rows: [] });
+    historicalByConfig.get(key).rows.push(row);
+  }
+  const historicalSection = historicalRows.length > 0 && (
+    <div className="mb-5" data-testid="historical-results">
+      <p className="text-sm font-semibold text-slate-700 mb-0.5">Historical results under previous structure</p>
+      <p className="text-xs text-slate-400 mb-2">{historicalRows.length} {historicalRows.length === 1 ? "student has" : "students have"} results recorded under a structure that has since been closed. They are kept as history — they are not current results and cannot be edited{isStaff ? "; set up a new structure for new entries" : ""}.</p>
+      {[...historicalByConfig.values()].map(({ config, rows }) => {
+        const assessments = activeAssessments(config);
+        return (
+          <Card key={config ? config.id : "unavailable"} className="overflow-hidden mb-3">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-500 text-xs">
+                  <tr>
+                    <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
+                    <th className="text-left font-medium px-4 py-2.5">Student</th>
+                    {assessments.map((a) => (
+                      <th key={a.id} className="text-left font-medium px-3 py-2.5 whitespace-nowrap"><span className="block text-slate-600">{a.name}</span><span className="block font-normal text-slate-400">/{a.weight}</span></th>
+                    ))}
+                    <th className="text-left font-medium px-3 py-2.5 whitespace-nowrap">Total /{RESULT_TOTAL_WEIGHT}</th>
+                    <th className="text-left font-medium px-3 py-2.5">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(({ student, record }, i) => {
+                    const totals = resultTotals(record);
+                    return (
+                      <tr key={student.id} className="border-t border-slate-100">
+                        <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                        <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{data.studentFullName(student)}</td>
+                        {assessments.map((a) => {
+                          const sc = record.components?.[a.id]?.score;
+                          return <td key={a.id} className="px-3 py-2 text-slate-600">{sc != null ? sc : "—"}</td>;
+                        })}
+                        <td className="px-3 py-2 whitespace-nowrap text-slate-600">{totals.count > 0 ? (totals.completionStatus === "COMPLETE" ? totals.total : `${totals.entered} / ${totals.totalMax}`) : "—"}</td>
+                        <td className="px-3 py-2"><Badge tone="slate">{RESULT_STATE_LABEL[resultStateOf(record, evidence)]}</Badge><p className="text-[10px] mt-0.5 text-slate-400">{config ? `Structure v${config.version} — closed` : "Structure no longer available"} · read-only</p></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+
+  // Nothing to record against: no students, or no ACTIVE structure (with or without history). Each case
+  // says exactly which it is (never one generic message) and no phantom "result" rows are shown.
+  if (plan.state === "E_NO_STUDENTS" || groups.length === 0) {
+    const noStudents = plan.state === "E_NO_STUDENTS";
+    const gradeText = cls ? cls.grade : "this grade";
     return (
       <div>
         {backButton}
         <div className="mb-3">{titleRow}</div>
         <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
-        <EmptyState
-          icon={ShieldAlert}
-          title="No Results Structure Configured"
-          description={`No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
-          action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
-        />
+        {noStudents ? (
+          <EmptyState icon={ShieldAlert} title="No students in this class" description={`No students are enrolled in ${cls ? data.classLabel(cls) : "this class"} for this academic year, so there is nothing to record.`} />
+        ) : (
+          <EmptyState
+            icon={ShieldAlert}
+            title="No Results Structure Configured"
+            description={`${plan.state === "D_HISTORY_ONLY" ? "No active assessment structure." : "Assessment structure not configured."} No Results Structure is active for ${gradeText} for ${SEMESTER_LABEL[semester]}. ${plan.state === "D_HISTORY_ONLY" ? "Earlier results are kept below as history." : "No results recorded."} ${isStaff ? "Set it up in Results Settings, then teachers can record scores." : "Please contact the Educational Director."}`}
+            action={onOpenSettings ? <PrimaryButton icon={Settings} onClick={onOpenSettings}>Open Results Settings</PrimaryButton> : null}
+          />
+        )}
+        <div className="mt-4">{historicalSection}{unassignedCard}</div>
       </div>
     );
   }
@@ -4549,7 +4652,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       </p>
 
       <SemesterStatusBanner lockInfo={semesterLock} semesterLabel={SEMESTER_LABEL[semester]} />
-      {!anyRecorded && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">No Results Recorded Yet — the structure is configured, but no student has a result.</p>}
+      {plan.state === "A_CONFIGURED_EMPTY" && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 mb-4">Assessment structure configured. No results recorded yet — all {students.length} enrolled {students.length === 1 ? "student is" : "students are"} ready to record.</p>}
+      {plan.state === "B_CONFIGURED_RESULTS" && <p className="text-xs text-slate-400 mb-3">{[plan.counts.saved ? `${plan.counts.saved} saved` : null, plan.counts.locked ? `${plan.counts.locked} locked` : null, plan.counts.draft ? `${plan.counts.draft} draft` : null, `${plan.counts.notStarted} not started`].filter(Boolean).join(" · ")}</p>}
 
       {groups.map((group) => {
         const { config, assessments } = group;
@@ -4591,6 +4695,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                       const canEdit = canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !rowLock.locked;
                       const locked = record?.publishStatus === "LOCKED";
                       const progress = totals.count === 0 ? "Not started" : totals.completionStatus === "COMPLETE" ? "Complete" : "In progress";
+                      const rowState = resultStateOf(record, evidence);
                       return (
                         <tr key={s.id} className="border-t border-slate-100">
                           {canPublish && (
@@ -4679,8 +4784,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                                 : <span className="text-slate-300">—</span>}
                           </td>
                           <td className="px-3 py-2">
-                            <Badge tone={record?.publishStatus === "LOCKED" ? "red" : record?.publishStatus === "PUBLISHED" ? "green" : "slate"}>{record?.publishStatus || "DRAFT"}</Badge>
-                            <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>
+                            <Badge tone={rowState === "LOCKED" ? "red" : rowState === "SAVED" ? "green" : rowState === "DRAFT" ? "amber" : "slate"}>{RESULT_STATE_LABEL[rowState]}</Badge>
+                            {rowState !== "NOT_STARTED" && <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>}
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex justify-end gap-1.5">
@@ -4706,6 +4811,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
           </div>
         );
       })}
+      {historicalSection}
+      {unassignedCard}
       <p className="text-xs text-slate-400 mt-3">Test assessments take a photo or screenshot of the marked paper — it is required before the result can be published. Non-test assessments need no photo. Parents only see a photo once you mark it as shared.</p>
 
       {/* Phones: keep Save in reach while scrolling a long class list. */}

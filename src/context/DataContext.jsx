@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, createContext, useCon
 import {
   ROLES, ROLE_LABEL, STUDENT_STATUS, BEHAVIOR_TYPES, SEVERITIES, SCHOOL_DAYS, TEACHER_UNAVAILABLE_STATUSES,
   todayDayName, addMonthsFloat,
-  SUBJECTS, GRADES, SECTIONS, sectionLabel, gradeSectionCompare,
+  SUBJECTS, GRADES, SECTIONS, sectionLabel, gradeSectionCompare, sortGrades,
   STORAGE_KEY, CURRENCY, DEFAULT_PAYMENT_METHODS, formatMoney,
   BRAND, LOGO_DATA_URI, MIN_PERIODS, MAX_PERIODS, DEFAULT_TIMETABLE_CONFIG,
   staffGroupLabel, SEMESTERS, SEMESTER_LABEL, ASSESSMENT_KIND, computeSemesterResult, round2,
@@ -49,7 +49,7 @@ import { createBehaviorService } from "../services/behaviorService";
 import { createHomeworkService } from "../services/homeworkService";
 import { createResultService } from "../services/resultService";
 import { createResultConfigService } from "../services/resultConfigService";
-import { activeAssessments, activeConfigFor, effectiveConfigFor } from "../utils/resultConfig";
+import { activeAssessments, activeConfigFor, effectiveConfigFor, classifyRecordedResult } from "../utils/resultConfig";
 import { createResultEvidenceService, validateEvidenceFile } from "../services/resultEvidenceService";
 import { createExamService } from "../services/examService";
 import { createReportCardService } from "../services/reportCardService";
@@ -95,7 +95,9 @@ function resolveResultCal(d, academicYearId) {
 // from teacherAssignments every time so it can never drift, and every UI consumer
 // (`c.subjectTeacherIds.includes(...)`) keeps working unchanged.
 function withClassTeacherIds(classes, teacherAssignments) {
-  return classes.map((c) => ({
+  // Canonical school order (Grade 9, 10, 11, 12 — then section) for EVERY screen that lists classes.
+  // The database returns them in text order ("Grade 10" < "Grade 9"), so it is fixed here, once.
+  return [...classes].sort(gradeSectionCompare).map((c) => ({
     ...c,
     subjectTeacherIds: [...new Set((teacherAssignments || []).filter((ta) => ta.classId === c.id).map((ta) => ta.teacherId))],
   }));
@@ -341,7 +343,7 @@ function resultRlsMessage(e) {
   const msg = e && e.message ? e.message : "";
   // Messages raised on purpose by the Blocker 11 guard triggers are already written for the user
   // (score range, missing structure, evidence required before publish, ...): strip the code prefix.
-  if (/EVIDENCE_REQUIRED|RESULT_CONFIG_MISSING/.test(msg)) return msg.replace(/^[A-Z_]+:\s*/, "");
+  if (/EVIDENCE_REQUIRED|RESULT_CONFIG_MISSING|RESULT_CONFIG_CLOSED/.test(msg)) return msg.replace(/^[A-Z_]+:\s*/, "");
   if (e && (e.code === "P0001" || e.code === "23514") && msg) return msg;
   if (/row-level security|violates row-level|permission denied/i.test(msg)) {
     return "You can't change this result right now — it may be locked (the semester has ended and its correction window has closed), outside your assigned subject/class, or it isn't a day you can record results (check the academic year and your attendance).";
@@ -349,11 +351,18 @@ function resultRlsMessage(e) {
   return msg || "Couldn't save the result.";
 }
 
+// A result recorded under a structure that has since been closed (no active successor) is history:
+// readable everywhere, editable nowhere. The database refuses the write too (RESULT_CONFIG_CLOSED).
+const HISTORICAL_RESULT_MESSAGE = "This result was recorded under a structure that has since been closed. It is kept as history and can no longer be edited.";
+
 // Errors from the Results Settings save (save_result_configuration): the RPC's messages are already
 // user-facing ("Assessment weights must total exactly 100 (currently 90).").
 function resultConfigErrorMessage(e) {
   const msg = e && e.message ? e.message : "";
   if (e && e.code === "42501") return "Only the Owner or Educational Director can configure results.";
+  if (/foreign key|violates foreign key/i.test(msg) && /result/i.test(msg)) {
+    return "Cannot delete this assessment structure: saved results still depend on it. Reload and review the saved results first.";
+  }
   if (/duplicate key|result_configurations_one_active|result_assessment_components_name_key/i.test(msg)) {
     return "This structure changed at the same moment somewhere else — refresh and try again.";
   }
@@ -2454,7 +2463,7 @@ function DataProvider({ children }) {
 
       gradeOptions() {
         const list = [...new Set(db.classes.map((c) => c.grade))];
-        return list.length ? list.sort((a, b) => GRADES.indexOf(a) - GRADES.indexOf(b)) : GRADES.slice(0, 3);
+        return list.length ? sortGrades(list) : GRADES.slice(0, 3);
       },
 
       // Creates a real Supabase Auth account + profiles row (role PARENT) via the
@@ -3698,7 +3707,8 @@ function DataProvider({ children }) {
         const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
-        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null, db.resultEvidence);
+        if (record && classifyRecordedResult(record, activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null), db.resultEvidence).kind === "HISTORICAL") return { ok: false, message: HISTORICAL_RESULT_MESSAGE };
         if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
@@ -3907,7 +3917,8 @@ function DataProvider({ children }) {
         const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
-        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null);
+        const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null, db.resultEvidence);
+        if (record && classifyRecordedResult(record, activeConfigFor(db.resultConfigs, academicYearId, semester, cls ? cls.grade : null), db.resultEvidence).kind === "HISTORICAL") return { ok: false, message: HISTORICAL_RESULT_MESSAGE };
         if (!config) return { ok: false, message: `No Results Structure has been configured for ${cls ? cls.grade : "this grade"} for ${SEMESTER_LABEL[semester]}. Please contact the Educational Director.` };
         const assessment = activeAssessments(config).find((a) => a.id === assessmentId);
         if (!assessment) return { ok: false, message: "That assessment isn't part of this result's configured structure." };
@@ -4035,20 +4046,39 @@ function DataProvider({ children }) {
         }
       },
 
-      // Results Settings: delete the structure for one year + semester + grade. Never destroys recorded
-      // results — the server DELETES it when nothing is recorded under it, and ARCHIVES it (no new
-      // entries, recorded results keep it) when results exist. The outcome is returned so the UI can say
-      // which happened. Owner/Educational Director only; audited server-side.
+      // Results Settings: what deleting one year + semester + grade's structure would run into, read
+      // from the database right now (not from cached state): the students who have SAVED results under
+      // it (published/locked, a score or evidence) — any of them blocks the delete — and the count of
+      // empty drafts (nothing recorded), which never block it and are simply detached.
+      // -> { ok, impact: { canDelete, savedStudentCount, savedResultCount, emptyDraftCount, students: [{ studentId, name, subject, status }] } }
+      async resultConfigDeleteImpact({ academicYearId, semester, grade }) {
+        try {
+          return { ok: true, impact: await resultConfigService.deleteImpact({ academicYearId, semester, grade }) };
+        } catch (e) {
+          console.error("Failed to check result configuration delete impact", e);
+          return { ok: false, message: resultConfigErrorMessage(e) };
+        }
+      },
+
+      // Results Settings: delete the structure for one year + semester + grade. The server refuses when
+      // ANY student has saved results under it (and says how many); it never archives or erases recorded
+      // results. Empty drafts are detached and the structure is removed. Owner/Educational Director only;
+      // audited server-side. A refusal carries the same `impact` list the pre-check returns.
       async deleteResultConfiguration({ academicYearId, semester, grade }) {
         try {
           const result = await resultConfigService.remove({ academicYearId, semester, grade });
           await refetchResultConfigs();
+          await refetchResults();
           const year = db.academicYears.find((y) => y.id === academicYearId);
-          await logActivityFeed(`Result structure ${result.outcome === "ARCHIVED" ? "closed" : "deleted"} for ${grade} — ${SEMESTER_LABEL[semester]}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
+          await logActivityFeed(`Result structure deleted for ${grade} — ${SEMESTER_LABEL[semester]}${year ? ` (${formatAcademicYearLabel(year)})` : ""}.`, { page: "exams" });
           return { ok: true, message: "", result };
         } catch (e) {
           console.error("Failed to delete result configuration", e);
-          return { ok: false, message: resultConfigErrorMessage(e) };
+          let impact = null;
+          try { impact = e && e.details ? JSON.parse(e.details) : null; } catch { impact = null; }
+          // the server's own message says exactly why; refresh so the page shows the current state
+          if (impact) await refetchResultConfigs().catch(() => {});
+          return { ok: false, message: resultConfigErrorMessage(e), impact };
         }
       },
 
