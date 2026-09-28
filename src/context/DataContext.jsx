@@ -9,18 +9,16 @@ import {
 } from "../utils/constants";
 import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, fullName, computePeriodSchedule,
-  leaveDurationLabel, joinWithAnd, monthLabel,
+  leaveDurationLabel, joinWithAnd,
 } from "../utils/helpers";
-import { ethiopianMonthLabelForGcMonthKey, formatEthiopianDateFromKey } from "../utils/ethiopianCalendar";
-
-// Ethiopian Calendar is the school's primary calendar (AGENTS.md) — lead with the EC period/date,
-// keep the Gregorian equivalent alongside it in generated notification/activity text.
-function ecMonthLabel(monthKey) {
-  return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${monthLabel(monthKey)})` : "";
-}
-function ecDate(dateKey) {
-  return dateKey ? `${formatEthiopianDateFromKey(dateKey)} E.C. (${fmtDate(dateKey)} G.C.)` : "";
-}
+import {
+  ethiopianMonthLabelForGcMonthKey, ecYearLabelForGcStart,
+  ethiopianMonthLabelWithGc as ecMonthLabel, formatEthiopianDateWithGc as ecDate,
+} from "../utils/ethiopianCalendar";
+import { academicYearDateProblems, academicYearBillingPeriods } from "../utils/billingPeriods";
+import { computeStaffPayrollSummary } from "../utils/payrollLedger";
+import { buildAcademicYearScope, reenrollmentCandidates } from "../utils/academicYearScope";
+import { scheduleForFeeType, installmentsForSchedule, obligationForInstallment, adjustmentsTotal, allocationsTotal, netOwedForObligation, feeRowsForStudentIn } from "../utils/feeLedger";
 import {
   studentIdentity as computeStudentIdentity, staffIdentity as computeStaffIdentity,
   userIdentity as computeUserIdentity, leaveSubjectIdentity as computeLeaveSubjectIdentity,
@@ -60,7 +58,7 @@ import { createProfilePhotoService } from "../services/profilePhotoService";
 import { signPaths as signStoragePaths, isStoragePath, uploadObject as uploadStorageObject, validateImageFile } from "../lib/storageMedia";
 import { todayKeyStr } from "../components/ui";
 import { computeStudentSemesterAverage, computeClassSemesterResults, findSchoolTopPerformer, rankStudents } from "../utils/resultsEngine";
-import { classifyAttendanceDate, classifySemesterResultLock, currentResultSemester, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, currentAcademicYear, formatAcademicYearLabel } from "../utils/academicCalendar";
+import { classifyAttendanceDate, classifySemesterResultLock, currentResultSemester, earliestAttendanceDate, latestAttendanceDate, addDays, defaultAcademicCalendar, deriveAcademicYearLabels, currentAcademicYear, formatAcademicYearLabel, academicYearStatus } from "../utils/academicCalendar";
 import { canTakeAttendance as canStudentTakeAttendance } from "../utils/studentPermissions";
 import { canTeacherPerformAcademicAction as canTeacherAct } from "../utils/staffPermissions";
 import { effectiveResultLock } from "../utils/permissions";
@@ -78,6 +76,33 @@ import {
 } from "lucide-react";
 
 const DataCtx = createContext(null);
+const WORKSPACE_YEAR_KEY = "hiil.workspaceAcademicYear";
+
+// Day-to-day write actions that always act on the OPERATIONAL academic year (enrolment, attendance,
+// results, homework, fee/payment/payroll entries, student documents). They are refused while an admin is
+// viewing another year — see the guard at the end of the api memo.
+const YEAR_SCOPED_WRITES = [
+  "createStudent", "updateStudent", "archiveStudent", "deleteStudent", "suspendStudent",
+  "createStudentDocument", "deleteStudentDocument",
+  "createHomework", "updateHomework", "deleteHomework",
+  "saveAttendance", "savePeriodAttendance", "markPeriodDone",
+  "recordPaymentBatch", "recordPayment", "voidPayment", "addObligationAdjustment", "editInstallment",
+  "saveResultComponent", "publishResults", "lockResult", "unlockResult", "overrideAutoLock", "reinstateAutoLock",
+  "addResultEvidencePage", "replaceResultEvidencePage", "removeResultEvidencePage", "reorderResultEvidencePages",
+  "generateReportCard", "setReportCardPromotion", "publishReportCard", "lockReportCard", "reopenReportCard",
+  "recordPayrollPayment", "recordSalaryAdvance", "updateTeacherAssignments",
+];
+
+// The academic-year RPCs raise plain-English exceptions; pass those through and explain the one case a
+// person can't fix themselves (the database hasn't been updated yet).
+function yearRpcMessage(e, fallback) {
+  const msg = e && e.message ? e.message : "";
+  if (/could not find the function|schema cache/i.test(msg)) {
+    return "This needs the latest database update (migration 20260929000000_academic_year_central_scope). Ask the system owner to apply it.";
+  }
+  if (/row-level security|permission denied|Only the Owner/i.test(msg)) return "Only the Owner or Educational Director can do that.";
+  return msg || fallback;
+}
 function useData() { return useContext(DataCtx); }
 
 // A result record's own academic year (never "whatever year is currently active") — falls back to
@@ -85,7 +110,7 @@ function useData() { return useContext(DataCtx); }
 // "now". Used by every results mutator that needs to consult the calendar for semester-aware
 // locking (see utils/permissions.js `effectiveResultLock`).
 function resolveResultCal(d, academicYearId) {
-  return (academicYearId && d.academicYears.find((y) => y.id === academicYearId)) || currentAcademicYear(d.academicYears);
+  return (academicYearId && d.academicYears.find((y) => y.id === academicYearId)) || d.workspaceYear || currentAcademicYear(d.academicYears);
 }
 
 // classes/class_subjects and teacher_assignments are all real Supabase data (see classService /
@@ -120,128 +145,11 @@ function mergeRealAccountsIntoUsers(parents, childIdsByParent, teacherAccounts, 
   return [...(ownerAccounts || []), ...(directorAccounts || []), ...realTeachers, ...realParents];
 }
 
-// The payroll calculation used for every read-only display (staffSalarySummary, dashboards,
-// payslips), called with `db` (the last-fetched Supabase state). The authoritative overpayment
-// cap is enforced server-side by the record_payroll_payment / record_salary_advance RPCs, which
-// re-run this same month math inside the insert transaction so concurrent writes can't jointly
-// exceed a month's obligation.
-//
-// Salary-advance model (revised): a salary advance IS money paid to the employee against a
-// specific salary period (`salary_advances.payroll_month`, set when the advance is recorded), so
-// it reduces that month's remaining obligation exactly the way a direct payroll payment does.
-// There is ONE calculation, here, and every screen (staff detail, payroll summary/list, salary
-// history, payslip, "My Salary", dashboards) reads its status/balance from it.
-//
-//   paid for month M   = Σ payroll_payments.amount (month = M)      -- direct salary payments
-//                      + Σ salary_advances.amount   (payroll_month = M)  -- advances for that period
-//   remaining for M    = max(0, salary + allowances - deductions - paid for M)   -- never negative
-//   status             = remaining == 0 ? PAID : paid > 0 ? PARTIAL : UNPAID
-//
-// This is NOT the old "creditPool" bug (Blocker 5A): that silently netted an unconsumed advance
-// balance against whichever month happened to be oldest-unpaid, flipping unrelated months to
-// "Paid" with no record. Here an advance only ever touches the ONE month it was explicitly
-// recorded against — a real transaction, with a date, visible in the advance history.
-//
-// The legacy `payroll_payments.advance_applied` field is retired as a crediting mechanism (new
-// payments always write 0). It is no longer added to any month's paid total — the advance itself
-// is now the credit, via its own row — so the two can never double-count.
-function computeStaffPayrollSummary(dbLike, staffId) {
-  const s = dbLike.staff.find((x) => x.id === staffId);
-  if (!s) return null;
-  const start = new Date(s.employmentDate + "T00:00:00");
-  const startMonth = start.getMonth(), startYear = start.getFullYear();
-  const today = new Date();
-  const employmentCap = s.employmentEndDate ? new Date(s.employmentEndDate + "T00:00:00") : today;
-  const end = employmentCap < today ? employmentCap : today;
-  const months = [];
-  let y = startYear, m = startMonth;
-  while (y < end.getFullYear() || (y === end.getFullYear() && m <= end.getMonth())) {
-    months.push(`${y}-${String(m + 1).padStart(2, "0")}`);
-    m += 1; if (m > 11) { m = 0; y += 1; }
-  }
-  const history = dbLike.payrollPayments.filter((p) => p.staffId === staffId).sort((a, b) => b.createdAt - a.createdAt);
-  const rawAdvances = dbLike.salaryAdvances.filter((a) => a.staffId === staffId).sort((a, b) => a.createdAt - b.createdAt);
-  const cashPaid = history.reduce((sum, p) => sum + p.amount, 0);
-  const advanceGiven = rawAdvances.reduce((sum, a) => sum + a.amount, 0);
-  // "Total paid" = every Birr that has actually reached the employee for salary — direct payments
-  // plus advances (advances are real cash out the door the moment they're given).
-  const totalPaid = cashPaid + advanceGiven;
-  const totalExpected = months.length * s.salary;
-  const rows = months.map((mk) => {
-    const paymentsForMonth = history.filter((p) => p.month === mk);
-    const advancesForMonth = rawAdvances.filter((a) => a.payrollMonth === mk);
-    const monthAllowances = paymentsForMonth.reduce((sum, p) => sum + (p.allowances || 0), 0);
-    const monthDeductions = paymentsForMonth.reduce((sum, p) => sum + (p.deductions || 0), 0);
-    const cashThisMonth = paymentsForMonth.reduce((sum, p) => sum + p.amount, 0);
-    const advanceThisMonth = advancesForMonth.reduce((sum, a) => sum + a.amount, 0);
-    const paidThisMonth = cashThisMonth + advanceThisMonth;
-    const gross = s.salary + monthAllowances - monthDeductions;
-    const remaining = Math.max(0, gross - paidThisMonth);
-    const status = remaining <= 0 ? "PAID" : paidThisMonth > 0 ? "PARTIAL" : "UNPAID";
-    return {
-      month: mk, payments: paymentsForMonth, payment: paymentsForMonth[0] || null,
-      advancesForMonth, cashThisMonth, advanceThisMonth, paidThisMonth, remaining, status,
-    };
-  });
-  const monthRemaining = (mk) => {
-    const r = rows.find((x) => x.month === mk);
-    if (r) return r.remaining;
-    // A month outside the elapsed-employment window (e.g. a future period) has its full salary
-    // still to pay.
-    return Math.max(0, s.salary);
-  };
-  // Each advance stays a permanent record. Its display just names the salary period it was
-  // applied to — there is no separate "recovery" step any more.
-  const advances = rawAdvances.map((a) => ({
-    ...a, appliedMonth: a.payrollMonth, status: "APPLIED",
-  })).sort((a, b) => b.createdAt - a.createdAt);
-  // Aggregate still owed across the whole employment span — a single flat subtraction so an
-  // advance (already inside totalPaid) can never be double-counted across months.
-  const outstanding = Math.max(0, totalExpected - totalPaid);
-  const currentMonthKey = rows.length ? rows[rows.length - 1].month : months[months.length - 1] || null;
-  const currentMonthAvailable = currentMonthKey ? monthRemaining(currentMonthKey) : 0;
-  // Most a NEW advance can be for a given month: that month's own unmet obligation. Defaults to
-  // the current month when no month is named.
-  const maxAdvanceForMonth = (mk) => monthRemaining(mk || currentMonthKey);
-  const maxAdvance = currentMonthAvailable;
-  return {
-    staff: s, months, history, rows, totalPaid, cashPaid, totalExpected, outstanding,
-    advances, advanceGiven, currentMonthKey, currentMonthAvailable, maxAdvance, maxAdvanceForMonth, monthRemaining,
-  };
-}
-
 // ---- Blocker 2: fee/payment academic-year schema (catalog → yearly schedule → installments →
 // obligations → payments/allocations — see the "Fee Ledger Schema" design doc). These are module-
 // level, parameterized by `dbLike` (never closing over the outer `db`), the same convention
 // `computeStaffPayrollSummary` above uses, so they can run against any snapshot of the
 // last-fetched Supabase state a caller passes in.
-function scheduleForFeeType(dbLike, feeTypeId, academicYearId) {
-  return dbLike.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId) || null;
-}
-function installmentsForSchedule(dbLike, scheduleId) {
-  return dbLike.feeInstallments.filter((i) => i.feeScheduleId === scheduleId).sort((a, b) => a.sequenceIndex - b.sequenceIndex);
-}
-function obligationForInstallment(dbLike, studentId, feeInstallmentId) {
-  return dbLike.studentFeeObligations.find((o) => o.studentId === studentId && o.feeInstallmentId === feeInstallmentId) || null;
-}
-function adjustmentsTotal(dbLike, obligationId) {
-  return (dbLike.feeObligationAdjustments || []).filter((a) => a.obligationId === obligationId).reduce((s, a) => s + a.amount, 0);
-}
-// Excludes allocations belonging to a VOIDED payment — a voided receipt must stop counting toward
-// the balance of every student it covered (the promise the Void Payment modal makes), not just
-// disappear from the "Collected" dashboard stat.
-function allocationsTotal(dbLike, obligationId) {
-  return (dbLike.paymentAllocations || [])
-    .filter((a) => a.obligationId === obligationId)
-    .filter((a) => { const p = dbLike.payments.find((pp) => pp.id === a.paymentId); return p && p.status !== "VOIDED"; })
-    .reduce((s, a) => s + a.amount, 0);
-}
-// Net owed is always computed at read time from the obligation's frozen amountDue minus every
-// adjustment/allocation against it — never stored, so it can never drift out of sync with them.
-function netOwedForObligation(dbLike, obligation) {
-  if (!obligation) return 0;
-  return Math.max(0, obligation.amountDue - adjustmentsTotal(dbLike, obligation.id) - allocationsTotal(dbLike, obligation.id));
-}
 // BLOCKER 7: a student's grade for one academic year — the enrollments row for that year if there
 // is one, else the denormalized "current" students.grade. This is the authoritative grade used for
 // school-fee eligibility (mirrors the server-side public.student_grade_for_year).
@@ -279,37 +187,6 @@ function feeTypesForStudentIn(dbLike, student, academicYearId) {
 function feeTypeYearView(dbLike, feeType, academicYearId) {
   const schedule = scheduleForFeeType(dbLike, feeType.id, academicYearId);
   return schedule ? { ...feeType, unitAmount: schedule.unitAmount, unitMonths: schedule.unitMonths, unitsPerYear: schedule.unitsPerYear, scheduleId: schedule.id } : feeType;
-}
-// Shared engine behind installmentStatusForStudent/busScheduleForStudent/balanceFor/
-// dueStatusForFeeType: one obligation-backed row per installment in this year's schedule, in
-// schedule order. An installment with no obligation for this student (Decision A: a mid-year
-// joiner's earlier cycles) is simply absent from `rows` — not marked N/A, not shown at all.
-function feeRowsForStudentIn(dbLike, student, feeType, academicYearId) {
-  const schedule = scheduleForFeeType(dbLike, feeType.id, academicYearId);
-  if (!schedule) return { schedule: null, installments: [], rows: [], currentIndex: -1 };
-  const installments = installmentsForSchedule(dbLike, schedule.id);
-  const todayMonth = todayKeyStr().slice(0, 7); // YYYY-MM
-  const baseRows = installments.map((inst) => {
-    const ob = obligationForInstallment(dbLike, student.id, inst.id);
-    if (!ob) return null;
-    const remaining = netOwedForObligation(dbLike, ob);
-    const paid = ob.amountDue - remaining;
-    const status = remaining <= 0 ? "PAID" : paid > 0 ? "PARTIAL" : "UNPAID";
-    const instMonth = (inst.periodMonth || inst.dueDate || "").slice(0, 7);
-    return { installment: inst, amountDue: ob.amountDue, paid, remaining, status, obligationId: ob.id, instMonth };
-  }).filter(Boolean);
-  // BLOCKER 6: "current" is the row for the current *calendar month* — a monthly fee's period is
-  // the whole month, not "any date before the 1st". If the student has no obligation for the
-  // current month (mid-year joiner, or the academic year has ended) fall back to the first future
-  // row, else the last. currentIndex indexes into the returned `rows`, so callers that slice
-  // `rows` by it (dueStatusForFeeType) stay correct for mid-year joiners too.
-  let currentIndex = baseRows.findIndex((r) => r.instMonth === todayMonth);
-  if (currentIndex === -1) {
-    const firstFuture = baseRows.findIndex((r) => r.instMonth > todayMonth);
-    currentIndex = firstFuture === -1 ? baseRows.length - 1 : firstFuture;
-  }
-  const rows = baseRows.map((r, i) => ({ ...r, isCurrent: i === currentIndex }));
-  return { schedule, installments, rows, currentIndex };
 }
 // Resolves an allocation to its human-readable fee label ("School Fee September 2026", "Bus Fee –
 // September 2026") by walking allocation → obligation → installment → schedule → feeType — the
@@ -456,15 +333,6 @@ function feeMaterializeAnchor(year, effectiveDateStr) {
   return `${later.slice(0, 7)}-01`;
 }
 
-// Whole months from one "YYYY-MM-DD" to another, inclusive of both endpoint months
-// (2026-09-01 -> 2027-06-30 = 10). Used to size a monthly fee schedule's unitsPerYear.
-function monthsBetweenInclusive(startStr, endStr) {
-  const [sy, sm] = String(startStr).split("-").map(Number);
-  const [ey, em] = String(endStr).split("-").map(Number);
-  if (!sy || !sm || !ey || !em) return 12;
-  return Math.max(1, (ey - sy) * 12 + (em - sm) + 1);
-}
-
 function DataProvider({ children }) {
   // `mockDb` (legacy name) is just an in-memory skeleton: empty collections + a default academic
   // calendar, from src/data/skeleton.js. Every domain below is overlaid from live Supabase state
@@ -496,6 +364,45 @@ function DataProvider({ children }) {
       .catch((e) => console.error("Failed to load academic years", e))
       .finally(() => setReady(true));
   }, [refetchAcademicYears]);
+
+  // ---- The academic-year WORKSPACE. Owner / Educational Director / Finance can view any year; everything
+  // that reads "the year" (fees, payroll, attendance, results, rosters, reports, dashboards) follows this
+  // one selection instead of each screen deciding for itself. It is only honoured once the shell says
+  // the signed-in role may pick a year (setWorkspaceScopeEnabled) — a teacher or parent always works in
+  // the current year, whatever an admin on the same browser last chose. The choice is a per-browser
+  // convenience (localStorage), never a permission: what a year lets you WRITE is decided by its
+  // lifecycle (see academicYearScope.js) and, ultimately, by the database.
+  const [workspaceYearId, setWorkspaceYearIdState] = useState(() => {
+    try { return window.localStorage.getItem(WORKSPACE_YEAR_KEY) || null; } catch { return null; }
+  });
+  const [workspaceScopeEnabled, setWorkspaceScopeEnabled] = useState(false);
+  const setWorkspaceYearId = useCallback((id) => {
+    setWorkspaceYearIdState(id || null);
+    try {
+      if (id) window.localStorage.setItem(WORKSPACE_YEAR_KEY, id);
+      else window.localStorage.removeItem(WORKSPACE_YEAR_KEY);
+    } catch { /* storage unavailable: the selection just lasts for this page load */ }
+  }, []);
+  // Re-enrollment decisions ("not returning") and the lifecycle audit trail. Both are [] until the
+  // database has migration 20260929000000, and for roles that may not read them.
+  const [yearDecisions, setYearDecisions] = useState([]);
+  const [yearAudit, setYearAudit] = useState([]);
+  const [assignmentSnapshots, setAssignmentSnapshots] = useState([]);
+  const refetchAssignmentSnapshots = useCallback(async () => {
+    const rows = await academicYearService.listTeacherAssignmentSnapshots();
+    setAssignmentSnapshots(rows);
+    return rows;
+  }, [academicYearService]);
+  const refetchYearDecisions = useCallback(async () => {
+    const rows = await academicYearService.listDecisions();
+    setYearDecisions(rows);
+    return rows;
+  }, [academicYearService]);
+  const refetchYearAudit = useCallback(async () => {
+    const rows = await academicYearService.listAudit();
+    setYearAudit(rows);
+    return rows;
+  }, [academicYearService]);
 
   // One-time cleanup: the pre-Supabase build persisted its entire in-browser demo DB (including
   // demo login rows) under this key. Nothing reads it any more -- purge it from returning browsers.
@@ -1151,7 +1058,7 @@ function DataProvider({ children }) {
   // everything on an account switch without a 30-entry useCallback dep array.
   const allRefetchRef = useRef([]);
   allRefetchRef.current = [
-    refetchAcademicYears, refetchSubjects, refetchClasses, refetchStudents, refetchEnrollments,
+    refetchAcademicYears, refetchYearDecisions, refetchYearAudit, refetchAssignmentSnapshots, refetchSubjects, refetchClasses, refetchStudents, refetchEnrollments,
     refetchStudentDocuments, refetchParents, refetchParentLinks, refetchTeacherAccounts,
     refetchDirectorAccounts, refetchOwnerAccounts, refetchTeacherAssignments, refetchStaff, refetchStaffAttendance,
     refetchPayrollPayments, refetchSalaryAdvances, refetchTimetable, refetchClosures,
@@ -1313,8 +1220,17 @@ function DataProvider({ children }) {
     // read below (`db.academicYears...`, `db.classes...`) picks this up automatically since it's
     // one closure. academicCalendar is derived from the live academic year, since
     // classifyAttendanceDate/etc. read it directly.
+    // The one place the academic-year scope is decided. `workspaceYear` is the year the screens show
+    // (the admin's selection, else the operational year); `operationalYear` is the current year the
+    // students table and all day-to-day writes belong to.
+    const yearScope = buildAcademicYearScope({ years: academicYears, selectedId: workspaceScopeEnabled ? workspaceYearId : null, todayKey: todayKeyStr() });
+    const workspaceYear = yearScope.selectedAcademicYear;
+    const operationalYear = yearScope.currentAcademicYear;
     const db = {
       ...mockDb, academicYears, subjects,
+      workspaceYear, operationalYear, yearScope,
+      studentYearDecisions: yearDecisions,
+      academicYearAudit: yearAudit,
       teacherAssignments,
       classes: withClassTeacherIds(classesRaw, teacherAssignments),
       classSubjects,
@@ -1389,7 +1305,9 @@ function DataProvider({ children }) {
       announcementReadStatsById,
       users: mergeRealAccountsIntoUsers(parentsRaw, childIdsByParent, teacherAccountsRaw, directorAccountsRaw, ownerAccountsRaw)
         .map((u) => (isStoragePath(u.photo) ? { ...u, photo: signMedia("profile-photos", u.photo), photoPath: u.photo } : u)),
-      academicCalendar: currentAcademicYear(academicYears) || mockDb.academicCalendar,
+      // Attendance / result rules read this. A closed (previous) year is flagged read-only so
+      // classifyAttendanceDate / classifySemesterResultLock refuse to open it for recording.
+      academicCalendar: workspaceYear ? { ...workspaceYear, readOnly: yearScope.isReadOnlyYear } : mockDb.academicCalendar,
     };
 
     const getUser = (id) => db.users.find((u) => u.id === id);
@@ -1416,7 +1334,7 @@ function DataProvider({ children }) {
     }
 
     function feeTypesForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       return feeTypesForStudentIn(db, student, yearId);
     }
     // BLOCKER 7 §7: for V1 a student should have exactly one applicable School (TUITION) fee for
@@ -1424,7 +1342,7 @@ function DataProvider({ children }) {
     // cover this student's grade, DON'T silently combine them — return the conflicting fee types so
     // the UI can block payment recording and show a clear configuration error.
     function schoolFeeConflictForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const tuition = feeTypesForStudentIn(db, student, yearId).filter((ft) => ft.category === "TUITION");
       return tuition.length > 1 ? tuition.map((ft) => feeTypeYearView(db, ft, yearId)) : [];
     }
@@ -1437,7 +1355,7 @@ function DataProvider({ children }) {
     // === 0` = it was rolled out but this student has no obligation for any of its installments
     // (e.g. enrolled after the last one). Both surface as "No fee configured".
     function balanceFor(student, feeType, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const { schedule, rows } = feeRowsForStudentIn(db, student, feeType, yearId);
       if (!schedule || rows.length === 0) return { paid: 0, remaining: 0, amountOwed: 0, status: "NO_FEE" };
       let paidUnitsSum = 0, amountOwed = 0;
@@ -1450,7 +1368,7 @@ function DataProvider({ children }) {
       return { paid: paidUnitsSum, remaining, amountOwed, status };
     }
     function studentPaymentSummary(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const balances = feeTypesForStudent(student, yearId).map((ft) => ({ feeType: feeTypeYearView(db, ft, yearId), ...balanceFor(student, ft, yearId) }));
       const totalOwed = balances.reduce((sum, b) => sum + b.amountOwed, 0);
       // BLOCKER 6: only count fee types that actually apply to this student when picking the worst
@@ -1464,21 +1382,26 @@ function DataProvider({ children }) {
     // Per-installment paid/partial/unpaid breakdown for the student's Tuition fee type this year —
     // same {feeType, rows, currentIndex} shape as before, now backed by feeRowsForStudentIn.
     function installmentStatusForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const feeType = feeTypesForStudent(student, yearId).find((ft) => ft.category === "TUITION");
-      if (!feeType) return { feeType: null, rows: [], currentIndex: -1 };
-      const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
-      return { feeType: feeTypeYearView(db, feeType, yearId), rows, currentIndex };
+      if (!feeType) return { feeType: null, rows: [], periods: [], currentIndex: -1 };
+      const { rows, periods, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      return { feeType: feeTypeYearView(db, feeType, yearId), rows, periods, currentIndex };
     }
     // BLOCKER 6 §14: generic per-installment view for ANY applicable fee type (not just TUITION /
     // TRANSPORT). Returns [] when the type isn't rolled out or the student has no obligation for it.
     // Rows are normalized to { installmentId, label, dueDate, amountDue, paid, remaining, status,
     // isCurrent } so one grid renders every fee category.
     function feeInstallmentRowsForStudent(student, feeType, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
-      const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
+      const { rows, periods, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      const labelFor = (r) => {
+        const monthKey = (r.installment.periodMonth || r.installment.dueDate || "").slice(0, 7);
+        return monthKey ? `${ethiopianMonthLabelForGcMonthKey(monthKey)} (${r.installment.label})` : r.installment.label;
+      };
       return {
         feeType: feeTypeYearView(db, feeType, yearId),
+        periods: periods.map((r) => ({ installmentId: r.installment.id, label: labelFor(r), dueDate: r.installment.dueDate, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId, applicable: r.applicable, voided: r.voided })),
         rows: rows.map((r) => {
           // Ethiopian Calendar is primary (AGENTS.md): lead with the EC month, keep the
           // installment's stored Gregorian month label (baked at generation time) alongside it.
@@ -1491,7 +1414,7 @@ function DataProvider({ children }) {
     }
 
     function busFeeTypeForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       return feeTypesForStudent(student, yearId).find((ft) => ft.category === "TRANSPORT") || null;
     }
     // Bus is now just another installment schedule (real stored rows, generated once at rollout —
@@ -1499,24 +1422,28 @@ function DataProvider({ children }) {
     // {feeType, rows, currentIndex} shape as before, rows reshaped to the old bus field names
     // (`index`, `label`) that AdminPages.jsx already reads.
     function busScheduleForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const feeType = busFeeTypeForStudent(student, yearId);
-      if (!feeType) return { feeType: null, rows: [], currentIndex: -1 };
-      const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
+      if (!feeType) return { feeType: null, rows: [], periods: [], currentIndex: -1 };
+      const { rows, periods, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
       const busRows = rows.map((r) => {
         // Ethiopian Calendar is primary (AGENTS.md): lead with the EC month, keep the stored
         // Gregorian month label alongside it.
         const label = r.instMonth ? `${ethiopianMonthLabelForGcMonthKey(r.instMonth)} (${r.installment.label})` : r.installment.label;
         return { index: r.installment.sequenceIndex, installmentId: r.installment.id, label, dueDate: r.installment.dueDate, instMonth: r.instMonth, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId };
       });
-      return { feeType: feeTypeYearView(db, feeType, yearId), rows: busRows, currentIndex };
+      const busPeriods = periods.map((r) => {
+        const label = r.instMonth ? `${ethiopianMonthLabelForGcMonthKey(r.instMonth)} (${r.installment.label})` : r.installment.label;
+        return { index: r.installment.sequenceIndex, installmentId: r.installment.id, label, dueDate: r.installment.dueDate, instMonth: r.instMonth, amountDue: r.amountDue, paid: r.paid, remaining: r.remaining, status: r.status, isCurrent: r.isCurrent, obligationId: r.obligationId, applicable: r.applicable, voided: r.voided };
+      });
+      return { feeType: feeTypeYearView(db, feeType, yearId), rows: busRows, periods: busPeriods, currentIndex };
     }
     // Per-fee-type "what's actually due as of today" — only counts installments up through the
     // current one (see feeRowsForStudentIn's currentIndex), so a family fully caught up on what's
     // due isn't flagged for periods that haven't arrived yet. Same shape as before, now one
     // unified obligation-based query instead of per-category branches.
     function dueStatusForFeeType(student, feeType, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const { rows, currentIndex } = feeRowsForStudentIn(db, student, feeType, yearId);
       // BLOCKER 6: no obligations for this fee type/year → nothing is configured for this student.
       if (rows.length === 0) return { owed: 0, paid: 0, remaining: 0, status: "NO_FEE" };
@@ -1531,7 +1458,7 @@ function DataProvider({ children }) {
     // studentPaymentSummary, so "unpaid" there means "behind on what's due now", not "hasn't
     // prepaid the rest of the school year".
     function dueStatusForStudent(student, academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       let tuitionRemaining = 0, busRemaining = 0, otherRemaining = 0, totalPaid = 0, anyApplicable = false;
       feeTypesForStudent(student, yearId).forEach((ft) => {
         const dstat = dueStatusForFeeType(student, ft, yearId);
@@ -1565,7 +1492,7 @@ function DataProvider({ children }) {
     // VOIDED payments. One row per calendar month that saw a collection, plus per-month outstanding
     // and paid/partial/unpaid student counts against what's due through that month.
     function monthlyFinanceReport(academicYearId) {
-      const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id;
+      const yearId = academicYearId || (db.workspaceYear || {}).id;
       const scheduleIds = new Set(db.feeSchedules.filter((s) => s.academicYearId === yearId).map((s) => s.id));
       const instById = new Map(db.feeInstallments.map((i) => [i.id, i]));
       const schedById = new Map(db.feeSchedules.map((s) => [s.id, s]));
@@ -1611,11 +1538,23 @@ function DataProvider({ children }) {
     function paymentMethodName(payment) {
       return (db.paymentMethods.find((m) => m.id === payment.paymentMethodId) || {}).name || "";
     }
+    // The roll of a year as student rows. The operational year IS the students table; any other year is
+    // the students ENROLLED in it, carrying THAT year's grade / section / class / status (the students
+    // table only describes the operational year). Defaults to the workspace year.
+    function studentsInYear(yearId) {
+      const id = yearId || (db.workspaceYear || {}).id;
+      if (!id || id === (db.operationalYear || {}).id) return db.students;
+      const byId = new Map(db.students.map((s) => [s.id, s]));
+      return db.enrollments
+        .filter((e) => e.academicYearId === id)
+        .map((e) => { const s = byId.get(e.studentId); return s ? { ...s, grade: e.grade, section: e.section, classId: e.classId, status: e.status } : null; })
+        .filter(Boolean);
+    }
     // Groups active students by parent account for the Fees & Payments screen's family view —
     // a student with no linked parent account still appears, as a family of one, so nobody with
     // an outstanding balance is ever left out of the list.
     function familyGroups() {
-      const activeStudents = db.students.filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
+      const activeStudents = studentsInYear().filter((s) => s.status !== "WITHDRAWN" && s.status !== "TRANSFERRED" && s.status !== "GRADUATED" && s.status !== "ARCHIVED");
       const groups = db.users
         .filter((u) => u.role === ROLES.PARENT)
         .map((p) => ({ id: p.id, parent: p, children: activeStudents.filter((s) => (p.childIds || []).includes(s.id)) }))
@@ -1633,9 +1572,9 @@ function DataProvider({ children }) {
     // is silently skipped. Decision B (overpayment CAP, not reject) is enforced inside
     // record_payment_batch against the row-locked live obligation balance — never a value the UI
     // computed before another payment landed. `recordPayment` (singular) below wraps this.
-    async function recordPaymentBatch(lines, recordedBy) {
+    async function recordPaymentBatch(lines, recordedBy, opts = {}) {
       try {
-        const { payment, allocations } = await paymentService.recordPaymentBatch(lines, recordedBy);
+        const { payment, allocations } = await paymentService.recordPaymentBatch(lines, recordedBy, opts);
         // Build the printed-receipt entries from the real capped allocations, using the still-
         // current `db` closure (obligations/installments/schedules/feeTypes all pre-date the
         // payment, so they're already loaded).
@@ -1674,6 +1613,19 @@ function DataProvider({ children }) {
       }
     }
 
+    // A payment into a CLOSED academic year (arrears collected after the year ended) is a deliberate,
+    // reasoned, owner-only, audited historical adjustment — never something a normal payment can do by accident.
+    // Only offered while that closed year is the one being viewed; the database enforces the rest.
+    async function recordHistoricalPayment(lines, recordedBy, reason) {
+      if (!yearScope.isReadOnlyYear) {
+        return { receiptNo: null, paymentId: null, entries: [], error: "A historical adjustment is only for a closed academic year. Switch to the closed year first." };
+      }
+      if (!reason || !String(reason).trim()) {
+        return { receiptNo: null, paymentId: null, entries: [], error: "Give a reason for recording a payment into a closed academic year." };
+      }
+      return recordPaymentBatch(lines, recordedBy, { historicalReason: String(reason).trim() });
+    }
+
     function periodSchedule() {
       return computePeriodSchedule(db.timetableConfig);
     }
@@ -1709,7 +1661,10 @@ function DataProvider({ children }) {
     }
     function attendanceDateBounds() {
       const cal = db.academicCalendar;
-      return { min: earliestAttendanceDate(cal), max: latestAttendanceDate(cal, todayKeyStr()) };
+      const today = todayKeyStr();
+      // A previous year is browsed within its own dates; otherwise "today" (see latestAttendanceDate).
+      const max = cal && cal.readOnly && cal.yearEnd && cal.yearEnd < today ? cal.yearEnd : latestAttendanceDate(cal, today);
+      return { min: earliestAttendanceDate(cal), max };
     }
     function closureForDate(dateKey) {
       return db.schoolClosures.find((c) => c.date === dateKey) || null;
@@ -1729,14 +1684,54 @@ function DataProvider({ children }) {
     // transferred, graduated, withdrawn, archived). Their historical records stay fully visible
     // on their own profile, which reads by studentId directly rather than through this roster.
     function attendanceRosterForClass(classId) {
+      if (db.workspaceYear && db.operationalYear && db.workspaceYear.id !== db.operationalYear.id) {
+        // Viewing another year: the class list is that year's enrollments (the students table only
+        // describes the operational year).
+        const ids = new Set(db.enrollments
+          .filter((e) => e.academicYearId === db.workspaceYear.id && e.classId === classId && canStudentTakeAttendance(e.status))
+          .map((e) => e.studentId));
+        return db.students.filter((s) => ids.has(s.id));
+      }
       return db.students.filter((s) => s.classId === classId && canStudentTakeAttendance(s.status));
     }
 
-    return {
+    const apiObj = {
       db, getUser, getClass, classLabel, getStudent, studentFullName,
+      // academic-year workspace (see the state block near academicYears)
+      setWorkspaceYearId, setWorkspaceScopeEnabled,
+      // The roll of a year as student rows. The operational year IS the students table; any other year is
+      // the students ENROLLED in it, carrying THAT year's grade / section / class / status (the students
+      // table only describes the operational year). Defaults to the workspace year.
+      studentsInYear,
+      // Which subjects / classes a teacher had in ANOTHER year: the snapshot taken when that year was
+      // closed. For the current year (or a year with no snapshot) this is the live assignment list.
+      // Display only — permissions always read the live teacherAssignments.
+      teacherAssignmentsInYear(yearId) {
+        const id = yearId || (db.workspaceYear || {}).id;
+        const snap = assignmentSnapshots.filter((r) => r.academicYearId === id);
+        if (!id || id === (db.operationalYear || {}).id || snap.length === 0) {
+          return { historical: false, rows: db.teacherAssignments.map((ta) => ({ teacherId: ta.teacherId, subject: ta.subject, classId: ta.classId })) };
+        }
+        const nameBySubjectId = new Map(subjects.map((s) => [s.id, s.name]));
+        return { historical: true, rows: snap.map((r) => ({ teacherId: r.teacherId, teacherName: r.teacherName, subject: nameBySubjectId.get(r.subjectId) || "", classId: r.classId })) };
+      },
+      // Money figures for ONE academic year (default: the workspace year) — never all-time:
+      //   collected   non-voided payment allocations against that year's fee obligations
+      //   payrollPaid salary payments + advances for that year's payroll months
+      //   expenses    expenses dated inside the year
+      yearFinanceTotals(yearId) {
+        const year = yearId ? db.academicYears.find((y) => y.id === yearId) : db.workspaceYear;
+        if (!year) return { year: null, collected: 0, payrollPaid: 0, expenses: 0 };
+        const months = new Set(academicYearBillingPeriods(year).periods.map((p) => p.monthKey));
+        const collected = monthlyFinanceReport(year.id).totals.total;
+        const payrollPaid = db.payrollPayments.filter((p) => months.has(p.month)).reduce((s, p) => s + p.amount, 0)
+          + db.salaryAdvances.filter((a) => months.has(a.payrollMonth)).reduce((s, a) => s + a.amount, 0);
+        const expenses = db.expenses.filter((e) => e.date && e.date >= year.yearStart && e.date <= year.yearEnd).reduce((s, e) => s + e.totalAmount, 0);
+        return { year, collected, payrollPaid, expenses };
+      },
       studentIdentity, staffIdentity, userIdentity, leaveSubjectIdentity, announcementSenderLabel,
       parentsOfClass, parentsOfStudent,
-      feeTypesForStudent, schoolFeeConflictForStudent, balanceFor, studentPaymentSummary, installmentStatusForStudent, recordPaymentBatch, periodSchedule, availableSubjectsForSlot,
+      feeTypesForStudent, schoolFeeConflictForStudent, balanceFor, studentPaymentSummary, installmentStatusForStudent, recordPaymentBatch, recordHistoricalPayment, periodSchedule, availableSubjectsForSlot,
       busFeeTypeForStudent, busScheduleForStudent, describePayment, familyGroups, dueStatusForFeeType, dueStatusForStudent, priorYearsOutstanding, monthlyFinanceReport, feeInstallmentRowsForStudent,
       paymentsForStudents, paymentMethodName,
       classifyAttendanceDay, classifySchoolDay, attendanceDateBounds, closureForDate, classifyStaffAttendanceDay, attendanceRosterForClass,
@@ -1847,8 +1842,19 @@ function DataProvider({ children }) {
       // effect goes through the log_activity RPC (logActivityFeed).
       async createAcademicYear(fields, createdBy) {
         try {
-          const base = defaultAcademicCalendar(fields.yearStart ? new Date(fields.yearStart) : undefined);
-          const newYear = await academicYearService.create({ ...base, ...fields }, createdBy);
+          // "T00:00:00" = local midnight: a bare "YYYY-MM-DD" parses as UTC and can land on the day
+          // before in a west-of-UTC timezone, putting Semester 1 before the year's own start.
+          const base = defaultAcademicCalendar(fields.yearStart ? new Date(fields.yearStart + "T00:00:00") : undefined);
+          const next = { ...base, ...fields };
+          // Labels always follow the dates the admin actually chose (never the default's dates).
+          Object.assign(next, deriveAcademicYearLabels(next.yearStart, next.yearEnd), { yearName: deriveAcademicYearLabels(next.yearStart, next.yearEnd).gcLabel });
+          // One academic year per Ethiopian school year: a second row for the same year would give
+          // every fee/attendance/results screen two competing calendars for it.
+          const dup = academicYears.find((y) => y.yearStart && ecYearLabelForGcStart(new Date(y.yearStart + "T00:00:00")) === next.ecLabel);
+          if (dup) return { ok: false, message: `${formatAcademicYearLabel(dup)} already exists. Open it in Academic Years instead of creating it again.` };
+          const problems = academicYearDateProblems(next);
+          if (problems.length > 0) return { ok: false, message: problems[0].message };
+          const newYear = await academicYearService.create(next, createdBy);
           await refetchAcademicYears();
           await logActivityFeed(`Academic year ${formatAcademicYearLabel(newYear)} was created.`);
           return { ok: true, year: newYear };
@@ -1857,17 +1863,64 @@ function DataProvider({ children }) {
           return { ok: false, message: e.message || "Couldn't create the academic year." };
         }
       },
-      async setCurrentAcademicYear(id) {
+      // Makes `id` the operational year — ONE atomic, audited server action (see
+      // set_current_academic_year): the outgoing year is closed (kept, read-only), the roster follows the
+      // incoming year's enrollments, and reopening a closed year needs a reason. Then everything that
+      // depends on the year is re-read and the workspace follows the new current year.
+      async setCurrentAcademicYear(id, { reason, allowUndecided } = {}) {
         const year = academicYears.find((y) => y.id === id);
         if (!year) return { ok: false, message: "Academic year not found." };
         try {
-          await academicYearService.setCurrent(id);
-          await refetchAcademicYears();
+          const result = await academicYearService.setCurrent(id, { reason, allowUndecided });
+          setWorkspaceYearId(null);
+          await Promise.allSettled([
+            refetchAcademicYears(), refetchStudents(), refetchEnrollments(), refetchFees(), refetchAttendance(),
+            refetchYearDecisions(), refetchYearAudit(),
+          ]);
           await logActivityFeed(`${formatAcademicYearLabel(year)} is now the current academic year.`);
-          return { ok: true };
+          return { ok: true, result };
         } catch (e) {
           console.error("Failed to set current academic year", e);
           return { ok: false, message: e.message || "Couldn't update the current academic year." };
+        }
+      },
+      // The re-enrollment worklist for a year being set up: every eligible student of `sourceYearId`
+      // with their decision for `targetYearId` (REGISTERED / NOT_RETURNING / PENDING). Pure read.
+      reenrollmentWorklist(sourceYearId, targetYearId) {
+        return reenrollmentCandidates({
+          students: db.students, enrollments: db.enrollments, decisions: db.studentYearDecisions, sourceYearId, targetYearId,
+        });
+      },
+      // Registers an EXISTING student for a year (creates that year's enrollment; never a second student)
+      // and bills them from the month they join.
+      async registerStudentForYear({ studentId, yearId, grade, section }) {
+        const year = academicYears.find((y) => y.id === yearId);
+        const s = studentsRaw.find((x) => x.id === studentId);
+        if (!year || !s) return { ok: false, message: "Student or academic year not found." };
+        try {
+          await academicYearService.registerStudent({ studentId, yearId, grade, section });
+          await Promise.allSettled([refetchEnrollments(), refetchStudents(), refetchFees(), refetchYearDecisions()]);
+          await logActivityFeed(`${studentFullName(s)} was registered for ${formatAcademicYearLabel(year)} (${grade}${section || ""}).`);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to register student for year", e);
+          return { ok: false, message: yearRpcMessage(e, "Couldn't register the student.") };
+        }
+      },
+      // Records that a student is not returning for a year. The student and every earlier enrollment,
+      // result, attendance and payment stay exactly as they are.
+      async markStudentNotReturning({ studentId, yearId, reason }) {
+        const year = academicYears.find((y) => y.id === yearId);
+        const s = studentsRaw.find((x) => x.id === studentId);
+        if (!year || !s) return { ok: false, message: "Student or academic year not found." };
+        try {
+          await academicYearService.markNotReturning({ studentId, yearId, reason });
+          await refetchYearDecisions();
+          await logActivityFeed(`${studentFullName(s)} is not returning for ${formatAcademicYearLabel(year)}.`);
+          return { ok: true };
+        } catch (e) {
+          console.error("Failed to record not-returning decision", e);
+          return { ok: false, message: yearRpcMessage(e, "Couldn't record that decision.") };
         }
       },
       // Creates (or reuses) this student's enrollment row for `academicYearId` and updates their
@@ -1896,7 +1949,7 @@ function DataProvider({ children }) {
       // switching a student's profile to a historical year shows that year's numbers, not the
       // current year's. `academicYearId` defaults to the current year when omitted.
       studentAttendanceRate(studentId, academicYearId) {
-        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : currentAcademicYear(db.academicYears);
+        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : db.workspaceYear;
         if (!year) return null;
         const records = db.attendance.filter((a) => a.studentId === studentId && a.date >= year.yearStart && a.date <= year.yearEnd);
         if (records.length === 0) return null;
@@ -1910,7 +1963,7 @@ function DataProvider({ children }) {
       // record.classId (not the student's current class), so a promoted student's earlier-year
       // results are still scored against the class they actually belonged to at the time.
       studentResultsAverage(studentId, academicYearId) {
-        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : currentAcademicYear(db.academicYears);
+        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : db.workspaceYear;
         const records = db.results.filter((r) => r.studentId === studentId && (!year || !r.academicYearId || r.academicYearId === year.id));
         const semesterAverages = [];
         for (const semester of SEMESTERS) {
@@ -1931,7 +1984,7 @@ function DataProvider({ children }) {
       studentHomeworkStats(studentId, academicYearId) {
         const s = db.students.find((x) => x.id === studentId);
         if (!s) return { assigned: 0, completed: 0, pending: 0 };
-        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : currentAcademicYear(db.academicYears);
+        const year = academicYearId ? db.academicYears.find((y) => y.id === academicYearId) : db.workspaceYear;
         const items = db.homework.filter((h) => h.classId === s.classId && (!year || !h.academicYearId || h.academicYearId === year.id));
         const todayKey = todayKeyStr();
         const pending = items.filter((h) => h.dueDate >= todayKey).length;
@@ -2605,7 +2658,7 @@ function DataProvider({ children }) {
         if (!cls) return { ok: false, message: "Class not found." };
         const subjectId = db.subjects.find((s) => s.name === data.subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${data.subject}" not found.` };
-        const year = currentAcademicYear(db.academicYears);
+        const year = db.workspaceYear;
         try {
           const created = await homeworkService.create({
             subjectId, grade: data.grade, section: data.section, classId: cls.id,
@@ -3061,18 +3114,26 @@ function DataProvider({ children }) {
       // attendance record already saved, no matter how the semester/break dates move. Writes
       // through to the academic_years row (see academicYearService), then refetches so
       // db.academicYears/db.academicCalendar pick up the new dates.
-      async saveAcademicCalendar(fields, updatedBy) {
-        const cal = db.academicCalendar;
+      // Saves one year's calendar: the workspace year by default, or `yearId` (the year being set up in the
+      // new-year wizard, or the current year edited from Academic Year settings while another is viewed).
+      async saveAcademicCalendar(fields, updatedBy, yearId) {
+        const target = yearId ? academicYears.find((y) => y.id === yearId) : null;
+        const cal = target ? { ...target, readOnly: academicYearStatus(target, todayKeyStr()) === "previous" } : db.academicCalendar;
         if (!cal || !cal.id) return { ok: false, message: "No academic year found to update." };
+        if (cal.readOnly) return { ok: false, message: "This academic year is closed (read-only). An owner can reopen it from Academic Years before its calendar is changed." };
+        const problems = academicYearDateProblems(fields);
+        if (problems.length > 0) return { ok: false, message: problems[0].message };
         try {
+          // Labels are generated from the dates (never typed), so they can't drift from them.
+          const { gcLabel, ecLabel } = deriveAcademicYearLabels(fields.yearStart, fields.yearEnd);
           await academicYearService.update(cal.id, {
-            gcLabel: fields.yearName, yearStart: fields.yearStart, yearEnd: fields.yearEnd,
+            gcLabel, ecLabel, yearStart: fields.yearStart, yearEnd: fields.yearEnd,
             sem1Start: fields.sem1Start, sem1End: fields.sem1End, breakDays: fields.breakDays,
             sem2Start: fields.sem2Start, sem2End: fields.sem2End,
             resultFinalizationGraceDays: fields.resultFinalizationGraceDays,
           }, updatedBy);
           await refetchAcademicYears();
-          await logActivityFeed(`The academic calendar was updated (${fields.yearName}).`);
+          await logActivityFeed(`The academic calendar was updated (${formatAcademicYearLabel({ yearStart: fields.yearStart, yearEnd: fields.yearEnd })}).`);
           return { ok: true };
         } catch (e) {
           console.error("Failed to update academic calendar", e);
@@ -3379,6 +3440,11 @@ function DataProvider({ children }) {
           const ft = db.feeTypes.find((f) => f.id === feeTypeId);
           if (!ft || ft.archivedAt) return { ok: false, message: "Fee type not found or archived." };
           const existingYr = db.academicYears.find((y) => y.id === academicYearId);
+          if (!existingYr) return { ok: false, message: "Academic year not found." };
+          // The academic year owns the billing periods. Refuse to generate (or re-check) installments
+          // from dates that don't describe one school year — see academicYearDateProblems.
+          const billing = academicYearBillingPeriods(existingYr);
+          if (!billing.valid) return { ok: false, message: `${billing.problems[0].message} Fix the dates in Academic Calendar & Attendance first.` };
           const anchor = feeMaterializeAnchor(existingYr, todayKeyStr());
           const preOpts = _opts || {};
           const existing = db.feeSchedules.find((s) => s.feeTypeId === feeTypeId && s.academicYearId === academicYearId);
@@ -3401,14 +3467,16 @@ function DataProvider({ children }) {
           // unitMonths is always 1; unitsPerYear is the billed-month count so the "N of M months
           // paid" display in balanceFor stays correct. BLOCKER 6: opts.billedMonths (array of
           // 'YYYY-MM-01' anchors) restricts which months are billed; omitted/empty = every month.
-          const yr = existingYr;
-          const monthsInYear = (yr && yr.yearStart && yr.yearEnd)
-            ? monthsBetweenInclusive(yr.yearStart, yr.yearEnd)
-            : 12;
-          const billedMonths = Array.isArray(opts.billedMonths) && opts.billedMonths.length && opts.billedMonths.length < monthsInYear
+          const yearAnchors = new Set(billing.periods.map((p) => p.anchor));
+          const outsideYear = Array.isArray(opts.billedMonths) ? opts.billedMonths.filter((a) => !yearAnchors.has(a)) : [];
+          if (outsideYear.length > 0) return { ok: false, message: `${outsideYear.map((a) => ethiopianMonthLabelForGcMonthKey(a.slice(0, 7))).join(", ")} isn't part of ${formatAcademicYearLabel(existingYr)}.` };
+          // Always an EXPLICIT list (all of the year's months when none were narrowed): the months come from
+          // the academic year's own Ethiopian periods, so the server's generation rule (which, before
+          // migration 20260929000000, counted Gregorian months and would add a stray Hamle) never decides.
+          const billedMonths = Array.isArray(opts.billedMonths) && opts.billedMonths.length
             ? opts.billedMonths.slice().sort()
-            : null;
-          const expectedCount = billedMonths ? billedMonths.length : monthsInYear;
+            : billing.periods.map((p) => p.anchor);
+          const expectedCount = billedMonths.length;
           // BLOCKER 7: school (TUITION) fees are grade-targeted; opts.applicableGrades is the grade
           // list chosen at rollout. TRANSPORT/bus fees are never grade-targeted (eligibility is
           // usesBus only) so their applicableGrades stays null.
@@ -3447,6 +3515,15 @@ function DataProvider({ children }) {
         try {
           const months = Array.isArray(anchors) ? anchors.slice().sort() : [];
           if (months.length === 0) return { ok: false, message: "Select at least one month for this fee." };
+          const schedForYear = db.feeSchedules.find((s) => s.id === scheduleId);
+          const yearForSched = schedForYear && db.academicYears.find((y) => y.id === schedForYear.academicYearId);
+          if (yearForSched) {
+            const billing = academicYearBillingPeriods(yearForSched);
+            if (!billing.valid) return { ok: false, message: `${billing.problems[0].message} Fix the dates in Academic Calendar & Attendance first.` };
+            const yearAnchors = new Set(billing.periods.map((p) => p.anchor));
+            const outsideYear = months.filter((a) => !yearAnchors.has(a));
+            if (outsideYear.length > 0) return { ok: false, message: `${outsideYear.map((a) => ethiopianMonthLabelForGcMonthKey(a.slice(0, 7))).join(", ")} isn't part of ${formatAcademicYearLabel(yearForSched)}.` };
+          }
           const updated = await feeService.setBilledMonths(scheduleId, months);
           await refetchFees();
           const sched = db.feeSchedules.find((s) => s.id === scheduleId);
@@ -3617,11 +3694,11 @@ function DataProvider({ children }) {
       // `academicYearId` defaults to the current year — see findOrCreateResultRecord for why it
       // must be part of the lookup key (classId is a persistent identity, not per-year).
       getResult(studentId, classId, subject, semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && (!r.academicYearId || r.academicYearId === yearId)) || null;
       },
       resultsForClassSubject(classId, subject, semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return db.results.filter((r) => r.classId === classId && r.subject === subject && (!semester || r.semester === semester) && (!r.academicYearId || r.academicYearId === yearId));
       },
       // One student's results (optionally narrowed to one semester), scoped to one academic year
@@ -3629,7 +3706,7 @@ function DataProvider({ children }) {
       // prior-year PUBLISHED results never mix into the current year's list. Pass `semester: null`
       // for every semester.
       resultsForStudentSemester(studentId, semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return db.results.filter((r) => r.studentId === studentId && (!semester || r.semester === semester) && (!r.academicYearId || r.academicYearId === yearId));
       },
       // Every evidence page for one result's assessment component, in display order — the single
@@ -3642,7 +3719,7 @@ function DataProvider({ children }) {
       // one semester of one academic year, or null when none exists (callers then show "No result
       // structure has been configured…" — never fallback fields). `academicYearId` defaults to current.
       resultStructureForClass(classId, semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         const cls = db.classes.find((c) => c.id === classId);
         return cls ? activeConfigFor(db.resultConfigs, yearId, semester, cls.grade) : null;
       },
@@ -3663,8 +3740,10 @@ function DataProvider({ children }) {
       // shows the students who were in the class THEN, not whoever sits in it today (a student who has
       // since moved up must not appear to have changed grade retroactively).
       studentsForClassYear(classId, academicYearId) {
-        const current = (currentAcademicYear(db.academicYears) || {}).id || null;
-        if (!academicYearId || academicYearId === current) return db.students.filter((s) => s.classId === classId);
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
+        const current = (db.operationalYear || {}).id || null;
+        if (!yearId || yearId === current) return db.students.filter((s) => s.classId === classId);
+        academicYearId = yearId;
         const ids = new Set(db.enrollments.filter((e) => e.academicYearId === academicYearId && e.classId === classId).map((e) => e.studentId));
         return db.students.filter((s) => ids.has(s.id));
       },
@@ -3704,7 +3783,7 @@ function DataProvider({ children }) {
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
 
-        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (db.workspaceYear || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
         const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null, db.resultEvidence);
@@ -3758,7 +3837,7 @@ function DataProvider({ children }) {
       // holds that student's result back (and the database refuses the publish too, so this can't be
       // bypassed). Students who are ready are still published; the message names the rest.
       async publishResults(classId, subject, semester, studentIds, actorId, actorRole, yearArg) {
-        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (db.workspaceYear || {}).id || null;
         const subjectId = db.subjects.find((s) => s.name === subject)?.id || null;
         const draftRecs = db.results.filter((r) => studentIds.includes(r.studentId) && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId && r.publishStatus === "DRAFT");
         if (draftRecs.length === 0) return { ok: false, message: "Nothing to publish." };
@@ -3853,7 +3932,7 @@ function DataProvider({ children }) {
       // like the manual unlockResult path. Stays in effect until reinstateAutoLock re-locks it.
       async overrideAutoLock({ studentId, classId, subject, semester, academicYearId: yearArg }, actorId, actorRole, reason) {
         if (!reason || !reason.trim()) return { ok: false, message: "A reason is required to unlock a result." };
-        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (db.workspaceYear || {}).id || null;
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
@@ -3914,7 +3993,7 @@ function DataProvider({ children }) {
         const subjectId = db.subjects.find((s) => s.name === subject)?.id;
         if (!subjectId) return { ok: false, message: `Subject "${subject}" not found.` };
 
-        const academicYearId = yearArg || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const academicYearId = yearArg || (db.workspaceYear || {}).id || null;
         const record = db.results.find((r) => r.studentId === studentId && r.classId === classId && r.subject === subject && r.semester === semester && r.academicYearId === academicYearId) || null;
         const cls = db.classes.find((c) => c.id === classId);
         const config = effectiveConfigFor(record, db.resultConfigs, academicYearId, semester, cls ? cls.grade : null, db.resultEvidence);
@@ -4398,7 +4477,9 @@ function DataProvider({ children }) {
       // it's still a full expected month, same as any other; Finance types the actual final
       // amount into the existing free-entry Amount field, same mechanism as every other month.
       staffSalarySummary(staffId) {
-        return computeStaffPayrollSummary(db, staffId);
+        // Periods come from the workspace academic year (never a global month list) and start no earlier
+        // than the person's own start month — see utils/payrollLedger.js.
+        return computeStaffPayrollSummary(db, staffId, { year: db.workspaceYear });
       },
 
       // A direct salary payment can never push a month's paid total (direct payments + advances
@@ -4693,7 +4774,7 @@ function DataProvider({ children }) {
       // `academicYearId` defaults to current — pass a specific year explicitly when browsing a
       // past enrollment (see Student Profile, which already has a year picker).
       classSemesterResults(classId, semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return computeClassSemesterResults({ db, classId, semester, academicYearId: yearId, requiredSubjectsForClass: (id) => this.requiredSubjectsForClass(id), studentsForClassYear: (id, y) => this.studentsForClassYear(id, y) });
       },
       // Yearly (S1+S2 blended) class ranking for the Report Card's Yearly Average/Rank row — a
@@ -4701,7 +4782,7 @@ function DataProvider({ children }) {
       // re-averaging, the per-semester ranks above (see resultsEngine.js comment on why the Report
       // Card average is a legitimately different metric).
       classYearlyResults(classId, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         const s1 = this.classSemesterResults(classId, "S1", yearId);
         const s2 = this.classSemesterResults(classId, "S2", yearId);
         const baseRows = s1.rows.map((r1) => {
@@ -4715,14 +4796,14 @@ function DataProvider({ children }) {
       // Highest-averaging allComplete student school-wide for the given semester, or null if no
       // student anywhere has finished every required subject yet.
       schoolTopPerformer(semester, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         const perClass = db.classes.map((c) => this.classSemesterResults(c.id, semester, yearId));
         return findSchoolTopPerformer(perClass);
       },
       // `academicYearId` defaults to current — see findOrCreateResultRecord for why classId alone
       // isn't enough to identify "this year's" results for a repeating/retained student.
       computeReportReadiness(studentId, classId, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         const required = this.requiredSubjectsForClass(classId);
         const records = db.results.filter((r) => r.studentId === studentId && r.classId === classId && r.semester === "S2" && (!r.academicYearId || r.academicYearId === yearId));
         const completedSubjects = required.filter((subj) => {
@@ -4735,11 +4816,11 @@ function DataProvider({ children }) {
       // `academicYearId` defaults to current — classId alone collides for a repeating/retained
       // student who keeps the same classId next year (same reasoning as computeReportReadiness).
       isReportLocked(studentId, classId, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return db.reportCards.some((rc) => rc.studentId === studentId && rc.classId === classId && rc.status === "LOCKED" && (!rc.academicYearId || rc.academicYearId === yearId));
       },
       getReportCard(studentId, classId, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         return db.reportCards.find((rc) => rc.studentId === studentId && rc.classId === classId && (!rc.academicYearId || rc.academicYearId === yearId)) || null;
       },
       // Supabase-backed (`report_cards` table). RLS restricts insert/update to Owner + Educational
@@ -4748,7 +4829,7 @@ function DataProvider({ children }) {
       // stops that early). The parent notification (on publish) goes through
       // notify_report_card_published.
       async generateReportCard(studentId, classId, generatedBy, academicYearId) {
-        const yearId = academicYearId || (currentAcademicYear(db.academicYears) || {}).id || null;
+        const yearId = academicYearId || (db.workspaceYear || {}).id || null;
         const student = db.students.find((s) => s.id === studentId);
         const readiness = this.computeReportReadiness(studentId, classId, yearId);
         if (!readiness.complete) return { ok: false, message: `${student?.firstName || "This student"} is missing Semester 2 results for: ${readiness.missingSubjects.join(", ")}.` };
@@ -4836,7 +4917,25 @@ function DataProvider({ children }) {
         }
       },
     };
+
+    // ---- Academic-year write guard. While an admin is VIEWING a year other than the operational one
+    // (any past year, or one being set up), the day-to-day write actions below would silently land in the
+    // operational year — so they are refused with a clear message instead. Year-explicit actions
+    // (rolling out a fee for a chosen year, registering students for a chosen year, the calendar of the
+    // viewed year) are not on this list: they name their year and the database enforces its lifecycle.
+    if (!yearScope.isCurrentYear && yearScope.selectedAcademicYear) {
+      const viewing = formatAcademicYearLabel(yearScope.selectedAcademicYear);
+      const message = yearScope.isReadOnlyYear
+        ? `You are viewing ${viewing}, which is closed (read-only). Switch back to the current academic year to make changes.`
+        : `You are viewing ${viewing}, which is not the current academic year. Switch back to the current academic year to make this change.`;
+      const refused = async () => ({ ok: false, message, error: message });
+      for (const name of YEAR_SCOPED_WRITES) {
+        if (typeof apiObj[name] === "function") apiObj[name] = refused;
+      }
+    }
+    return apiObj;
   }, [
+    workspaceYearId, workspaceScopeEnabled, yearDecisions, yearAudit, assignmentSnapshots, setWorkspaceYearId, refetchYearDecisions, refetchYearAudit,
     mockDb, academicYears, subjects, classesRaw, classSubjects,
     studentsRaw, enrollmentsRaw, studentDocumentsRaw, studentService,
     refetchStudents, refetchEnrollments, refetchStudentDocuments, syncStudentEnrollment,

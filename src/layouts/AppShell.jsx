@@ -26,10 +26,12 @@ import { useAuth } from "../context/AuthContext";
 import { notificationPageKey } from "../utils/notifications";
 import { PushOptInBanner } from "../components/PushOptIn";
 import { listenForServiceWorkerMessages, getPendingNotification, subscribePendingNotification } from "../utils/pushNavigation";
+import { syncAppBadge } from "../utils/appBadge";
 import { canViewStudentPayments } from "../utils/studentPermissions";
 import { canViewPayroll } from "../utils/payrollPermissions";
 import { LoginScreen, RegisterScreen } from "../pages/auth/AuthPages";
-import { StudentProfilePage } from "../pages/admin/AdminPages";
+import { StudentProfilePage, AcademicYearSettings } from "../pages/admin/AdminPages";
+import { AcademicYearSelector, AcademicYearViewBanner, AcademicYearAttentionBanner } from "../components/academicYear";
 import {
   AdminDashboard, StudentsPage, ParentsPage, TeachersPage, ClassesPage,
   AdminTimetablePage, AttendanceOverviewPage, StaffAttendancePage, LeaveApprovalsPage, HomeworkAdminPage,
@@ -152,6 +154,15 @@ function AppShell() {
 
   const role = auth.currentUser.role;
   const nav = NAV[role];
+  // Only Owner / Educational Director / Finance may look at a year other than the current one; anyone else
+  // always works in the current year, whatever an admin on the same browser last chose.
+  const canPickYear = role === ROLES.OWNER || role === ROLES.ADMIN || role === ROLES.FINANCE;
+  useEffect(() => {
+    data.setWorkspaceScopeEnabled(canPickYear);
+    return () => data.setWorkspaceScopeEnabled(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPickYear]);
+  const [yearPanel, setYearPanel] = useState(null); // null | "review" | "create"
   const myId = auth.currentUser.id;
   const unreadNotifs = data.db.notifications.filter((n) => n.userId === myId && !n.read).length;
   const unreadAnnouncements = new Set(
@@ -204,6 +215,11 @@ function AppShell() {
   // resolves the id against this user's own rows. It waits until a forced password change is done.
   const pushToast = useToast();
   useEffect(() => listenForServiceWorkerMessages({ onPush: (m) => pushToast(m.body || "You have a new notification", "info") }), []);
+  // The app-icon badge tracks this same authoritative unread count -- it clears at 0, moves with every
+  // notification read/received, and resyncs itself on every mount (sign-in, or the tab regaining focus)
+  // since unreadNotifs is recomputed from the live list every render. A push arriving while the app is
+  // fully closed is instead badged straight from the server's payload (see firebase-messaging-sw.js).
+  useEffect(() => { syncAppBadge(unreadNotifs); }, [unreadNotifs]);
   useEffect(() => {
     const go = (id) => { if (id && !needsPasswordChange) setPage("notifications"); };
     go(getPendingNotification());
@@ -265,7 +281,8 @@ function AppShell() {
               <p className="text-sm font-semibold text-slate-800 capitalize">{NAV[role].find((n) => n.key === page)?.label || "Dashboard"}</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <AcademicYearSelector />
             <button onClick={() => setPage("notifications")} className="relative text-slate-500 hover:text-slate-700 p-2 hover:bg-slate-50 rounded-lg">
               <Bell size={19} />
               {unreadNotifs > 0 && <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] flex items-center justify-center font-semibold">{unreadNotifs > 9 ? "9+" : unreadNotifs}</span>}
@@ -284,7 +301,14 @@ function AppShell() {
 
         <main className="flex-1 p-4 sm:p-6 max-w-[1400px] w-full mx-auto">
           <PushOptInBanner />
-          <PageRouter role={role} page={page} setPage={setPage} />
+          <AcademicYearViewBanner />
+          {page === "dashboard" && (
+            <AcademicYearAttentionBanner onReview={() => setYearPanel("review")} onCreateNext={() => setYearPanel("create")} />
+          )}
+          {/* Keyed by the workspace year: switching the academic year remounts the page, so no screen keeps a
+              stale year (or an open profile / editor) from before the switch. */}
+          <PageRouter key={(data.db.workspaceYear || {}).id || "no-year"} role={role} page={page} setPage={setPage} />
+          <AcademicYearSettings open={!!yearPanel} startWizard={yearPanel === "create"} onClose={() => setYearPanel(null)} />
         </main>
       </div>
     </div>

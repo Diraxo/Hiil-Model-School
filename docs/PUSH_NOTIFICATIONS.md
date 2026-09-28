@@ -25,10 +25,35 @@ Nothing polls. The in-app list refreshes through the existing Supabase Realtime 
 | Service worker | `public/firebase-messaging-sw.js` (+ headers in `vercel.json`) |
 | Registration / permission | `src/services/pushService.js`, `src/hooks/usePushNotifications.js`, `src/components/PushOptIn.jsx` |
 | Tap routing | `src/utils/pushNavigation.js`, `NotificationsPage`, `AppShell` |
+| App-icon badge | `push-fanout/logic.ts`+`index.ts` (authoritative count), `firebase-messaging-sw.js`, `src/utils/appBadge.js`, `AppShell` |
+| Android status-bar icon | `public/icons/notification-badge.png` |
 
 Lock-screen text is deliberately safe: payments, results, attendance, leave, behaviour and payroll are generic
-("You have a payment update"); a person's name appears only for announcements, homework, messages and exams.
-Full detail is shown only inside the app after sign-in.
+("A payment update is available."); a person's name appears only for announcements, homework, messages and
+exams. Full detail is shown only inside the app after sign-in. The title says WHAT happened ("New message",
+"Payment update", ...); the body carries the privacy-safe detail. Both come from one table
+(`TITLE_BY_TYPE`/`GENERIC_BODY` in `supabase/functions/push-fanout/logic.ts`) -- nowhere else builds push text.
+
+### App-icon badge
+
+The `web` FCM payload also carries `badge`: the recipient's current unread count, read fresh from
+`notifications` at send time (one indexed count query in `push-fanout/index.ts`, right before the message is
+built). `public/firebase-messaging-sw.js` applies it via the Badging API (`setAppBadge`/`clearAppBadge`) on
+every push, whether or not the OS banner itself is shown. `src/layouts/AppShell.jsx` also resyncs the badge
+from the same `unreadNotifs` value the bell/sidebar already use, on every mount and whenever it changes, so
+opening the app or reading a notification corrects the badge immediately. It is always the authoritative
+count, never a per-push increment. **iOS Safari has no Badging API at all** (as of current WebKit, even for
+an installed Home Screen PWA) -- this cannot show a numeric badge on iPhone through this code path; that
+would need Apple's native APNs badge field via a different push transport.
+
+### Android status-bar icon
+
+`showNotification()` uses two different assets: `icon` (the full-color `icon-192.png`, the larger tray
+content icon) and `badge` (`public/icons/notification-badge.png`, a small white-on-transparent monogram --
+Android/Chrome alpha-masks the `badge` icon for the status bar, so a full-color image there renders as a
+solid dark blob). There is no vector source for the school logo in this repo; the badge asset is a simple
+hand-authored placeholder monogram, not derived from official brand artwork -- swap the PNG for a proper
+designed asset whenever one exists.
 
 ## Deployment status
 
@@ -73,10 +98,19 @@ Android (Chrome, installed PWA) and iPhone (Safari → Add to Home Screen → op
 6. Firebase console → Messaging → *Send test message* with the device's FCM token (copy it from the
    `device_tokens` row) → the worker renders it too.
 7. Sign out → publish again → nothing arrives on this device. Sign in → Enable is silent (no prompt).
+8. **Badge (Android):** with N unread notifications, the app icon shows exactly N, not a generic "1" --
+   read one, it drops by one; "Mark all as read", it clears. iOS Safari has no Badging API, so no numeric
+   badge is expected there regardless.
+9. **Status-bar icon (Android):** the notification shade shows a recognizable monochrome glyph, not a
+   solid dark blob.
 
 ## Known limits
 
 - iPhone only receives Web Push from the Home Screen app (iOS 16.4+), never from a Safari tab; the UI says so.
+- iOS Safari has no Badging API at all, so the app-icon badge count (see above) only works on Android; there
+  is no code fix for this from the web app side.
+- `public/icons/notification-badge.png` is a hand-authored placeholder monogram, not derived from official
+  brand artwork (there's no vector logo source in this repo) -- fine functionally, worth swapping later.
 - Automatic retry is bounded inside one invocation (3 attempts, backoff). If FCM is down longer, the failed
   devices stay `failed` in `push_deliveries` and the in-app notification is unaffected; there is no scheduled
   sweep (that would need a server timer). Re-sending the same webhook payload retries only the failed devices.

@@ -96,9 +96,13 @@ export function createPaymentService() {
 
     // lines: [{ studentId, installmentId, amount, method, date, note }] -- method/date/note are
     // uniform across the batch (the modal collects them once). Returns the created payments row.
-    async recordPaymentBatch(lines, recordedBy) {
+    //
+    // `historicalReason` records the payment into a CLOSED academic year through the owner-only,
+    // reasoned, audited record_historical_payment_batch RPC (a plain payment into a closed year is refused
+    // by the database).
+    async recordPaymentBatch(lines, recordedBy, { historicalReason } = {}) {
       const first = lines[0] || {};
-      const { data, error } = await supabase.rpc("record_payment_batch", {
+      const args = {
         p_lines: lines.map((l) => ({
           student_id: l.studentId,
           installment_id: l.installmentId,
@@ -108,7 +112,10 @@ export function createPaymentService() {
         p_date: first.date,
         p_note: first.note || null,
         p_recorded_by: recordedBy,
-      });
+      };
+      const { data, error } = historicalReason
+        ? await supabase.rpc("record_historical_payment_batch", { ...args, p_reason: historicalReason })
+        : await supabase.rpc("record_payment_batch", args);
       if (error) throw error;
       const payment = mapPayment(Array.isArray(data) ? data[0] : data);
       // The RPC returns only the payments row; fetch its allocations so the caller can build the
