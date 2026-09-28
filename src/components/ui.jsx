@@ -21,6 +21,7 @@ import {
 import {
   ETHIOPIAN_MONTHS, getEthiopianToday, gregorianToEthiopian, ethiopianToGregorianKey,
   daysInEthiopianMonth, formatEthiopianDateFromKey,
+  shiftEcMonthKey, ecMonthRange, ecMonthTitle, ecMonthGcSpanLabel,
 } from "../utils/ethiopianCalendar";
 import { displayActorLabel } from "../utils/resultAudit";
 import { useToast } from "../context/ToastContext";
@@ -441,6 +442,51 @@ function dateKeyLabel(dateKey) {
   const gc = new Date(dateKey + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
   return `${ec} · ${gc} G.C.`;
 }
+// The date field inside DateNav. Ethiopian Calendar leads (AGENTS.md): three selects — E.C. day, month
+// (all 13, incl. Pagumen) and year — with a "G.C." switch to the native Gregorian date input. Either
+// way the value is the same Gregorian "YYYY-MM-DD" key attendance rows are stored under; the E.C.
+// choice is converted with the shared engine and clamped into [minDate, maxDate].
+function EcDatePicker({ date, onChange, minDate, maxDate }) {
+  const [gregorian, setGregorian] = useState(false);
+  const ec = gregorianToEthiopian(new Date(date + "T00:00:00"));
+  const minYear = minDate ? gregorianToEthiopian(new Date(minDate + "T00:00:00")).year : ec.year - 3;
+  const maxYear = maxDate ? gregorianToEthiopian(new Date(maxDate + "T00:00:00")).year : ec.year + 1;
+  const years = [];
+  for (let y = Math.min(minYear, ec.year); y <= Math.max(maxYear, ec.year); y++) years.push(y);
+
+  function commit(next) {
+    const year = next.year ?? ec.year;
+    const month = next.month ?? ec.month;
+    const day = Math.min(next.day ?? ec.day, daysInEthiopianMonth(year, month));
+    let key = ethiopianToGregorianKey(year, month, day);
+    if (minDate && key < minDate) key = minDate;
+    if (maxDate && key > maxDate) key = maxDate;
+    onChange(key);
+  }
+
+  const selectCls = "min-h-[44px] sm:min-h-0 rounded-lg border border-slate-200 px-2 py-1.5 text-base sm:text-sm text-slate-700 bg-white";
+  return (
+    <div className="flex flex-1 min-w-0 sm:flex-none items-center gap-1.5">
+      {gregorian ? (
+        <input type="date" aria-label="Gregorian date" value={date} min={minDate || undefined} max={maxDate} onChange={(e) => e.target.value && onChange(e.target.value)} className="flex-1 min-w-0 min-h-[44px] sm:min-h-0 rounded-lg border border-slate-200 px-2.5 py-1.5 text-base sm:text-sm text-slate-700" />
+      ) : (
+        <>
+          <select aria-label="Ethiopian day" value={ec.day} onChange={(e) => commit({ day: Number(e.target.value) })} className={selectCls}>
+            {Array.from({ length: daysInEthiopianMonth(ec.year, ec.month) }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <select aria-label="Ethiopian month" value={ec.month} onChange={(e) => commit({ month: Number(e.target.value) })} className={"flex-1 min-w-0 " + selectCls}>
+            {ETHIOPIAN_MONTHS.map((m, i) => <option key={m.en} value={i + 1}>{m.en}</option>)}
+          </select>
+          <select aria-label="Ethiopian year" value={ec.year} onChange={(e) => commit({ year: Number(e.target.value) })} className={selectCls}>
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </>
+      )}
+      <button type="button" onClick={() => setGregorian((g) => !g)} className="shrink-0 text-xs text-slate-400 hover:text-brand-600 font-medium px-1.5" title={gregorian ? "Pick by Ethiopian date" : "Pick by Gregorian date"}>{gregorian ? "E.C." : "G.C."}</button>
+    </div>
+  );
+}
+
 // A professional calendar-style date navigator: back/forward one day at a time, or jump via the
 // native date picker. Never allows navigating past today by default.
 // Optional `minDate`/`maxDate` bound the range (e.g. an academic calendar's first/last valid
@@ -472,13 +518,29 @@ function DateNav({ date, onChange, minDate, maxDate, skipDates }) {
     // wrapping onto the next line; 44px arrows; 16px date text so iOS doesn't zoom on focus.
     <div className="flex flex-wrap items-center gap-2 mb-4">
       <button type="button" aria-label="Previous school day" disabled={!prevDate} onClick={() => prevDate && onChange(prevDate)} className={`shrink-0 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${!prevDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronLeft size={16} /></button>
-      <div className="relative flex-1 min-w-0 sm:flex-none">
-        <CalendarDays size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-        <input type="date" value={date} min={minDate || undefined} max={effectiveMax} onChange={(e) => e.target.value && onChange(e.target.value)} className="w-full min-h-[44px] sm:min-h-0 rounded-lg border border-slate-200 pl-8 pr-2.5 py-1.5 text-base sm:text-sm text-slate-700" />
-      </div>
+      <EcDatePicker date={date} onChange={onChange} minDate={minDate} maxDate={effectiveMax} />
       <button type="button" aria-label="Next school day" disabled={!nextDate} onClick={() => nextDate && onChange(nextDate)} className={`shrink-0 flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${!nextDate ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}><ChevronRight size={16} /></button>
       <span className="basis-full sm:basis-auto text-sm font-medium text-slate-600">{dateKeyLabel(date)}</span>
       {date < effectiveMax && <button type="button" onClick={() => onChange(effectiveMax)} className="text-sm sm:text-xs text-brand-600 font-medium py-2 sm:py-0 sm:ml-1">Jump to today</button>}
+    </div>
+  );
+}
+
+// Month navigator for E.C. months (attendance registers / month views). `ecMonthKey` is an E.C. month
+// key ("2019-01" = Meskerem 2019, months 01-13 incl. Pagumen — see src/utils/ethiopianCalendar.js),
+// NOT a Gregorian one. `minDateKey`/`maxDateKey` are real Gregorian date keys: navigation stops at the
+// last month that still overlaps them.
+function EcMonthNav({ ecMonthKey, onChange, minDateKey, maxDateKey }) {
+  const prev = shiftEcMonthKey(ecMonthKey, -1);
+  const next = shiftEcMonthKey(ecMonthKey, 1);
+  const atMin = !!minDateKey && ecMonthRange(prev)?.endKey < minDateKey;
+  const atMax = !!maxDateKey && ecMonthRange(next)?.startKey > maxDateKey;
+  const btn = (disabled) => `flex items-center justify-center w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg border ${disabled ? "border-slate-100 text-slate-300 cursor-not-allowed" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`;
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <button type="button" aria-label="Previous month" disabled={atMin} onClick={() => !atMin && onChange(prev)} className={btn(atMin)}><ChevronLeft size={16} /></button>
+      <span className="text-sm font-medium text-slate-700 min-w-[9.5rem] text-center">{ecMonthTitle(ecMonthKey)} E.C. <span className="block sm:inline text-slate-400 text-xs">({ecMonthGcSpanLabel(ecMonthKey)} G.C.)</span></span>
+      <button type="button" aria-label="Next month" disabled={atMax} onClick={() => !atMax && onChange(next)} className={btn(atMax)}><ChevronRight size={16} /></button>
     </div>
   );
 }
@@ -786,7 +848,7 @@ function EthiopianDateField({ value, onChange }) {
 
 export {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
-  CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
+  CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, EcMonthNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, MonthCalendarGrid,

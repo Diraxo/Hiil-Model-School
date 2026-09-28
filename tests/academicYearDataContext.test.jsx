@@ -448,7 +448,7 @@ describe("teacher assignments per year", () => {
   it("changing assignments is not possible while another year is being viewed", async () => {
     await mount();
     await select("y18");
-    const res = await data().updateTeacherAssignments("t1", ["Math"], ["c1"]);
+    const res = await data().updateTeacherAssignments("t1", [{ classId: "c1", subject: "Math" }]);
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/closed \(read-only\)/);
   });

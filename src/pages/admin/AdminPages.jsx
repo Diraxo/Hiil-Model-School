@@ -24,7 +24,7 @@ import {
 } from "../../utils/helpers";
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
-  CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
+  CopyIdChip, Field, Card, StatCard, SimpleBar, AutoGrowTextarea, todayKeyStr, shiftDateKey, dateKeyLabel, DateNav, EcMonthNav, AttendanceCalendarNotice, DayStatusBanner, NoSchoolTodayBanner,
   Toolbar, SearchInput, Select, PrimaryButton, GhostButton, AttendanceStatusPicker,
   AttendanceStudentRow, AttendanceMarkAllBar, AttendanceSaveBar,
   ResultAuditTrail, UnlockReasonModal, SemesterLockBanner, SemesterStatusBanner, semesterPhaseChip, PaymentStatusBadge, CheckboxList, FeeScheduleList, EthiopianDateField,
@@ -46,7 +46,9 @@ import { RecentActivityFeed } from "../../components/RecentActivity";
 import { LeaveRequestHistoryList, RejectLeaveModal } from "../../components/leave";
 import { AnnouncementDetailModal, audienceLabel, AnnouncementAttachmentField, AnnouncementAttachmentChip, isAnnouncementLive, announcementReadStats } from "../../components/announcements";
 import { computeBreakRange, suggestSemester2, currentAcademicYear, activeYearStartDate, formatAcademicYearLabel, academicYearStatus, addDays } from "../../utils/academicCalendar";
-import { formatEthiopianDateFromKey, ethiopianMonthLabelForGcMonthKey, formatEthiopianDateWithGc as ecDate } from "../../utils/ethiopianCalendar";
+import { formatEthiopianDateFromKey, ethiopianMonthLabelForGcMonthKey, formatEthiopianDateWithGc as ecDate, ecMonthKeyOfDateKey, ecMonthRange, toDateKey } from "../../utils/ethiopianCalendar";
+import { registerDays, studentRegisterRow } from "../../utils/attendanceRegister";
+import { pairKey, pairsForTeacher, addPair, removePair } from "../../utils/teacherAssignments";
 import { academicYearDateProblems, academicYearBillingPeriods, anchorsOutsideYear } from "../../utils/billingPeriods";
 import { downloadElementAsPdf } from "../../utils/pdf";
 import {
@@ -644,11 +646,13 @@ function MonthNav({ monthKey, onChange, maxMonthKey, minMonthKey }) {
     </div>
   );
 }
-// Whether a {startDate,endDate} range (e.g. a suspension) overlaps a "YYYY-MM" month.
-function overlapsMonth(range, monthKey) {
+// Whether a {startDate,endDate} range (e.g. a suspension) overlaps an E.C. month ("2019-01").
+function overlapsEcMonth(range, ecMonthKey) {
   if (!range || !range.startDate) return false;
+  const span = ecMonthRange(ecMonthKey);
+  if (!span) return false;
   const start = range.startDate, end = range.endDate || range.startDate;
-  return start <= `${monthKey}-31` && end >= `${monthKey}-01`;
+  return start <= span.endKey && end >= span.startKey;
 }
 
 const DOCUMENT_CATEGORIES = ["Report Cards", "ID Documents", "Other Documents"];
@@ -828,7 +832,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
   const [docViewer, setDocViewer] = useState(null);
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
   const [receiptPaymentId, setReceiptPaymentId] = useState(null);
-  const [attMonth, setAttMonth] = useState(todayKeyStr().slice(0, 7));
+  const [attMonth, setAttMonth] = useState(() => ecMonthKeyOfDateKey(todayKeyStr())); // E.C. month key ("2019-01")
   const [hwMonth, setHwMonth] = useState(todayKeyStr().slice(0, 7));
 
   const enrollments = s ? data.enrollmentsForStudent(s.id) : [];
@@ -1060,14 +1064,15 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
 
       {tab === "attendance" && (
         <div>
-          <MonthNav monthKey={attMonth} onChange={setAttMonth} maxMonthKey={todayKeyStr().slice(0, 7)} />
-          {overlapsMonth(displaySuspension, attMonth) && (
+          <EcMonthNav ecMonthKey={attMonth} onChange={setAttMonth} maxDateKey={todayKeyStr()} />
+          {overlapsEcMonth(displaySuspension, attMonth) && (
             <div className="mb-3 bg-red-50 border border-red-100 rounded-lg px-3.5 py-2.5 text-xs text-red-700">
               Suspended {ecDate(displaySuspension.startDate)} – {ecDate(displaySuspension.endDate)}: {displaySuspension.reason}. These days aren't counted as ordinary absences.
             </div>
           )}
           {(() => {
-            const monthRecords = attendance.filter((a) => monthKeyOf(a.date) === attMonth);
+            const monthRange = ecMonthRange(attMonth); // the E.C. month's real Gregorian span — records keep their stored date
+            const monthRecords = attendance.filter((a) => a.date >= monthRange.startKey && a.date <= monthRange.endKey);
             const counts = {};
             ATTENDANCE_STATUSES.forEach((st) => { counts[st] = monthRecords.filter((a) => a.status === st).length; });
             return (
@@ -1080,11 +1085,11 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                     </div>
                   ))}
                 </div>
-                {monthRecords.length === 0 ? <EmptyState title="No attendance records" description="No attendance was recorded for this student this month." /> : (
+                {monthRecords.length === 0 ? <EmptyState title="No attendance records" description="No attendance was recorded for this student in this Ethiopian month." /> : (
                   <Card className="divide-y divide-slate-100">
                     {[...monthRecords].sort((a, b) => b.date.localeCompare(a.date)).map((a) => (
                       <div key={a.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
-                        <span className="text-slate-600">{fmtDate(a.date)}</span>
+                        <span className="text-slate-600">{ecDate(a.date)}</span>
                         <div className="flex items-center gap-3">
                           {a.note && <span className="text-xs text-slate-400">{a.note}</span>}
                           <Badge tone={statusTone(a.status)}>{a.status}</Badge>
@@ -1759,12 +1764,13 @@ function TeachersPage({ onMessage }) {
         {filtered.map((t) => {
           // Another (closed) year shows who taught what THEN (the snapshot taken when it closed); the
           // current year shows the live assignments.
-          const classes = yearAssign.historical
-            ? db.classes.filter((c) => yearAssign.rows.some((r) => r.teacherId === t.id && r.classId === c.id))
-            : db.classes.filter((c) => c.subjectTeacherIds.includes(t.id) || c.headTeacherId === t.id);
-          const subjects = yearAssign.historical
-            ? [...new Set(yearAssign.rows.filter((r) => r.teacherId === t.id).map((r) => r.subject).filter(Boolean))]
-            : data.teacherSubjects(t.id);
+          // Exact class + subject pairs (never a class list next to a subject list), plus any classes
+          // this teacher only heads.
+          const pairs = (yearAssign.historical ? yearAssign.rows.filter((r) => r.teacherId === t.id) : db.teacherAssignments.filter((ta) => ta.teacherId === t.id))
+            .filter((r) => r.subject)
+            .map((r) => ({ classId: r.classId, subject: r.subject, label: (() => { const c = db.classes.find((x) => x.id === r.classId); return c ? `${c.grade}${c.section}` : "Unknown class"; })() }))
+            .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }) || a.subject.localeCompare(b.subject));
+          const headOf = yearAssign.historical ? [] : db.classes.filter((c) => c.headTeacherId === t.id);
           const staffRec = db.staff.find((s) => s.userId === t.id);
           const employmentEnded = staffRec?.employmentStatus === "ENDED";
           return (
@@ -1780,17 +1786,12 @@ function TeachersPage({ onMessage }) {
                   {employmentEnded && <p className="mt-1"><Badge tone="red">Employment Ended</Badge></p>}
                 </div>
               </div>
-              <div className="mb-2">
-                <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Subjects</p>
-                <div className="flex flex-wrap gap-1">
-                  {subjects.length === 0 ? <span className="text-xs text-slate-300">No subjects assigned yet</span> : subjects.map((s) => <Badge key={s} tone="indigo">{s}</Badge>)}
-                </div>
-              </div>
               <div className="mb-3">
-                <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Classes</p>
+                <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Teaching assignments</p>
                 <div className="flex flex-wrap gap-1">
-                  {classes.length === 0 ? <span className="text-xs text-slate-300">No classes assigned yet</span> : classes.map((c) => <Badge key={c.id} tone="sky">{c.grade}{c.section}</Badge>)}
+                  {pairs.length === 0 ? <span className="text-xs text-slate-300">No class or subject assigned yet</span> : pairs.map((r) => <Badge key={pairKey(r.classId, r.subject)} tone="indigo">{r.label} — {r.subject}</Badge>)}
                 </div>
+                {headOf.length > 0 && <p className="text-[11px] text-slate-400 mt-1.5">Head teacher of {headOf.map((c) => `${c.grade}${c.section}`).join(", ")}</p>}
               </div>
               <div className="flex gap-2 mb-2">
                 <button onClick={() => setEditTeacher(t)} className="flex-1 text-xs text-slate-500 font-medium flex items-center justify-center gap-1 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50"><Edit2 size={13} /> Edit</button>
@@ -1860,15 +1861,13 @@ function EndEmploymentModal({ staff, onClose }) {
   );
 }
 
-// Key for tracking a single Class+Subject cell in the assignment breakdown / reassignment set.
-function pairKey(classId, subject) { return `${classId}|${subject}`; }
-
 function TeacherFormModal({ open, onClose, teacher }) {
   const data = useData();
   const toast = useToast();
   const isEdit = !!teacher;
-  const empty = { firstName: "", middleName: "", lastName: "", email: "", phone: "", classIds: [], subjects: [], password: "", photo: null, photoPreview: null, bankAccount: "" };
+  const empty = { firstName: "", middleName: "", lastName: "", email: "", phone: "", assignments: [], password: "", photo: null, photoPreview: null, bankAccount: "" };
   const [form, setForm] = useState(empty);
+  const [draft, setDraft] = useState({ classId: "", subject: "" }); // the "Add assignment" row: ONE class + ONE subject
   const [errors, setErrors] = useState({});
   const [reassignments, setReassignments] = useState(new Set()); // Set of "classId|subject" the director chose to move onto this teacher
   const [showPw, setShowPw] = useState(false);
@@ -1884,11 +1883,12 @@ function TeacherFormModal({ open, onClose, teacher }) {
     setShowPw(false);
     setErrors({});
     setReassignments(new Set());
+    setDraft({ classId: "", subject: "" });
     if (teacher) {
-      const classIds = data.teacherClassIds(teacher.id);
-      const subjects = data.teacherSubjects(teacher.id);
+      // The teacher's exact class+subject pairs — never rebuilt from separate class and subject lists.
+      const assignments = pairsForTeacher(data.db.teacherAssignments, teacher.id);
       const staffRec = data.db.staff.find((s) => s.userId === teacher.id);
-      setForm({ firstName: teacher.firstName || "", middleName: teacher.middleName || "", lastName: teacher.lastName || "", email: teacher.email, phone: teacher.phone || "", classIds, subjects, password: "", photo: teacher.photo || null, photoPreview: null, bankAccount: staffRec?.bankAccount || "" });
+      setForm({ firstName: teacher.firstName || "", middleName: teacher.middleName || "", lastName: teacher.lastName || "", email: teacher.email, phone: teacher.phone || "", assignments, password: "", photo: teacher.photo || null, photoPreview: null, bankAccount: staffRec?.bankAccount || "" });
     } else {
       setForm({ ...empty, password: generatePassword() });
     }
@@ -1906,57 +1906,34 @@ function TeacherFormModal({ open, onClose, teacher }) {
       ? inputCls.replace("border-slate-200", "border-red-400").replace("focus:ring-brand-500/40", "focus:ring-red-400/40").replace("focus:border-brand-400", "focus:border-red-400")
       : inputCls;
   }
-  function toggleClass(id) {
-    setForm((f) => ({ ...f, classIds: f.classIds.includes(id) ? f.classIds.filter((x) => x !== id) : [...f.classIds, id] }));
-    setErrors((e) => (e.classIds ? { ...e, classIds: undefined } : e));
-  }
+  const classLabelOf = (cid) => { const c = data.getClass(cid); return c ? `${c.grade}${c.section}` : "Unknown class"; };
 
-  // For every subject, the per-selected-class availability: whether it's not part of that
-  // class's curriculum at all, free, already this teacher's own assignment (edit mode), or
-  // locked to someone else — so the picker can show exactly which class+subject combinations
-  // are possible instead of a single all-or-nothing toggle.
-  const availability = useMemo(() => {
-    const map = {};
-    data.db.subjects.forEach((s) => {
-      map[s.name] = form.classIds.map((cid) => {
-        const cls = data.getClass(cid);
-        const className = cls ? `${cls.grade}${cls.section}` : "";
-        const offered = data.requiredSubjectsForClass(cid).includes(s.name);
-        if (!offered) return { classId: cid, className, status: "not_offered" };
-        const owner = data.subjectAssignmentOwner(cid, s.name);
-        if (!owner) return { classId: cid, className, status: "available" };
-        if (isEdit && owner.teacherId === teacher.id) return { classId: cid, className, status: "own" };
-        return { classId: cid, className, status: "locked", ownerId: owner.teacherId, ownerName: owner.teacherName };
-      });
-    });
-    return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.classIds, data.db.teacherAssignments, data.db.subjects, data.db.classSubjects, isEdit, teacher]);
+  // Where one class+subject pair stands: already on this form, free, this teacher's own current pair,
+  // or held by another teacher (which needs an explicit reassignment).
+  function pairStatus(classId, subject) {
+    if (form.assignments.some((p) => p.classId === classId && p.subject === subject)) return { status: "added" };
+    const owner = data.subjectAssignmentOwner(classId, subject);
+    if (!owner) return { status: "available" };
+    if (isEdit && owner.teacherId === teacher.id) return { status: "available" }; // removed earlier in this edit
+    return { status: "locked", ownerName: owner.teacherName };
+  }
+  const draftSubjects = draft.classId ? data.requiredSubjectsForClass(draft.classId) : [];
+  const draftStatus = draft.classId && draft.subject ? pairStatus(draft.classId, draft.subject) : null;
 
-  function subjectSelectable(subjectName) {
-    if (form.classIds.length === 0) return true;
-    const rows = availability[subjectName] || [];
-    return rows.some((r) => (r.status !== "locked" && r.status !== "not_offered") || (r.status === "locked" && reassignments.has(pairKey(r.classId, subjectName))));
+  function addAssignment() {
+    if (!draft.classId || !draft.subject) { setErrors((e) => ({ ...e, assignments: "Choose a class and a subject, then press Add." })); return; }
+    const st = pairStatus(draft.classId, draft.subject);
+    if (st.status === "added") return;
+    setForm((f) => ({ ...f, assignments: addPair(f.assignments, { classId: draft.classId, subject: draft.subject }) }));
+    if (st.status === "locked") setReassignments((prev) => new Set(prev).add(pairKey(draft.classId, draft.subject)));
+    setDraft((d) => ({ ...d, subject: "" }));
+    setErrors((e) => (e.assignments ? { ...e, assignments: undefined } : e));
   }
-  function toggleSubject(subjectName) {
-    setForm((f) => {
-      if (f.subjects.includes(subjectName)) {
-        return { ...f, subjects: f.subjects.filter((s) => s !== subjectName) };
-      }
-      if (!subjectSelectable(subjectName)) return f;
-      return { ...f, subjects: [...f.subjects, subjectName] };
-    });
-    setErrors((e) => (e.subjects ? { ...e, subjects: undefined } : e));
+  function removeAssignment(pair) {
+    setForm((f) => ({ ...f, assignments: removePair(f.assignments, pair) }));
+    setReassignments((prev) => { const next = new Set(prev); next.delete(pairKey(pair.classId, pair.subject)); return next; });
   }
-  function toggleReassign(classId, subjectName) {
-    setReassignments((prev) => {
-      const key = pairKey(classId, subjectName);
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-    setForm((f) => (f.subjects.includes(subjectName) ? f : { ...f, subjects: [...f.subjects, subjectName] }));
-  }
+  const sortedAssignments = [...form.assignments].sort((a, b) => classLabelOf(a.classId).localeCompare(classLabelOf(b.classId), undefined, { numeric: true }) || a.subject.localeCompare(b.subject));
 
   async function submit(e) {
     e && e.preventDefault && e.preventDefault();
@@ -1966,8 +1943,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
     if (!form.lastName.trim()) nextErrors.lastName = "Please enter the teacher's last name.";
     if (!form.email.trim()) nextErrors.email = "Please enter the teacher's email address.";
     if (!form.phone.trim()) nextErrors.phone = "Please provide the teacher's phone number.";
-    if (form.classIds.length === 0) nextErrors.classIds = "Please select at least one class.";
-    if (form.subjects.length === 0) nextErrors.subjects = "Please select at least one subject.";
+    if (form.assignments.length === 0) nextErrors.assignments = "Please add at least one class + subject assignment.";
     if (!isEdit && !form.password.trim()) nextErrors.password = "Please set a temporary password, or generate one.";
     if (Object.keys(nextErrors).length) {
       setErrors(nextErrors);
@@ -1976,9 +1952,8 @@ function TeacherFormModal({ open, onClose, teacher }) {
     }
     setErrors({});
 
-    const reassignPairs = [...reassignments]
-      .map((k) => { const i = k.indexOf("|"); return { classId: k.slice(0, i), subject: k.slice(i + 1) }; })
-      .filter((r) => form.subjects.includes(r.subject) && form.classIds.includes(r.classId));
+    // Reassignments only for pairs still on the form.
+    const reassignPairs = form.assignments.filter((p) => reassignments.has(pairKey(p.classId, p.subject)));
 
     await run(async () => {
     if (isEdit) {
@@ -1989,19 +1964,19 @@ function TeacherFormModal({ open, onClose, teacher }) {
         bankAccount: form.bankAccount.trim() || null,
       });
       if (!updateRes.ok) { toast(updateRes.message, "error"); return; }
-      const res = await data.updateTeacherAssignments(teacher.id, form.subjects, form.classIds, reassignPairs);
-      if (!res.ok) { setErrors({ subjects: res.message }); toast(res.message, "error"); return; }
+      const res = await data.updateTeacherAssignments(teacher.id, form.assignments, reassignPairs);
+      if (!res.ok) { setErrors({ assignments: res.message }); toast(res.message, "error"); return; }
       toast("Teacher updated.", "success");
       onClose();
     } else {
       const res = await data.createTeacher({
         firstName: form.firstName.trim(), middleName: form.middleName.trim(), lastName: form.lastName.trim(),
-        email: form.email.trim(), phone: form.phone.trim(), subjects: form.subjects, classIds: form.classIds, password: form.password,
+        email: form.email.trim(), phone: form.phone.trim(), assignments: form.assignments, password: form.password,
         reassignments: reassignPairs, photo: form.photo, bankAccount: form.bankAccount.trim() || null,
       });
       if (!res.ok) {
         if (res.message.includes("email already exists")) setErrors({ email: res.message });
-        else setErrors({ subjects: res.message });
+        else setErrors({ assignments: res.message });
         toast(res.message, "error");
         return;
       }
@@ -2009,7 +1984,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
       setCreatedCreds({
         email: form.email.trim(), password: form.password,
         name: fullName(form.firstName, form.middleName, form.lastName),
-        subjects: form.subjects, classIds: form.classIds,
+        assignments: sortedAssignments,
       });
     }
     }, { key: isEdit ? `update-teacher:${teacher.id}` : `create-teacher:${form.email.trim().toLowerCase()}` });
@@ -2023,7 +1998,7 @@ function TeacherFormModal({ open, onClose, teacher }) {
       toast("Password reset. Share the new password privately with the teacher.", "success");
     }, { key: `reset-teacher-pw:${teacher.id}` });
   }
-  function close() { setForm(empty); setErrors({}); setReassignments(new Set()); setCreatedCreds(null); setResetReveal(null); onClose(); }
+  function close() { setForm(empty); setDraft({ classId: "", subject: "" }); setErrors({}); setReassignments(new Set()); setCreatedCreds(null); setResetReveal(null); onClose(); }
 
   if (createdCreds) {
     return (
@@ -2046,12 +2021,8 @@ function TeacherFormModal({ open, onClose, teacher }) {
               <div className="flex items-center justify-between"><span className="font-mono text-sm font-semibold text-slate-700">{createdCreds.password}</span><button onClick={async () => { const ok = await copyText(createdCreds.password); toast(ok ? "Password copied." : "Couldn't copy — please copy manually.", ok ? "info" : "error"); }} className="text-brand-600 hover:text-brand-700"><Copy size={14} /></button></div>
             </div>
             <div>
-              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Subjects</p>
-              <div className="flex flex-wrap gap-1 mt-0.5">{createdCreds.subjects.map((s) => <Badge key={s} tone="indigo">{s}</Badge>)}</div>
-            </div>
-            <div>
-              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Classes</p>
-              <div className="flex flex-wrap gap-1 mt-0.5">{createdCreds.classIds.map((cid) => { const c = data.getClass(cid); return c ? <Badge key={cid} tone="sky">{c.grade}{c.section}</Badge> : null; })}</div>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wide">Teaching assignments</p>
+              <div className="flex flex-wrap gap-1 mt-0.5">{createdCreds.assignments.map((a) => <Badge key={pairKey(a.classId, a.subject)} tone="indigo">{classLabelOf(a.classId)} — {a.subject}</Badge>)}</div>
             </div>
           </div>
           <button onClick={close} className="mt-5 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">Done</button>
@@ -2119,63 +2090,51 @@ function TeacherFormModal({ open, onClose, teacher }) {
           </div>
         )}
 
-        <div className="mb-4">
-          <span className="block text-xs font-medium text-slate-500 mb-1.5">Classes {form.classIds.length === 0 && <span className="text-red-500">*</span>}</span>
-          <div className={`grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-lg p-3 ${errors.classIds ? "border-red-400" : "border-slate-200"}`}>
-            {data.db.classes.length === 0 ? <p className="text-xs text-slate-400 col-span-full">No classes yet — add a class first.</p> : data.db.classes.map((c) => (
-              <label key={c.id} className="flex items-center gap-2 text-sm text-slate-600">
-                <input type="checkbox" checked={form.classIds.includes(c.id)} onChange={() => toggleClass(c.id)} className="rounded border-slate-300 text-brand-600" />
-                {c.grade}{c.section}
-              </label>
-            ))}
-          </div>
-          {errors.classIds && <span className="block text-xs text-red-500 mt-1">{errors.classIds}</span>}
-        </div>
-
         <div className="mb-1.5">
-          <span className="block text-xs font-medium text-slate-500 mb-1.5">Subjects {form.subjects.length === 0 && <span className="text-red-500">*</span>}</span>
-          <div className={`max-h-64 overflow-y-auto border rounded-lg p-3 ${errors.subjects ? "border-red-400" : "border-slate-200"}`}>
-            {data.db.subjects.length === 0 ? <p className="text-xs text-slate-400">No subjects yet — add a subject first.</p> : data.db.subjects.map((s) => {
-              const rows = availability[s.name] || [];
-              const selectable = subjectSelectable(s.name);
-              const checked = form.subjects.includes(s.name);
-              const hasIssue = rows.some((r) => r.status === "locked" || r.status === "not_offered");
+          <span className="block text-xs font-medium text-slate-500 mb-1">Teaching assignments {form.assignments.length === 0 && <span className="text-red-500">*</span>}</span>
+          <p className="text-[11px] text-slate-400 mb-2">Each assignment is one class with one subject. Grade 9 — English plus Grade 10 — Mathematics gives exactly those two, not every class/subject combination.</p>
+          <div className={`border rounded-lg divide-y divide-slate-100 mb-2 ${errors.assignments ? "border-red-400" : "border-slate-200"}`}>
+            {sortedAssignments.length === 0 ? <p className="text-xs text-slate-400 px-3 py-2.5">No assignments yet — choose a class and a subject below, then press Add.</p> : sortedAssignments.map((a) => {
+              const key = pairKey(a.classId, a.subject);
+              const owner = data.subjectAssignmentOwner(a.classId, a.subject);
+              const moving = reassignments.has(key);
               return (
-                <div key={s.id} className="py-1.5 border-b border-slate-100 last:border-0">
-                  <label className={`flex items-center gap-2 text-sm ${selectable ? "text-slate-700 cursor-pointer" : "text-slate-400 cursor-not-allowed"}`}>
-                    <input type="checkbox" disabled={!checked && !selectable} checked={checked} onChange={() => toggleSubject(s.name)} className="rounded border-slate-300 text-brand-600" />
-                    {!selectable && <Lock size={12} />}
-                    {s.name}
-                  </label>
-                  {form.classIds.length > 0 && (checked || hasIssue) && (
-                    <div className="ml-6 mt-1 space-y-0.5">
-                      {rows.map((r) => {
-                        const reassigned = reassignments.has(pairKey(r.classId, s.name));
-                        return (
-                          <div key={r.classId} className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className={r.status === "not_offered" || (r.status === "locked" && !reassigned) ? "text-red-500" : "text-emerald-600"}>
-                              {r.status === "own" && `✓ ${r.className} — currently assigned to this teacher`}
-                              {r.status === "available" && `✓ ${r.className} — available`}
-                              {r.status === "not_offered" && `— ${r.className} — not part of this class's subjects`}
-                              {r.status === "locked" && !reassigned && `🔒 ${r.className} — assigned to ${r.ownerName}`}
-                              {r.status === "locked" && reassigned && `↺ ${r.className} — will move here from ${r.ownerName}`}
-                            </span>
-                            {r.status === "locked" && (
-                              <button type="button" onClick={() => toggleReassign(r.classId, s.name)} className="inline-flex items-center gap-1 text-brand-600 hover:underline shrink-0">
-                                <ArrowRightLeft size={11} />{reassigned ? "Undo" : "Reassign"}
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                <div key={key} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+                  <span className="text-slate-700 min-w-0">
+                    <span className="font-medium">{classLabelOf(a.classId)}</span> — {a.subject}
+                    {moving && owner && <span className="block text-[11px] text-amber-600"><ArrowRightLeft size={11} className="inline -mt-0.5" /> Moves here from {owner.teacherName}</span>}
+                  </span>
+                  <button type="button" onClick={() => removeAssignment(a)} className="shrink-0 text-xs text-red-500 font-medium hover:underline" aria-label={`Remove ${classLabelOf(a.classId)} — ${a.subject}`}>Remove</button>
                 </div>
               );
             })}
           </div>
-          {errors.subjects && <span className="block text-xs text-red-500 mt-1">{errors.subjects}</span>}
-          {!errors.subjects && form.classIds.length === 0 && <p className="text-xs text-slate-400 mt-1.5">Select classes above to see which subjects are already taken.</p>}
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Add assignment</p>
+            <div className="grid sm:grid-cols-[1fr_1fr_auto] gap-2 sm:items-end">
+              <label className="block text-xs text-slate-500">Class
+                <select aria-label="Assignment class" className={inputCls + " mt-1"} value={draft.classId} onChange={(e) => setDraft({ classId: e.target.value, subject: "" })}>
+                  <option value="">{data.db.classes.length === 0 ? "No classes yet" : "Choose class…"}</option>
+                  {data.db.classes.map((c) => <option key={c.id} value={c.id}>{c.grade}{c.section}</option>)}
+                </select>
+              </label>
+              <label className="block text-xs text-slate-500">Subject
+                <select aria-label="Assignment subject" className={inputCls + " mt-1"} value={draft.subject} disabled={!draft.classId} onChange={(e) => setDraft((d) => ({ ...d, subject: e.target.value }))}>
+                  <option value="">{!draft.classId ? "Choose a class first" : draftSubjects.length === 0 ? "No subjects in this class" : "Choose subject…"}</option>
+                  {draftSubjects.map((name) => {
+                    const st = pairStatus(draft.classId, name);
+                    return <option key={name} value={name} disabled={st.status === "added"}>{name}{st.status === "added" ? " — already added" : st.status === "locked" ? ` — taught by ${st.ownerName}` : ""}</option>;
+                  })}
+                </select>
+              </label>
+              <PrimaryButton onClick={addAssignment} disabled={!draft.classId || !draft.subject || draftStatus?.status === "added"}>{draftStatus?.status === "locked" ? "Reassign & add" : "Add"}</PrimaryButton>
+            </div>
+            {draftStatus?.status === "locked" && (
+              <p className="text-[11px] text-amber-700 mt-2">{classLabelOf(draft.classId)} — {draft.subject} is currently taught by {draftStatus.ownerName}. Adding it moves that assignment to this teacher when you save.</p>
+            )}
+            {draft.classId && draftSubjects.length === 0 && <p className="text-[11px] text-slate-400 mt-2">This class has no subjects yet — add them to the class first.</p>}
+          </div>
+          {errors.assignments && <span className="block text-xs text-red-500 mt-1">{errors.assignments}</span>}
         </div>
 
         <div className="flex justify-end gap-2 pt-3">
@@ -2865,7 +2824,7 @@ function AttendanceOverviewPage({ focus, clearFocus }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editor, setEditor] = useState(null); // { classId, dateKey, mode: "edit" | "view" } | null
   const [registerFor, setRegisterFor] = useState(null); // classId | null
-  const [registerMonth, setRegisterMonth] = useState(() => bounds.max.slice(0, 7));
+  const [registerMonth, setRegisterMonth] = useState(() => ecMonthKeyOfDateKey(bounds.max)); // E.C. month key
 
   // Deep-link from a Recent Activity item — jump to the date and class that were recorded.
   useEffect(() => {
@@ -3007,7 +2966,7 @@ function AttendanceEditorModal({ classId, dateKey, mode, onClose }) {
           <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
             <p className="text-xs text-slate-400">{dateKeyLabel(dateKey)}</p>
             {latestRecord && (
-              <p className="text-xs text-slate-400">Recorded by <span className="text-slate-600 font-medium">{data.userIdentity(latestRecord.markedBy).display}</span>{latestRecord.markedAt ? ` · ${fmtDate(latestRecord.markedAt)} · ${fmtTime(latestRecord.markedAt)}` : ""}</p>
+              <p className="text-xs text-slate-400">Recorded by <span className="text-slate-600 font-medium">{data.userIdentity(latestRecord.markedBy).display}</span>{latestRecord.markedAt ? ` · ${formatEthiopianDateFromKey(toDateKey(new Date(latestRecord.markedAt)))} E.C. · ${fmtTime(latestRecord.markedAt)}` : ""}</p>
             )}
           </div>
           {students.length === 0 ? <p className="text-xs text-slate-300 py-2">No students in this class.</p> : noSchoolDay && dayRecords.length === 0 ? (
@@ -3052,18 +3011,15 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
   const head = cls ? data.getUser(cls.headTeacherId) : null;
   const bounds = data.attendanceDateBounds();
 
+  // `monthKey` is an ETHIOPIAN month key ("2019-01" = Meskerem 2019). Each column is one E.C. day of
+  // it, mapped by the shared calendar engine to the real Gregorian date its attendance is stored
+  // under — see src/utils/attendanceRegister.js.
   const days = useMemo(() => {
     if (!monthKey) return [];
-    const [y, m] = monthKey.split("-").map(Number);
-    const daysInMonth = new Date(y, m, 0).getDate();
-    const list = [];
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateKey = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      const classification = data.classifyAttendanceDay(dateKey);
-      const hasRecord = attendanceStatusForClassDate(db.attendance, classId, dateKey).taken;
-      if (classification.available || hasRecord) list.push({ dateKey, day: d, available: classification.available });
-    }
-    return list;
+    return registerDays(monthKey, {
+      classify: (dateKey) => data.classifyAttendanceDay(dateKey),
+      hasRecord: (dateKey) => attendanceStatusForClassDate(db.attendance, classId, dateKey).taken,
+    });
   }, [monthKey, classId, db.attendance, data]);
 
   function openDay(dateKey, available) {
@@ -3076,7 +3032,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
       {cls && (
         <div>
           <p className="text-xs text-slate-400 mb-3">{head ? <>Head Teacher · <span className="text-slate-600 font-medium">{head.name}</span></> : "No head teacher assigned"}</p>
-          <MonthNav monthKey={monthKey} onChange={onMonthChange} maxMonthKey={bounds.max.slice(0, 7)} minMonthKey={bounds.min.slice(0, 7)} />
+          <EcMonthNav ecMonthKey={monthKey} onChange={onMonthChange} maxDateKey={bounds.max} minDateKey={bounds.min} />
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 text-[11px] text-slate-500">
             {ATTENDANCE_STATUSES.map((st) => (
               <span key={st} className="flex items-center gap-1">
@@ -3086,7 +3042,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
             ))}
           </div>
           {students.length === 0 ? <EmptyState title="No students in this class" description="Nothing to register yet." /> : days.length === 0 ? (
-            <EmptyState title="No school days this month" description="Attendance wasn't available on any date in this month." />
+            <EmptyState title="No school days this month" description="Attendance wasn't available on any date in this Ethiopian month." />
           ) : (
             <>
             <p className="sm:hidden text-[11px] text-slate-400 mb-1.5">Swipe sideways to see every day. Tap a day number to open that day.</p>
@@ -3114,15 +3070,13 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {students.map((s, i) => {
-                    const totals = {};
-                    ATTENDANCE_STATUSES.forEach((st) => { totals[st] = 0; });
+                    const { cells, totals, pct } = studentRegisterRow(db.attendance, s.id, days, ATTENDANCE_STATUSES);
                     return (
                       <tr key={s.id} className="hover:bg-slate-50/60">
                         <td className="sticky left-0 bg-white px-1.5 py-1.5 text-slate-400">{i + 1}</td>
                         <td className="sticky left-6 bg-white px-2 py-1.5 text-slate-700 font-medium min-w-[7.5rem] max-w-[9.5rem] leading-tight">{data.studentFullName(s)}</td>
-                        {days.map((d) => {
-                          const rec = db.attendance.find((a) => a.studentId === s.id && a.date === d.dateKey);
-                          if (rec) totals[rec.status] = (totals[rec.status] || 0) + 1;
+                        {days.map((d, di) => {
+                          const rec = cells[di];
                           const code = rec ? ATTENDANCE_STATUS_CODE[rec.status] : "—";
                           const tone = rec ? (statusTone(rec.status) || "slate") : "slate";
                           return (
@@ -3136,15 +3090,7 @@ function ClassMonthlyRegisterModal({ classId, monthKey, onMonthChange, onClose, 
                         {ATTENDANCE_STATUSES.map((st) => (
                           <td key={st} className="px-1.5 py-1.5 text-center text-slate-500">{totals[st] || 0}</td>
                         ))}
-                        {(() => {
-                          const recorded = Object.values(totals).reduce((sum, n) => sum + n, 0);
-                          // Present + Late count toward the percentage — matches data.studentAttendanceRate
-                          // (Overview tab / Students list), so the same student's rate never disagrees
-                          // between the register and every other page that shows it.
-                          const presentLike = (totals.Present || 0) + (totals.Late || 0);
-                          const pct = recorded > 0 ? Math.round((presentLike / recorded) * 100) : null;
-                          return <td className="px-1.5 py-1.5 text-center font-semibold text-slate-700">{pct === null ? "—" : `${pct}%`}</td>;
-                        })()}
+                        <td className="px-1.5 py-1.5 text-center font-semibold text-slate-700">{pct === null ? "—" : `${pct}%`}</td>
                       </tr>
                     );
                   })}
@@ -3530,7 +3476,7 @@ function StaffAttendancePage() {
                 <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
                   <h2 className="text-sm font-semibold text-slate-700">{activeGroup.label} · {dateKeyLabel(dateKey)}</h2>
                   {stats.latestRecord && (
-                    <p className="text-xs text-slate-400">Recorded by <span className="text-slate-600 font-medium">{data.userIdentity(stats.latestRecord.markedBy).display}</span>{stats.latestRecord.markedAt ? ` · ${fmtDate(stats.latestRecord.markedAt)} · ${fmtTime(stats.latestRecord.markedAt)}` : ""}</p>
+                    <p className="text-xs text-slate-400">Recorded by <span className="text-slate-600 font-medium">{data.userIdentity(stats.latestRecord.markedBy).display}</span>{stats.latestRecord.markedAt ? ` · ${formatEthiopianDateFromKey(toDateKey(new Date(stats.latestRecord.markedAt)))} E.C. · ${fmtTime(stats.latestRecord.markedAt)}` : ""}</p>
                   )}
                 </div>
                 {canEditGroup && (

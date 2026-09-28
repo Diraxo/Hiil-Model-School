@@ -78,7 +78,8 @@ describe("attendance status: one saved row means taken", () => {
   });
   it("9: calendar (register) and summary read the same helper", () => {
     const src = fs.readFileSync(path.resolve("src/pages/admin/AdminPages.jsx"), "utf8");
-    expect(src).toMatch(/const hasRecord = attendanceStatusForClassDate\(/);
+    // the register reads the same helper (now via registerDays' hasRecord callback)
+    expect(src).toMatch(/hasRecord: \(dateKey\) => attendanceStatusForClassDate\(db\.attendance, classId, dateKey\)\.taken/);
     expect(src).toMatch(/const status = attendanceStatusForClassDate\(db\.attendance, c\.id, dateKey\)/);
     const t = fs.readFileSync(path.resolve("src/pages/teacher/TeacherPages.jsx"), "utf8");
     expect(t).toMatch(/const status = attendanceStatusForClassDate\(db\.attendance, c\.id, dateKey\)/);

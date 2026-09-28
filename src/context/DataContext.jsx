@@ -37,6 +37,7 @@ import { createStudentService } from "../services/studentService";
 import { createParentService } from "../services/parentService";
 import { createAccountService } from "../services/accountService";
 import { createTeacherService } from "../services/teacherService";
+import { pairKey, samePair, pairsForTeacher, diffPairs, resolveTeacherPairs } from "../utils/teacherAssignments";
 import { createStaffService } from "../services/staffService";
 import { createPayrollService } from "../services/payrollService";
 import { createTimetableService } from "../services/timetableService";
@@ -2131,45 +2132,12 @@ function DataProvider({ children }) {
         }
       },
 
-      // Builds { subject: [classId, ...] } — the set of class+subject pairs that are actually free
-      // to assign, given the classes/subjects requested. A pair is skipped (not assigned) if the
-      // subject isn't part of that class's curriculum at all, or if it's already taught by someone
-      // else (other than `excludeTeacherId`, and unless explicitly forced via `reassignSet`) — so
-      // one subject can be partly available across several classes. If a requested subject ends up
-      // with zero free classes among those requested, this reports a conflict instead of silently
-      // creating nothing for it — a Teacher+Class+Subject assignment is never created without the
-      // caller knowing exactly what it collided with.
-      _resolveTeacherAssignments(d, { subjects, classIds, excludeTeacherId, reassignSet }) {
-        const pairsBySubject = {};
-        for (const subj of subjects) {
-          const valid = [];
-          let conflict = null;
-          let notOffered = null;
-          for (const cid of classIds) {
-            const cls = d.classes.find((c) => c.id === cid);
-            const offered = d.classSubjects.some((cs) => cs.classId === cid && cs.subject === subj);
-            if (!offered) {
-              if (!notOffered) notOffered = { subject: subj, classLabel: cls ? `${cls.grade}${cls.section}` : "this class" };
-              continue;
-            }
-            const existing = d.teacherAssignments.find((ta) => ta.classId === cid && ta.subject === subj && ta.teacherId !== excludeTeacherId);
-            const forced = reassignSet && reassignSet.has(`${cid}|${subj}`);
-            if (existing && !forced) {
-              if (!conflict) {
-                const otherTeacher = d.users.find((u) => u.id === existing.teacherId);
-                conflict = { subject: subj, classLabel: cls ? `${cls.grade}${cls.section}` : "this class", teacherName: otherTeacher?.name || "another teacher" };
-              }
-              continue;
-            }
-            valid.push(cid);
-          }
-          if (valid.length === 0 && classIds.length > 0) {
-            if (conflict) return { ok: false, message: `${conflict.subject} is already assigned to ${conflict.teacherName} in ${conflict.classLabel}. Please choose another subject/class assignment or reassign the existing teacher.` };
-            return { ok: false, message: `${notOffered.subject} is not part of the curriculum for the selected class(es). Add it to the class's subjects first.` };
-          }
-          pairsBySubject[subj] = valid;
-        }
-        return { ok: true, pairsBySubject };
+      // Validates the EXPLICIT class + subject pairs requested for a teacher (see
+      // utils/teacherAssignments.js): each must be in that class's curriculum and free (or this
+      // teacher's own, or deliberately reassigned). Never crosses classes with subjects — a teacher
+      // holds exactly the pairs listed, nothing derived.
+      _resolveTeacherAssignments(d, { assignments, excludeTeacherId, reassignSet }) {
+        return resolveTeacherPairs(d, { pairs: assignments, excludeTeacherId, reassignSet });
       },
 
       teacherSubjects(teacherId) {
@@ -2204,14 +2172,14 @@ function DataProvider({ children }) {
       // partial failure clearly (with the real teacherId) instead of pretending nothing happened —
       // same pattern createParentAccount already established.
       async createTeacher(data) {
-        const { firstName, middleName, lastName, email, phone, subjects: subjectNames = [], classIds = [], password, reassignments = [], photo, bankAccount, salary } = data;
+        const { firstName, middleName, lastName, email, phone, assignments = [], password, reassignments = [], photo, bankAccount, salary } = data;
         try {
           const trimmedEmail = (email || "").trim();
           if (db.users.some((u) => u.email.toLowerCase() === trimmedEmail.toLowerCase())) {
             return { ok: false, message: "An account with this email already exists." };
           }
           const reassignSet = new Set(reassignments.map((r) => `${r.classId}|${r.subject}`));
-          const resolved = this._resolveTeacherAssignments(db, { subjects: subjectNames, classIds, excludeTeacherId: null, reassignSet });
+          const resolved = this._resolveTeacherAssignments(db, { assignments, excludeTeacherId: null, reassignSet });
           if (!resolved.ok) return resolved;
 
           const name = fullName(firstName, middleName, lastName);
@@ -2245,15 +2213,13 @@ function DataProvider({ children }) {
           const subjectIdByName = new Map(subjects.map((s) => [s.name, s.id]));
           const classLabels = new Set();
           try {
-            await this._stealAssignmentPairs(reassignments, subjectIdByName);
-            for (const [subj, cids] of Object.entries(resolved.pairsBySubject)) {
-              const subjectId = subjectIdByName.get(subj);
+            await this._stealAssignmentPairs(reassignments.filter((r) => resolved.pairs.some((p) => p.classId === r.classId && p.subject === r.subject)), subjectIdByName);
+            for (const pair of resolved.pairs) {
+              const subjectId = subjectIdByName.get(pair.subject);
               if (!subjectId) continue;
-              for (const cid of cids) {
-                await teacherService.assign(teacherId, subjectId, cid);
-                const cls = classesRaw.find((c) => c.id === cid);
-                if (cls) classLabels.add(`${cls.grade}${cls.section}`);
-              }
+              await teacherService.assign(teacherId, subjectId, pair.classId);
+              const cls = classesRaw.find((c) => c.id === pair.classId);
+              if (cls) classLabels.add(`${cls.grade}${cls.section}`);
             }
           } catch (assignErr) {
             await Promise.all([refetchTeacherAccounts(), refetchTeacherAssignments(), refetchStaff()]);
@@ -2303,31 +2269,37 @@ function DataProvider({ children }) {
           return { ok: false, message: e.message || "Couldn't update the teacher." };
         }
       },
-      // Replaces a teacher's full set of Class+Subject assignments with the requested one.
+      // Sets a teacher's Class+Subject assignments to exactly the requested PAIRS ([{ classId, subject }]).
+      // Only the difference is written: pairs the teacher already holds are left untouched (never
+      // deleted and re-created), removed pairs lose just that pair, new pairs gain just that pair.
       // `reassignments` is an optional array of { classId, subject } pairs the Owner/Director has
       // explicitly chosen to move from whichever teacher currently holds them onto this teacher —
       // without it, a class+subject already taught by someone else is left with that teacher.
-      async updateTeacherAssignments(teacherId, subjectNames = [], classIds = [], reassignments = []) {
+      async updateTeacherAssignments(teacherId, assignments = [], reassignments = []) {
         try {
           const teacher = db.users.find((u) => u.id === teacherId);
           if (!teacher) return { ok: false, message: "Teacher not found." };
-          const reassignSet = new Set(reassignments.map((r) => `${r.classId}|${r.subject}`));
+          const reassignSet = new Set(reassignments.map((r) => pairKey(r.classId, r.subject)));
 
-          const resolved = this._resolveTeacherAssignments(db, { subjects: subjectNames, classIds, excludeTeacherId: teacherId, reassignSet });
+          const resolved = this._resolveTeacherAssignments(db, { assignments, excludeTeacherId: teacherId, reassignSet });
           if (!resolved.ok) return resolved;
 
+          const { toAdd, toRemove } = diffPairs(pairsForTeacher(db.teacherAssignments, teacherId), resolved.pairs);
           const subjectIdByName = new Map(subjects.map((s) => [s.name, s.id]));
-          await this._stealAssignmentPairs(reassignments, subjectIdByName);
-          await teacherService.unassignAllForTeacher(teacherId);
+          // Every subject name must resolve before anything is written, so a bad name can't leave the
+          // change half-applied.
+          for (const pair of [...toAdd, ...toRemove]) {
+            if (!subjectIdByName.get(pair.subject)) return { ok: false, message: `${pair.subject} is no longer a subject. Remove that assignment and try again.` };
+          }
+          await this._stealAssignmentPairs(reassignments.filter((r) => toAdd.some((p) => samePair(p, r))), subjectIdByName);
+          for (const pair of toRemove) await teacherService.unassignPair(pair.classId, subjectIdByName.get(pair.subject));
           const classLabels = new Set();
-          for (const [subj, cids] of Object.entries(resolved.pairsBySubject)) {
-            const subjectId = subjectIdByName.get(subj);
-            if (!subjectId) continue;
-            for (const cid of cids) {
-              await teacherService.assign(teacherId, subjectId, cid);
-              const cls = classesRaw.find((c) => c.id === cid);
-              if (cls) classLabels.add(`${cls.grade}${cls.section}`);
-            }
+          for (const pair of toAdd) {
+            await teacherService.assign(teacherId, subjectIdByName.get(pair.subject), pair.classId);
+          }
+          for (const pair of resolved.pairs) {
+            const cls = classesRaw.find((c) => c.id === pair.classId);
+            if (cls) classLabels.add(`${cls.grade}${cls.section}`);
           }
           await refetchTeacherAssignments();
           await logActivityFeed(`${teacher.name}'s class and subject assignments were updated${classLabels.size ? ` (${[...classLabels].join(", ")})` : ""}.`);

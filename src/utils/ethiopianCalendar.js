@@ -59,7 +59,9 @@ function gregorianToEthiopian(date) {
     ethYear = y - 8;
     newYear = newYearInGregorianYear(y - 1);
   }
-  const daysSinceNewYear = Math.floor((date.getTime() - newYear.getTime()) / 86400000);
+  // Math.round (not floor): both are local-midnight dates, so in a DST-observing timezone the gap can
+  // be an hour short of a whole number of days — round() still lands on the right day count.
+  const daysSinceNewYear = Math.round((date.getTime() - newYear.getTime()) / 86400000);
   const month = Math.floor(daysSinceNewYear / 30) + 1;
   const day = (daysSinceNewYear % 30) + 1;
   return { year: ethYear, month, day };
@@ -70,7 +72,9 @@ function ethiopianToGregorian(ethYear, month, day) {
   const gcYear = ethYear + 7;
   const newYear = newYearInGregorianYear(gcYear);
   const offsetDays = 30 * (month - 1) + (day - 1);
-  return new Date(newYear.getTime() + offsetDays * 86400000);
+  // Calendar-day arithmetic via the Date constructor (not + N*86400000ms), so a DST change between
+  // New Year and the target date can't push the result an hour into the previous day.
+  return new Date(newYear.getFullYear(), newYear.getMonth(), newYear.getDate() + offsetDays);
 }
 
 // Today's date, in the Ethiopian calendar. Never replaces the system clock — just converts "now".
@@ -189,6 +193,64 @@ function ethiopianMonthsCoveredBy(startKey, endKey) {
   return out;
 }
 
+// ---- Ethiopian month as a navigable period (attendance registers, attendance month views) ----
+// An "E.C. month key" is "YYYY-MM" in the ETHIOPIAN calendar (year 2019, month 01-13) — NOT a
+// Gregorian month key. Stored attendance rows keep their Gregorian "YYYY-MM-DD" date; these helpers
+// only translate between the two so a screen can page by E.C. month and still query the exact same
+// underlying dates. Everything goes through gregorianToEthiopian/ethiopianToGregorian above.
+
+function ecMonthKey(year, month) { return `${year}-${pad2(month)}`; }
+
+function parseEcMonthKey(key) {
+  const [year, month] = (key || "").split("-").map(Number);
+  if (!year || !month || month < 1 || month > 13) return null;
+  return { year, month };
+}
+
+// The E.C. month a "YYYY-MM-DD" Gregorian date key falls in.
+function ecMonthKeyOfDateKey(dateKey) {
+  const ec = gregorianToEthiopian(keyToDate(dateKey));
+  return ecMonthKey(ec.year, ec.month);
+}
+
+// Previous/next E.C. month (rolls Pagumen -> Meskerem of the next E.C. year and back).
+function shiftEcMonthKey(key, delta) {
+  const p = parseEcMonthKey(key);
+  if (!p) return key;
+  const index = p.year * 13 + (p.month - 1) + delta;
+  return ecMonthKey(Math.floor(index / 13), (((index % 13) + 13) % 13) + 1);
+}
+
+// Every day of an E.C. month as [{ day, dateKey }], where dateKey is the real Gregorian
+// "YYYY-MM-DD" that day is stored under (30 days, or 5/6 for Pagumen).
+function ecMonthDays(key) {
+  const p = parseEcMonthKey(key);
+  if (!p) return [];
+  const count = daysInEthiopianMonth(p.year, p.month);
+  return Array.from({ length: count }, (_, i) => ({ day: i + 1, dateKey: ethiopianToGregorianKey(p.year, p.month, i + 1) }));
+}
+
+// First and last Gregorian date keys of an E.C. month — the range attendance is loaded for.
+function ecMonthRange(key) {
+  const days = ecMonthDays(key);
+  return days.length ? { startKey: days[0].dateKey, endKey: days[days.length - 1].dateKey } : null;
+}
+
+// "Meskerem 2019" (or with Amharic).
+function ecMonthTitle(key, { withAmharic = false } = {}) {
+  const p = parseEcMonthKey(key);
+  return p ? `${ethiopianMonthName(p.month, { withAmharic })} ${p.year}` : "";
+}
+
+// The Gregorian span an E.C. month covers, e.g. "11 Sep – 10 Oct 2026".
+function ecMonthGcSpanLabel(key) {
+  const r = ecMonthRange(key);
+  if (!r) return "";
+  const a = keyToDate(r.startKey), b = keyToDate(r.endKey);
+  const fmt = (d, withYear) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) });
+  return a.getFullYear() === b.getFullYear() ? `${fmt(a)} – ${fmt(b, true)}` : `${fmt(a, true)} – ${fmt(b, true)}`;
+}
+
 // The school's standard dual-calendar date caption, EC-first: "Meskerem 12, 2018 E.C. (12
 // September 2026 G.C.)". Pass { long: true } for the full-month-name Gregorian variant (default
 // is the short "12 Sep 2026" form). Consolidates what used to be a near-identical private
@@ -224,4 +286,12 @@ export {
   MIN_MONTH_COVERAGE_DAYS,
   formatEthiopianDateWithGc,
   ethiopianMonthLabelWithGc,
+  ecMonthKey,
+  parseEcMonthKey,
+  ecMonthKeyOfDateKey,
+  shiftEcMonthKey,
+  ecMonthDays,
+  ecMonthRange,
+  ecMonthTitle,
+  ecMonthGcSpanLabel,
 };

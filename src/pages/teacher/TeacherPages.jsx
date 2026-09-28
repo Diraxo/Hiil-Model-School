@@ -19,7 +19,7 @@ import {
   uid, fmtDate, fmtTime, to12Hour, timeAgo, initials, copyText, generatePassword, avatarColor, sortStudentsByFullName,
 } from "../../utils/helpers";
 import {
-  ethiopianMonthLabelWithGc as ecMonthLabel, formatEthiopianDateWithGc as ecDate,
+  ethiopianMonthLabelWithGc as ecMonthLabel, formatEthiopianDateWithGc as ecDate, ecMonthKeyOfDateKey,
 } from "../../utils/ethiopianCalendar";
 import {
   inputCls, Logo, Badge, statusTone, resultTotals, Avatar, Modal, ConfirmDialog, EmptyState,
@@ -687,7 +687,7 @@ function TeacherAttendancePage() {
   const [dateKey, setDateKey] = useState(() => { const t = todayKeyStr(); return t > bounds.max ? bounds.max : t; });
   const [editor, setEditor] = useState(null); // { classId, dateKey, mode: "edit" | "view" } | null
   const [registerFor, setRegisterFor] = useState(null); // classId | null
-  const [registerMonth, setRegisterMonth] = useState(() => bounds.max.slice(0, 7));
+  const [registerMonth, setRegisterMonth] = useState(() => ecMonthKeyOfDateKey(bounds.max)); // E.C. month key
   const classification = data.classifyAttendanceDay(dateKey);
   const myAttendanceForDate = data.myAcademicActionStatusFor(auth.currentUser, dateKey);
   const blockedForDate = !data.canTeacherPerformAcademicAction(auth.currentUser, dateKey);
