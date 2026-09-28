@@ -12,10 +12,10 @@ import { currentAcademicYear } from "../utils/academicCalendar";
 const SCHOOL_REGION = "Somali";
 const SCHOOL_CITY = "Jigjiga, Ethiopia";
 
-// A4-portrait, print-first replica of the school's physical "Student Yearly Report Card" pad
-// (src/assets/ReportCard.jpeg): no student photo, no seal/stamp, no auto-filled date — teacher
-// and principal signatures plus every date are left blank so the school signs/stamps on paper
-// after printing. Shared by the Director/Owner's Report Cards page and the Parent's Results page.
+// A4-portrait, print-first "Student Yearly Report Card" in the school's brand (logo, bilingual
+// name, signage red + gold, framed page, faint logo watermark): no student photo, no seal/stamp,
+// no auto-filled date — teacher and principal signatures plus every date are left blank so the
+// school signs/stamps on paper after printing. Shared by the Director/Owner's Report Cards page and the Parent's Results page.
 function ReportCardModal({ student, classId, onClose }) {
   const data = useData();
   const auth = useAuth();
@@ -79,23 +79,36 @@ function ReportCardModal({ student, classId, onClose }) {
 
   return (
     <Modal open={!!student} onClose={onClose} title={`Report Card — ${data.studentFullName(student)}`} maxWidthClass="sm:max-w-[880px]">
-      <style>{"@media print { @page { size: A4 portrait; margin: 0; } }"}</style>
+      <style>{"@media print { @page { size: A4 portrait; margin: 0; } .report-card-print * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }"}</style>
       <div className="report-card-print overflow-x-auto">
-        <div ref={printRef} className="relative flex flex-col bg-white text-slate-900 font-serif mx-auto" style={{ width: "210mm", minHeight: "297mm", padding: "12mm", boxSizing: "border-box" }}>
-          {/* Blank photo box — no student photo, matches the physical pad */}
-          <div className="absolute border-2 border-slate-800" style={{ top: "12mm", right: "12mm", width: "26mm", height: "31mm" }} />
+        <div ref={printRef} className="relative flex flex-col bg-white text-slate-900 font-serif mx-auto" style={{ width: "210mm", minHeight: "297mm", padding: "7mm", boxSizing: "border-box" }}>
+          {/* School-branded page frame: signage-red outer rule, gold inner rule (the logo's own colours) */}
+          <div className="relative flex flex-1 flex-col border-[3px] border-brand-700 p-[1.2mm]">
+            <div className="relative flex flex-1 flex-col overflow-hidden border border-gold-400" style={{ padding: "8mm" }}>
+              {/* Faint logo watermark behind the marks table */}
+              <img src={LOGO_DATA_URI} alt="" aria-hidden="true" className="absolute pointer-events-none select-none" style={{ width: "125mm", height: "125mm", top: "50%", left: "50%", transform: "translate(-50%, -46%)", opacity: 0.06 }} />
 
-          {/* Header */}
-          <div className="relative text-center pb-3 mb-4 border-b-[3px] border-brand-800">
-            <div className="absolute inset-x-0 top-2 h-[5px] bg-red-600" />
-            <img src={LOGO_DATA_URI} alt="Hiil Model School" className="relative z-10 w-20 h-20 mx-auto rounded-2xl border-2 border-white shadow object-cover" />
-            <h1 className="mt-1 text-2xl font-bold tracking-wide text-brand-900 uppercase">Hiil Model School</h1>
-            <p className="text-xs italic font-medium text-brand-800 tracking-wide">Quality Education and Personal Excellence</p>
-          </div>
+              {/* Blank photo box — no student photo, matches the physical pad */}
+              <div className="absolute border-2 border-slate-800 bg-white" style={{ top: "8mm", right: "8mm", width: "26mm", height: "31mm" }} />
 
-          <p className="text-center font-bold text-sm uppercase underline underline-offset-4 mb-3">Student Yearly Report Card</p>
+              {/* Letterhead */}
+              <div className="relative text-center pb-2 mb-3">
+                <img src={LOGO_DATA_URI} alt="Hiil Model School" className="mx-auto object-contain" style={{ width: "27mm", height: "27mm" }} />
+                <p className="mt-1 text-sm font-semibold text-brand-800">ሂል ሞዴል ትምህርት ቤት</p>
+                <h1 className="text-[26px] leading-tight font-extrabold tracking-[0.12em] text-brand-700 uppercase">Hiil Model School</h1>
+                <div className="flex items-center justify-center gap-2 mt-0.5">
+                  <span className="h-px w-12 bg-gold-400" />
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gold-600">Center of Excellence</p>
+                  <span className="h-px w-12 bg-gold-400" />
+                </div>
+                <p className="mt-1 text-[10.5px] text-slate-600">Jigjiga, Ethiopia &nbsp;·&nbsp; 0915111821 / 0901382701 / 0915188114</p>
+                <div className="mt-2 h-[3px] bg-brand-700" />
+                <div className="mt-[2px] h-px bg-gold-400" />
+              </div>
 
-          <div className="text-[13px] leading-relaxed mb-3" style={{ paddingRight: "30mm" }}>
+              <p className="relative mb-3 mx-auto px-8 py-1 text-center font-bold text-[13px] uppercase tracking-[0.18em] text-white bg-brand-700 border-y-2 border-gold-400" style={{ width: "fit-content" }}>Student Yearly Report Card</p>
+
+          <div className="relative text-[13px] leading-relaxed mb-3" style={{ paddingRight: "30mm" }}>
             <p>
               <span className="font-semibold">Student's Name: </span>{data.studentFullName(student).toUpperCase()}
               <span className="font-semibold ml-6">Sex: </span>{(student.gender || "—").toUpperCase()}
@@ -112,9 +125,9 @@ function ReportCardModal({ student, classId, onClose }) {
             </p>
           </div>
 
-          <table className="w-full border-collapse text-[12px]">
+          <table className="relative w-full border-collapse text-[12px]">
             <thead>
-              <tr className="bg-slate-100">
+              <tr className="bg-brand-700 text-white">
                 <th className="border border-slate-900 px-2 py-1 text-left">Subject</th>
                 <th className="border border-slate-900 px-2 py-1">Out of</th>
                 <th className="border border-slate-900 px-2 py-1">Sem 1</th>
@@ -132,7 +145,7 @@ function ReportCardModal({ student, classId, onClose }) {
                   <td className="border border-slate-900 px-2 py-1 text-center font-semibold">{r.final !== null ? r.final : "—"}</td>
                 </tr>
               ))}
-              <tr className="font-bold bg-slate-50">
+              <tr className="font-bold bg-gold-50">
                 <td className="border border-slate-900 px-2 py-1">Total</td>
                 <td className="border border-slate-900 px-2 py-1 text-center">{outOfTotal}</td>
                 <td className="border border-slate-900 px-2 py-1 text-center">{s1Total}</td>
@@ -157,13 +170,13 @@ function ReportCardModal({ student, classId, onClose }) {
           </table>
 
           {rc && rc.promoted !== null && rc.promoted !== undefined && (
-            <p className="mt-3 text-[13px] font-bold uppercase tracking-wide">
+            <p className="relative mt-3 text-[13px] font-bold uppercase tracking-wide text-brand-800">
               {rc.promoted ? (nextGrade ? `Promoted to ${nextGrade}` : "Promoted") : `Retained in ${cls ? cls.grade : "current grade"}`}
             </p>
           )}
 
           {/* Signatures, blank date fields — filled in by hand after printing */}
-          <div className="mt-auto pt-10 text-[13px]">
+          <div className="relative mt-auto pt-10 text-[13px]">
             <div className="flex justify-between items-end mb-7">
               <div style={{ width: "58%" }}>
                 <div className="border-b border-slate-900 h-6" />
@@ -181,6 +194,10 @@ function ReportCardModal({ student, classId, onClose }) {
               <div style={{ width: "34%" }} className="text-right">
                 <p>Date: ____ / ____ / ______</p>
               </div>
+            </div>
+            <div className="mt-5 h-px bg-gold-400" />
+            <p className="mt-1 text-center text-[10px] uppercase tracking-[0.2em] text-brand-800">Hiil Model School · Center of Excellence</p>
+          </div>
             </div>
           </div>
         </div>
