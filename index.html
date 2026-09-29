@@ -5,10 +5,22 @@
     <link rel="icon" href="/favicon.ico?v=hiil2" sizes="any" />
     <link rel="icon" type="image/png" href="/favicon.png?v=hiil2" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0284c7" />
+    <meta name="theme-color" content="#f8fafc" />
     <meta name="description" content="Hiil Model School - School Management System" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png?v=hiil2" />
+    <script>
+      // Apply the saved/system appearance before first paint (no white flash). Mirrors src/utils/theme.js.
+      (function () {
+        try {
+          var m = localStorage.getItem("hiil-theme");
+          var dark = m === "dark" || ((m !== "light") && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var r = document.documentElement;
+          if (dark) r.classList.add("dark");
+          r.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
     <title>Hiil Model School</title>
   </head>
   <body>

@@ -50,7 +50,7 @@ function LoginScreen() {
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="rounded-2xl bg-brand-600 border-b-4 border-gold-400 px-6 py-7 mb-4 flex flex-col items-center text-center shadow-sm">
-          <div className="bg-white rounded-2xl p-2 shadow-sm">
+          <div className="bg-white theme-paper rounded-2xl p-2 shadow-sm">
             <Logo size={60} />
           </div>
           <h1 className="mt-3 text-xl font-bold text-white tracking-tight">Hiil Model School</h1>

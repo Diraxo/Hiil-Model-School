@@ -80,7 +80,7 @@ function ReportCardModal({ student, classId, onClose }) {
   return (
     <Modal open={!!student} onClose={onClose} title={`Report Card — ${data.studentFullName(student)}`} maxWidthClass="sm:max-w-[880px]">
       <style>{"@media print { @page { size: A4 portrait; margin: 0; } .report-card-print * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }"}</style>
-      <div className="report-card-print overflow-x-auto">
+      <div className="report-card-print theme-paper overflow-x-auto">
         <div ref={printRef} className="relative flex flex-col bg-white text-slate-900 font-serif mx-auto" style={{ width: "210mm", minHeight: "297mm", padding: "7mm", boxSizing: "border-box" }}>
           {/* School-branded page frame: signage-red outer rule, gold inner rule (the logo's own colours) */}
           <div className="relative flex flex-1 flex-col border-[3px] border-brand-700 p-[1.2mm]">

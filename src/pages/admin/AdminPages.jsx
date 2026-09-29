@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, createContext, useContext, useRef } from "react";
+import { AppearanceSettings } from "../../components/AppearanceSettings";
 import {
   LayoutDashboard, Users, GraduationCap, UserCog, School, CalendarDays,
   ClipboardCheck, ClipboardList, FileBarChart, AlertTriangle, MessageSquare, Bell,
@@ -7007,7 +7008,7 @@ function PayslipModal({ paymentId, onClose }) {
       {!slip ? (
         <p className="text-sm text-slate-400">This payslip is no longer available.</p>
       ) : (
-        <div className="payslip-print" ref={printRef}>
+        <div className="payslip-print theme-paper" ref={printRef}>
           <div className="flex flex-col items-center text-center mb-4">
             <Logo size={44} />
             <p className="text-sm font-semibold text-slate-800 mt-1">Hiil Model School</p>
@@ -7318,6 +7319,8 @@ function SettingsPage({ role }) {
   return (
     <div className="max-w-2xl">
       <h1 className="text-lg font-semibold text-slate-800 mb-4">Settings</h1>
+
+      <AppearanceSettings />
 
       {canManageAcademicYears(auth.currentUser) && (
         <Card className="p-5 mb-4">

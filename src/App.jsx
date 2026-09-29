@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, createContext, useContext, useRef } from "react";
+import { ThemeProvider } from "./context/ThemeContext";
 import { ToastProvider } from "./context/ToastContext";
 import { DataProvider } from "./context/DataContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
@@ -28,6 +29,7 @@ function Root() {
 
 function App() {
   return (
+    <ThemeProvider>
     <ToastProvider>
       <DataProvider>
         <AuthProvider>
@@ -35,6 +37,7 @@ function App() {
         </AuthProvider>
       </DataProvider>
     </ToastProvider>
+    </ThemeProvider>
   );
 }
 

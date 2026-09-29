@@ -257,7 +257,7 @@ function CashReceiptModal({ open, onClose, pages, voidedLines = [], allVoided = 
           </ul>
         </div>
       )}
-      <div className="receipt-print bg-white p-2 space-y-6" ref={printRef}>
+      <div className="receipt-print theme-paper bg-white p-2 space-y-6" ref={printRef}>
         {allVoided && (
           <div className="flex items-center justify-center">
             <span className="text-4xl font-extrabold tracking-widest text-red-600/70 border-4 border-red-600/70 rounded-lg px-6 py-1 -rotate-6 select-none">VOID</span>
