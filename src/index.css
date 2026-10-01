@@ -20,3 +20,14 @@ body {
   .report-card-print, .receipt-print, .payslip-print { position: absolute; top: 0; left: 0; width: 100%; }
   .no-print { display: none !important; }
 }
+
+/* Cash Receipt Voucher: the page IS the voucher (200x190mm, 4mm margin => 192mm printable, which
+   fits the 720px = 190.5mm voucher at 100%), not an A4 sheet with the receipt floating on it.
+   The @page size itself is injected by CashReceiptModal only while it is open, so Report Card (A4) /
+   Payslip printing keep their own page setup. */
+@media print {
+  .receipt-print { width: 192mm !important; padding: 0 !important; background: #ffffff !important; }
+  .receipt-print > * + * { margin-top: 0 !important; }
+  .receipt-print .receipt-voucher { max-width: none !important; width: 100% !important; break-inside: avoid; page-break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .receipt-print .receipt-voucher + .receipt-voucher { break-before: page; }
+}

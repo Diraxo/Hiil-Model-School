@@ -1,9 +1,9 @@
 import React, { useRef, useState } from "react";
-import { Printer } from "lucide-react";
+import { Download, Printer } from "lucide-react";
 import { Logo, Modal } from "./ui";
 import cashierSignatureSrc from "../assets/cashier-signature.png";
 import schoolStampSrc from "../assets/school-stamp.png";
-import { downloadElementAsPdf } from "../utils/pdf";
+import { downloadReceiptAsPdf } from "../utils/pdf";
 import { formatMoney } from "../utils/constants";
 
 // Pre-cropped, background-removed cashier signature (src/assets/cashier-signature.png, generated
@@ -51,7 +51,9 @@ const VOUCHER_METHODS = [
 ];
 
 function Blank({ value, className = "" }) {
-  return <span className={`inline-block min-w-[2rem] border-b border-slate-900 px-1 align-bottom ${className}`}>{value || " "}</span>;
+  // Line-height + bottom padding keep the rule strictly below the glyphs, so a small baseline offset
+  // in a rasteriser (html2canvas) or a printer can never push text down onto the underline.
+  return <span className={`receipt-blank inline-block min-w-[2rem] border-b border-slate-900 px-1 pt-0.5 pb-[3px] leading-[1.5] align-bottom ${className}`}>{value || " "}</span>;
 }
 
 function Checkbox({ checked }) {
@@ -91,7 +93,7 @@ function CashReceiptVoucher({
   const isKnownMethod = VOUCHER_METHODS.slice(0, -1).some((m) => m.key === method);
 
   return (
-    <div className="relative bg-[#fdf9f0] text-slate-900 font-serif border border-slate-900 p-5 text-[13px] leading-tight max-w-[720px] mx-auto">
+    <div className="receipt-voucher relative bg-[#fdf9f0] text-slate-900 font-serif border border-slate-900 p-5 text-[13px] leading-tight max-w-[720px] mx-auto">
       {/* Official school seal — stamped in the lower-right like on the physical pad, just clear of
           the cashier's signature so both stay legible */}
       <SchoolStamp size={128} className="absolute right-[8.5rem] bottom-2 z-10" />
@@ -141,7 +143,7 @@ function CashReceiptVoucher({
           <p className="leading-none">የአውቶብስ ክፍያ</p>
           <div className="flex items-baseline gap-2">
             <span className="shrink-0 font-medium">Bus Fee</span>
-            <div className="flex-1 text-sm font-semibold border-b border-slate-900 px-1">
+            <div className="receipt-blank flex-1 text-sm font-semibold border-b border-slate-900 px-1 pt-0.5 pb-[3px] leading-[1.5]">
               {busFeeLines.join(";  ")}
             </div>
           </div>
@@ -230,7 +232,7 @@ function CashReceiptModal({ open, onClose, pages, voidedLines = [], allVoided = 
     if (!printRef.current) return;
     setDownloading(true);
     try {
-      await downloadElementAsPdf(printRef.current, `Receipt-${voucherProps.receiptNo || "voucher"}.pdf`);
+      await downloadReceiptAsPdf(printRef.current, `Receipt-${voucherProps.receiptNo || "voucher"}.pdf`);
     } finally {
       setDownloading(false);
     }
@@ -257,6 +259,7 @@ function CashReceiptModal({ open, onClose, pages, voidedLines = [], allVoided = 
           </ul>
         </div>
       )}
+      <style>{"@media print { @page { size: 200mm 190mm; margin: 4mm; } }"}</style>
       <div className="receipt-print theme-paper bg-white p-2 space-y-6" ref={printRef}>
         {allVoided && (
           <div className="flex items-center justify-center">
@@ -279,7 +282,10 @@ function CashReceiptModal({ open, onClose, pages, voidedLines = [], allVoided = 
       <div className="flex justify-end gap-2 pt-4 no-print">
         <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Close</button>
         <button onClick={handleDownload} disabled={downloading} className="inline-flex items-center gap-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-60">
-          <Printer size={15} /> {downloading ? "Preparing…" : "Download Receipt"}
+          <Download size={15} /> {downloading ? "Preparing…" : "Download Receipt"}
+        </button>
+        <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 border border-brand-600 text-brand-700 hover:bg-brand-50 rounded-lg px-3.5 py-2 text-sm font-medium">
+          <Printer size={15} /> Print Receipt
         </button>
       </div>
     </Modal>
