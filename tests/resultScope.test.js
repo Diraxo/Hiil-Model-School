@@ -87,11 +87,13 @@ describe("what counts as recorded", () => {
     expect(resultHasRecordedData({ ...empty, componentRows: [{ assessmentId: "a", score: null }] }, [])).toBe(false);
     expect(resultStateOf(empty, [])).toBe("NOT_STARTED");
   });
-  it("a score, an evidence page, or a published/locked status is a result", () => {
+  it("a score, an evidence page, or a locked status is a result (an emptied published result is not)", () => {
     expect(resultStateOf({ ...empty, componentRows: [{ assessmentId: "a", score: 0 }] }, [])).toBe("DRAFT"); // a recorded 0 counts
     expect(resultStateOf(empty, [{ resultId: "r" }])).toBe("DRAFT");
     expect(resultStateOf(empty, [{ resultId: "someone-else" }])).toBe("NOT_STARTED");
-    expect(resultStateOf({ ...empty, publishStatus: "PUBLISHED" }, [])).toBe("SAVED");
+    expect(resultStateOf({ ...empty, publishStatus: "PUBLISHED", componentRows: [{ assessmentId: "a", score: 50 }] }, [])).toBe("SAVED");
+    // a published result whose every score and image was removed is empty: it follows the active structure
+    expect(resultStateOf({ ...empty, publishStatus: "PUBLISHED" }, [])).toBe("NOT_STARTED");
     expect(resultStateOf({ ...empty, publishStatus: "LOCKED" }, [])).toBe("LOCKED");
   });
 });

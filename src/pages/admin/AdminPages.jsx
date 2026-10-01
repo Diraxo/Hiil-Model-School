@@ -58,6 +58,9 @@ import {
 } from "../../utils/studentPermissions";
 import { DocumentViewerModal } from "../../components/DocumentViewer";
 import { ExamEvidenceStrip } from "../../components/ResultEvidence";
+import { ResultDetailModal } from "../../components/ResultDetail";
+import { singleEvidenceFile } from "../../services/resultEvidenceService";
+import { evidenceDownloadName } from "../../utils/evidenceDownload";
 import { employmentActiveOn } from "../../utils/staffEmploymentStatus";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 import { PushStatusCard } from "../../components/PushOptIn";
@@ -1151,7 +1154,7 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
                     return (
                       <div key={c.id}>
                         <span>{c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "—"}</span>
-                        <ExamEvidenceStrip pages={pages} onOpen={(idx) => setDocViewer({ title: `${r.subject} — ${c.name}`, files: pages, initialIndex: idx })} />
+                        <ExamEvidenceStrip pages={pages} onOpen={(idx) => setDocViewer({ title: `${r.subject} — ${c.name}`, files: pages, initialIndex: idx, dl: { student: studentFullName(student), subject: r.subject, assessment: c.name } })} />
                       </div>
                     );
                   })}
@@ -1310,7 +1313,8 @@ function StudentProfilePage({ studentId, onBack, focus, onMessage }) {
       <UploadDocumentModal open={uploadDocOpen} onClose={() => setUploadDocOpen(false)} studentId={s.id} />
       {canPayments && <RecordPaymentModal open={recordPaymentOpen} onClose={() => setRecordPaymentOpen(false)} student={s} />}
       {canVoid && <VoidPaymentModal open={!!voidTarget} onClose={() => setVoidTarget(null)} payment={voidTarget} />}
-      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} fileDataUrl={docViewer?.fileDataUrl} fileType={docViewer?.fileType} fileName={docViewer?.fileName} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={!docViewer?.files} />
+      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} fileDataUrl={docViewer?.fileDataUrl} fileType={docViewer?.fileType} fileName={docViewer?.fileName} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={!docViewer?.files} itemLabel={docViewer?.files ? "image" : "page"}
+        downloadName={docViewer?.dl ? (file, index) => evidenceDownloadName({ ...docViewer.dl, index, file }) : null} />
       <ConfirmDialog
         open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} danger confirmLabel="Delete Permanently"
         title="Delete Student Permanently?"
@@ -3974,7 +3978,7 @@ function ResultsPage({ role, focus, clearFocus }) {
       <p className="text-sm text-slate-400 mb-4">
         {isStaff
           ? "The school administers exams on paper — this app only records results. Set each grade's assessments in Results Settings, or announce an upcoming exam to notify parents and teachers."
-          : "Enter scores for the assessments the school has set up for each subject you teach, then publish so parents can see them."}
+          : "Enter scores for the assessments the school has set up for each subject you teach. Saved results stay Draft until you publish them — publishing shows the score and its evidence to the parent and sends a notification."}
       </p>
 
       {!isStaff && !data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && (
@@ -4243,9 +4247,9 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   const cls = data.getClass(classId);
   const yearId = academicYearId || (db.workspaceYear || {}).id || null;
   const students = data.studentsForClassYear(classId, yearId);
-  const [selectedIds, setSelectedIds] = useState([]);
+  const [publishConfirm, setPublishConfirm] = useState(null); // { ids: studentId[] } | null
   const [historyFor, setHistoryFor] = useState(null); // studentId | null
-  const [docViewer, setDocViewer] = useState(null); // { title, files, initialIndex } | null
+  const [docViewer, setDocViewer] = useState(null); // { title, files, initialIndex, dl } | null
   const [cameraChooserFor, setCameraChooserFor] = useState(null); // { studentId, assessmentId } | null
   const [unlockTarget, setUnlockTarget] = useState(null); // { mode: "manual"|"auto", record, studentId, lockMessage } | null
   // Score edits are kept as a local, unsaved draft (`studentId::assessmentId` -> raw input string)
@@ -4253,6 +4257,10 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   // teacher explicitly clicks Save, and Save is blocked while any edited score is out of range.
   const [drafts, setDrafts] = useState({});
   const [saving, setSaving] = useState(false);
+  // A recorded result opens READ-ONLY. Editing (score changes, evidence add/replace/remove/reorder) is
+  // an explicit per-row action; a row with nothing recorded yet is entry, so its inputs show at once.
+  const [editingRows, setEditingRows] = useState(() => new Set()); // studentIds
+  const [detailFor, setDetailFor] = useState(null); // studentId | null
   const { isBusy, run } = useMutationGuard();
 
   const ctx = { classId, subject, teacherAssignments: db.teacherAssignments };
@@ -4300,6 +4308,9 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     return null;
   }
   function setDraftScore(studentId, assessmentId, value) {
+    // Typing a score starts an entry session for this row: it stays editable (even once the first image
+    // creates the result) until Save / Done, so a teacher can enter score + images without clicking Edit.
+    setEditingRows((set) => (set.has(studentId) ? set : new Set(set).add(studentId)));
     setDrafts((d) => ({ ...d, [draftKey(studentId, assessmentId)]: value }));
   }
   const dirtyKeys = Object.keys(drafts).filter((key) => { const [sid, aid] = key.split("::"); return isScoreDirty(sid, aid); });
@@ -4325,25 +4336,30 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     }
     setSaving(false);
     setDrafts((d) => { const next = { ...d }; savedKeys.forEach((k) => delete next[k]); return next; });
+    setEditingRows((set) => { const next = new Set(set); savedKeys.forEach((k) => next.delete(k.split("::")[0])); return next; });
     if (firstError) toast(firstError, "error");
     else toast("Results saved.", "success");
   }
+  // Exactly ONE image per upload action: several files (a multi-select or a multi-file drop) are
+  // refused, never "first of many". More images are added by repeating Add evidence.
   async function uploadEvidencePages(studentId, assessmentId, fileList) {
-    const files = Array.from(fileList || []);
-    if (files.length === 0) return;
-    // One File per row upload; the mutation guard de-dupes a double-fired picker for the same
-    // student+assessment while a batch is in flight. Uploads are sequential (real Storage writes).
+    const { file, error } = singleEvidenceFile(fileList);
+    if (error) { toast(error, "error"); return; }
+    if (!file) return;
+    startEditing(studentId); // adding the first image creates the result — keep the row open for more
+    // The mutation guard de-dupes a double-fired picker for the same student+assessment.
     await run(async () => {
-      let added = 0;
-      let firstError = null;
-      for (const file of files) {
-        // eslint-disable-next-line no-await-in-loop
-        const res = await data.addResultEvidencePage({ studentId, classId, subject, semester, assessmentId, file, academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
-        if (res.ok) added += 1; else if (!firstError) firstError = res.message;
-      }
-      if (added > 0) toast(`${added} evidence page${added === 1 ? "" : "s"} attached.`, "success");
-      if (firstError) toast(firstError, "error");
+      const res = await data.addResultEvidencePage({ studentId, classId, subject, semester, assessmentId, file, academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
+      toast(res.ok ? "Evidence image attached." : res.message, res.ok ? "success" : "error");
     }, { key: `evidence-upload:${studentId}:${assessmentId}` });
+  }
+  function startEditing(studentId) { setEditingRows((set) => new Set(set).add(studentId)); }
+  function stopEditing(studentId, { discard = false } = {}) {
+    setEditingRows((set) => { const next = new Set(set); next.delete(studentId); return next; });
+    if (discard) setDrafts((d) => Object.fromEntries(Object.entries(d).filter(([key]) => !key.startsWith(studentId + "::"))));
+  }
+  function rowHasDirty(studentId) {
+    return Object.keys(drafts).some((key) => { const [sid, aid] = key.split("::"); return sid === studentId && isScoreDirty(sid, aid); });
   }
   async function replaceEvidencePage(evidenceId, file) {
     if (!file) return;
@@ -4355,7 +4371,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
   async function removeEvidencePage(evidenceId) {
     await run(async () => {
       const res = await data.removeResultEvidencePage(evidenceId, auth.realUser.id, auth.realUser.role);
-      if (!res.ok) toast(res.message, "error");
+      toast(res.ok ? "Evidence image removed — saved." : res.message, res.ok ? "success" : "error");
     }, { key: `evidence-remove:${evidenceId}` });
   }
   async function reorderPage(record, assessmentId, pages, fromIdx, toIdx) {
@@ -4367,25 +4383,22 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       if (!res.ok) toast(res.message, "error");
     }, { key: `evidence-reorder:${record.id}:${assessmentId}` });
   }
-  async function toggleShare(studentId, assessmentId, current) {
-    const res = await data.saveResultComponent({ studentId, classId, subject, semester, assessmentId, sharedWithParents: !current, academicYearId: yearId }, auth.realUser.id, auth.realUser.role);
-    if (!res.ok) toast(res.message, "error");
-  }
-  function toggleSelect(studentId) {
-    setSelectedIds((ids) => (ids.includes(studentId) ? ids.filter((id) => id !== studentId) : [...ids, studentId]));
-  }
-  // Only students in an editable table can be published: never historical rows, never students with no structure.
+  // Publishing IS the share: every DRAFT result that has been recorded (score and/or evidence) can be
+  // published, and parents then see the score AND its evidence with no per-image "share" step. The
+  // assigned teacher, the Owner and the Educational Director publish; the database enforces who.
   const inTables = new Set(groups.flatMap((g) => g.students.map((s) => s.id)));
-  const selectableIds = students.filter((s) => inTables.has(s.id) && recordFor(s.id)?.publishStatus !== "LOCKED").map((s) => s.id);
-  function publishSelected() {
-    if (selectedIds.length === 0) { toast("Select at least one student to publish.", "error"); return; }
+  const draftIds = students.filter((s) => inTables.has(s.id) && recordFor(s.id)?.publishStatus === "DRAFT" && resultStateOf(recordFor(s.id), evidence) !== "NOT_STARTED").map((s) => s.id);
+  function askPublish(ids) {
     if (dirtyKeys.length > 0) { toast("You have unsaved score changes — click Save before publishing.", "error"); return; }
-    run(async () => {
-      const res = await data.publishResults(classId, subject, semester, selectedIds, auth.realUser.id, auth.realUser.role, yearId);
+    if (ids.length === 0) { toast("Nothing to publish — there are no saved draft results.", "info"); return; }
+    setPublishConfirm({ ids });
+  }
+  async function publishIds(ids) {
+    await run(async () => {
+      const res = await data.publishResults(classId, subject, semester, ids, auth.realUser.id, auth.realUser.role, yearId);
       if (!res.ok) toast(res.message, "error");
       else if (res.message) toast(res.message, "info");
-      else toast("Results published — parents have been notified.", "success");
-      if (res.ok) setSelectedIds([]);
+      else toast(ids.length === 1 ? "Result published — the parent has been notified." : "Results published — parents have been notified.", "success");
     }, { key: `publish-results:${classId}:${subject}:${semester}` });
   }
   function requestLock(record) {
@@ -4413,7 +4426,10 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
     }, { key: `relock-result:${record.id}` });
   }
 
-  const canPublish = canPublishResult(auth.currentUser);
+  function canEditRow(record) {
+    return canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !data.resultLockFor(record, semester, yearId).locked;
+  }
+  const canPublish = canPublishResult(auth.currentUser, ctx);
   const canLock = canLockResult(auth.currentUser);
   const canUnlock = canUnlockResult(auth.currentUser);
   const canAudit = canViewResultAudit(auth.currentUser, ctx);
@@ -4553,7 +4569,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
             className={`text-sm font-medium rounded-lg px-4 py-2 flex items-center gap-1.5 transition-colors ${!saveDisabled ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
             <Check size={15} /> {saveLabel}
           </button>
-          {canPublish && <PrimaryButton icon={Send} onClick={publishSelected} loading={isBusy(`publish-results:${classId}:${subject}:${semester}`)} loadingText="Publishing…">Publish selected ({selectedIds.length})</PrimaryButton>}
+          {canPublish && <PrimaryButton icon={Send} onClick={() => askPublish(draftIds)} disabled={draftIds.length === 0} loading={isBusy(`publish-results:${classId}:${subject}:${semester}`)} loadingText="Publishing…">Publish results ({draftIds.length})</PrimaryButton>}
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-4">
@@ -4578,11 +4594,6 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-slate-500 text-xs">
                     <tr>
-                      {canPublish && (
-                        <th className="px-4 py-2.5">
-                          <input type="checkbox" checked={selectableIds.length > 0 && selectedIds.length === selectableIds.length} onChange={(e) => setSelectedIds(e.target.checked ? selectableIds : [])} />
-                        </th>
-                      )}
                       <th className="text-left font-medium px-3 py-2.5 w-10">#</th>
                       <th className="text-left font-medium px-4 py-2.5 sticky left-0 bg-slate-50 z-10">Student</th>
                       {assessments.map((a) => (
@@ -4603,20 +4614,17 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                       const rowLock = data.resultLockFor(record, semester, yearId);
                       const canEdit = canEditResultComponent(auth.currentUser, ctx, record) && data.canTeacherPerformAcademicAction(auth.currentUser, todayKeyStr()) && !rowLock.locked;
                       const locked = record?.publishStatus === "LOCKED";
+                      const hasRecorded = resultStateOf(record, evidence) !== "NOT_STARTED";
+                      const rowEditing = canEdit && (!hasRecorded || editingRows.has(s.id) || rowHasDirty(s.id));
                       const progress = totals.count === 0 ? "Not started" : totals.completionStatus === "COMPLETE" ? "Complete" : "In progress";
                       const rowState = resultStateOf(record, evidence);
                       return (
                         <tr key={s.id} className="border-t border-slate-100">
-                          {canPublish && (
-                            <td className="px-4 py-2">
-                              <input type="checkbox" checked={selectedIds.includes(s.id)} onChange={() => toggleSelect(s.id)} disabled={locked} />
-                            </td>
-                          )}
                           <td className="px-3 py-2 text-slate-400">{i + 1}</td>
                           <td className="px-4 py-2 text-slate-700 whitespace-nowrap sticky left-0 bg-white z-10">{data.studentFullName(s)}</td>
                           {assessments.map((a) => {
                             const comp = record?.components?.[a.id];
-                            const err = canEdit ? scoreError(s.id, a.id) : null;
+                            const err = rowEditing ? scoreError(s.id, a.id) : null;
                             const isTest = a.kind === ASSESSMENT_KIND.TEST;
                             // Evidence belongs to TEST assessments only; a NON_TEST column has no photo control at all.
                             const pages = isTest && record ? data.resultEvidenceFor(record.id, a.id) : [];
@@ -4624,7 +4632,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                             return (
                               <td key={a.id} className="px-3 py-2 align-top">
                                 <div className="flex items-start gap-1.5">
-                                  {canEdit ? (
+                                  {rowEditing ? (
                                     <div className="flex flex-col">
                                       <input type="number" inputMode="decimal" min={0} max={a.weight} step="0.1" value={scoreValue(s.id, a.id)} placeholder={`/${a.weight}`}
                                         aria-label={`${data.studentFullName(s)} — ${a.name} (out of ${a.weight})`}
@@ -4643,12 +4651,12 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                                             const pageBusy = isBusy(`evidence-remove:${p.id}`) || isBusy(`evidence-replace:${p.id}`) || isBusy(`evidence-reorder:${record.id}:${a.id}`);
                                             return (
                                             <div key={p.id} className="flex flex-col items-center">
-                                              <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${a.name}`, files: pages, initialIndex: idx })} className="w-7 h-7 sm:w-6 sm:h-6 rounded border border-slate-200 hover:border-brand-400 overflow-hidden flex items-center justify-center bg-slate-50">
+                                              <button type="button" onClick={() => setDocViewer({ title: `${data.studentFullName(s)} — ${a.name}`, files: pages, initialIndex: idx, dl: { student: data.studentFullName(s), subject, assessment: a.name } })} className="w-7 h-7 sm:w-6 sm:h-6 rounded border border-slate-200 hover:border-brand-400 overflow-hidden flex items-center justify-center bg-slate-50">
                                                 {p.fileType === "pdf" || !p.fileDataUrl
                                                   ? <FileText size={12} className="text-slate-400" />
                                                   : <img src={p.fileDataUrl} alt="" className="w-full h-full object-cover" />}
                                               </button>
-                                              {canEdit && (
+                                              {rowEditing && (
                                                 <div className="flex items-center gap-0.5">
                                                   <button type="button" disabled={idx === 0 || pageBusy} onClick={() => reorderPage(record, a.id, pages, idx, idx - 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▲</button>
                                                   <button type="button" disabled={idx === pages.length - 1 || pageBusy} onClick={() => reorderPage(record, a.id, pages, idx, idx + 1)} className="text-[8px] leading-none text-slate-400 hover:text-slate-700 disabled:opacity-20">▼</button>
@@ -4664,19 +4672,15 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                                           })}
                                         </div>
                                       )}
-                                      {pages.length > 0 && <span className="text-[10px] text-slate-500">{pages.length} {pages.length === 1 ? "page" : "pages"}</span>}
+                                      {pages.length > 0 && <span className="text-[10px] text-slate-500">{pages.length} {pages.length === 1 ? "evidence image" : "evidence images"}</span>}
                                       <div className="flex items-center gap-1">
-                                        {canEdit && (
-                                          <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${a.id}`)} onClick={() => setCameraChooserFor({ studentId: s.id, assessmentId: a.id })} className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500 hover:text-brand-600 disabled:opacity-30 whitespace-nowrap" title="Add another test photo / screenshot" aria-label={`Add test evidence for ${data.studentFullName(s)} — ${a.name}`}>
+                                        {rowEditing && (
+                                          <button type="button" disabled={isBusy(`evidence-upload:${s.id}:${a.id}`)} onClick={() => setCameraChooserFor({ studentId: s.id, assessmentId: a.id })} className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500 hover:text-brand-600 disabled:opacity-30 whitespace-nowrap" title="Add one evidence image (repeat to add more)" aria-label={`Add test evidence for ${data.studentFullName(s)} — ${a.name}`}>
                                             {isBusy(`evidence-upload:${s.id}:${a.id}`) ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? "Uploading…" : "Add image"}
+                                            {isBusy(`evidence-upload:${s.id}:${a.id}`) ? "Uploading…" : "Add evidence"}
                                           </button>
                                         )}
-                                        {pages.length > 0 && canEdit && (
-                                          <button onClick={() => toggleShare(s.id, a.id, comp?.sharedWithParents)} title="Toggle visibility to parent" className={`text-[9px] font-semibold px-1 py-0.5 rounded whitespace-nowrap ${comp?.sharedWithParents ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                                            {comp?.sharedWithParents ? "Shared" : "Share?"}
-                                          </button>
-                                        )}
+
                                       </div>
                                       {needsEvidence && <span className="text-[9px] leading-tight text-amber-600 max-w-[6rem]">Photo needed to publish</span>}
                                     </div>
@@ -4695,9 +4699,14 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
                           <td className="px-3 py-2">
                             <Badge tone={rowState === "LOCKED" ? "red" : rowState === "SAVED" ? "green" : rowState === "DRAFT" ? "amber" : "slate"}>{RESULT_STATE_LABEL[rowState]}</Badge>
                             {rowState !== "NOT_STARTED" && <p className={`text-[10px] mt-0.5 ${progress === "Complete" ? "text-emerald-600" : progress === "In progress" ? "text-amber-600" : "text-slate-400"}`}>{progress}</p>}
+                            {rowState === "DRAFT" && <p className="text-[10px] mt-0.5 text-amber-700 max-w-[9rem] leading-tight">Draft — hidden from parents until published.</p>}
                           </td>
                           <td className="px-3 py-2">
-                            <div className="flex justify-end gap-1.5">
+                            <div className="flex justify-end gap-1.5 flex-wrap">
+                              {hasRecorded && !rowEditing && <GhostButton icon={Eye} onClick={() => setDetailFor(s.id)}>View</GhostButton>}
+                              {canPublish && !rowEditing && hasRecorded && record?.publishStatus === "DRAFT" && <GhostButton icon={Send} onClick={() => askPublish([s.id])}>Publish</GhostButton>}
+                              {hasRecorded && canEdit && !rowEditing && <GhostButton icon={Edit2} onClick={() => startEditing(s.id)}>Edit</GhostButton>}
+                              {hasRecorded && rowEditing && <GhostButton icon={X} onClick={() => stopEditing(s.id, { discard: true })}>{rowHasDirty(s.id) ? "Cancel" : "Done"}</GhostButton>}
                               {canAudit && <GhostButton icon={History} onClick={() => setHistoryFor(s.id)}>History</GhostButton>}
                               {canLock && !rowLock.locked && rowLock.source === "none" && record?.publishStatus === "PUBLISHED" && (
                                 <GhostButton icon={Lock} onClick={() => requestLock(record)} loading={isBusy(`lock-result:${record.id}`)}>Lock</GhostButton>
@@ -4722,7 +4731,7 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       })}
       {historicalSection}
       {unassignedCard}
-      <p className="text-xs text-slate-400 mt-3">Test assessments take a photo or screenshot of the marked paper — it is required before the result can be published. Non-test assessments need no photo. Parents only see a photo once you mark it as shared.</p>
+      <p className="text-xs text-slate-400 mt-3">Test assessments need at least one photo or screenshot of the marked paper before the result can be published — add them one image at a time. Non-test assessments need no photo. A result stays Draft (hidden from parents) until it is published; publishing shows the score and its images to the parent and notifies them.</p>
 
       {/* Phones: keep Save in reach while scrolling a long class list. */}
       {dirtyKeys.length > 0 && (
@@ -4737,9 +4746,40 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
       <Modal open={!!historyFor} onClose={() => setHistoryFor(null)} title="Change History" wide>
         <ResultAuditTrail entries={historyRecord ? db.resultAuditLog.filter((e) => e.entityId === historyRecord.id) : []} viewerRole={auth.currentUser.role} />
       </Modal>
-      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={false} />
+      <DocumentViewerModal open={!!docViewer} onClose={() => setDocViewer(null)} title={docViewer?.title} files={docViewer?.files} initialIndex={docViewer?.initialIndex} allowDownload={false} itemLabel="image"
+        downloadName={docViewer?.dl ? (file, index) => evidenceDownloadName({ ...docViewer.dl, index, file }) : null} />
+      <ResultDetailModal
+        record={detailFor ? recordFor(detailFor) : null}
+        student={detailFor ? students.find((x) => x.id === detailFor) : null}
+        audience="staff"
+        onClose={() => setDetailFor(null)}
+        onHistory={canAudit ? () => { const id = detailFor; setDetailFor(null); setHistoryFor(id); } : null}
+        onEdit={detailFor && canEditRow(recordFor(detailFor)) ? () => { const id = detailFor; setDetailFor(null); startEditing(id); } : null}
+        onPublish={detailFor && canPublish && recordFor(detailFor)?.publishStatus === "DRAFT" ? () => publishIds([detailFor]) : null}
+      />
+      <Modal open={!!publishConfirm} onClose={() => setPublishConfirm(null)} title={publishConfirm && publishConfirm.ids.length === 1 ? "Publish Result?" : "Publish Results?"}>
+        {publishConfirm && (
+          <div>
+            <p className="text-sm text-slate-600 mb-4">
+              {publishConfirm.ids.length === 1
+                ? "This result will become visible to the student's parent, with its evidence images. The parent gets a notification."
+                : `These ${publishConfirm.ids.length} results will become visible to each student's parent, with their evidence images. Every parent gets a notification.`}
+            </p>
+            <dl className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm space-y-2 mb-5">
+              <div><dt className="text-xs text-slate-400">Subject</dt><dd className="font-medium text-slate-800">{subject} · {SEMESTER_LABEL[semester]}</dd></div>
+              <div><dt className="text-xs text-slate-400">{publishConfirm.ids.length === 1 ? "Student" : "Students"}</dt>
+                <dd className="font-medium text-slate-800 break-words">{publishConfirm.ids.slice(0, 6).map((id) => { const st = students.find((x) => x.id === id); return st ? data.studentFullName(st) : ""; }).filter(Boolean).join(", ")}{publishConfirm.ids.length > 6 ? ` and ${publishConfirm.ids.length - 6} more` : ""}</dd></div>
+              {publishConfirm.ids.length === 1 && (() => { const t = resultTotals(recordFor(publishConfirm.ids[0])); return <div><dt className="text-xs text-slate-400">Score</dt><dd className="font-semibold text-slate-800">{t.completionStatus === "COMPLETE" ? t.total : t.entered} / {t.totalMax}</dd></div>; })()}
+            </dl>
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <button type="button" onClick={() => setPublishConfirm(null)} className="px-4 py-2.5 sm:py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100">Cancel</button>
+              <PrimaryButton icon={Send} onClick={async () => { const ids = publishConfirm.ids; setPublishConfirm(null); await publishIds(ids); }}>{publishConfirm.ids.length === 1 ? "Publish Result" : "Publish Results"}</PrimaryButton>
+            </div>
+          </div>
+        )}
+      </Modal>
       <UnlockReasonModal open={!!unlockTarget} onClose={() => setUnlockTarget(null)} lockMessage={unlockTarget?.lockMessage} onConfirm={confirmUnlock} />
-      <Modal open={!!cameraChooserFor} onClose={() => setCameraChooserFor(null)} title="Attach exam photo">
+      <Modal open={!!cameraChooserFor} onClose={() => setCameraChooserFor(null)} title="Add evidence image">
         <div className="space-y-2">
           <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
             <Camera size={18} className="text-brand-600" />
@@ -4749,8 +4789,8 @@ function SubjectSemesterResultsEditor({ classId, subject, semester, academicYear
           </label>
           <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 cursor-pointer">
             <ImageIcon size={18} className="text-brand-600" />
-            <span className="text-sm font-medium text-slate-700">Choose from Gallery</span>
-            <input type="file" accept="image/*" multiple className="hidden"
+            <span className="text-sm font-medium text-slate-700">Choose one image from Gallery</span>
+            <input type="file" accept="image/*" className="hidden"
               onChange={(e) => { const target = cameraChooserFor; setCameraChooserFor(null); if (e.target.files.length > 0 && target) uploadEvidencePages(target.studentId, target.assessmentId, e.target.files); }} />
           </label>
         </div>

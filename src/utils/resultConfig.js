@@ -80,7 +80,9 @@ function activeConfigFor(configs, academicYearId, semester, grade) {
 // evidence: the db.resultEvidence rows (any array of { resultId }).
 function resultHasRecordedData(record, evidence) {
   if (!record) return false;
-  if (record.publishStatus && record.publishStatus !== "DRAFT") return true;
+  // LOCKED is always a record. A PUBLISHED result whose every score and image was removed is empty:
+  // nothing is left to protect, so it follows the active structure (the database re-pins it to Draft).
+  if (record.publishStatus === "LOCKED") return true;
   const rows = record.componentRows || Object.values(record.components || {});
   if (rows.some((c) => c && c.score != null)) return true;
   return (evidence || []).some((e) => e.resultId === record.id);

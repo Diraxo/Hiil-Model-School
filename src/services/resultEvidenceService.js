@@ -57,6 +57,11 @@ function mapRow(row) {
 // User-facing validation shared by the UI (pre-check) and every write path here (authoritative).
 export function validateEvidenceFile(file) {
   if (!file) return "Choose a file to attach.";
+  // One file per upload action: an array / FileList reaching this layer (a multi-select picker or a
+  // multi-file drop) is refused outright rather than silently uploading the first or all of them.
+  if (Array.isArray(file) || (typeof FileList !== "undefined" && file instanceof FileList)) {
+    return "Attach one image at a time.";
+  }
   const type = file.type || "";
   if (!ALLOWED_EVIDENCE_MIME.includes(type)) {
     return "Unsupported file type — attach a JPEG, PNG, WebP, or PDF.";
@@ -65,6 +70,15 @@ export function validateEvidenceFile(file) {
     return "That file is too large — the maximum size is 20 MB.";
   }
   return null;
+}
+
+// Reduces a picker/drop file list to exactly one file: { file } for a single selection, { error }
+// for none or for several (never picks "the first" of many). Shared by every evidence input.
+export function singleEvidenceFile(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return { file: null, error: null };
+  if (files.length > 1) return { file: null, error: "Attach one image at a time — choose a single file." };
+  return { file: files[0], error: null };
 }
 
 // Strips directory separators and anything that isn't a safe filename char, so the caller can

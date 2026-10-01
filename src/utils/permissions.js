@@ -36,9 +36,20 @@ function canEditResultComponent(user, ctx, record) {
   return false;
 }
 
-function canPublishResult(user) { return !!user && (user.role === ROLES.OWNER || user.role === ROLES.ADMIN); }
-function canLockResult(user) { return canPublishResult(user); }
-function canUnlockResult(user) { return canPublishResult(user); }
+const isOwnerOrDirector = (user) => !!user && (user.role === ROLES.OWNER || user.role === ROLES.ADMIN);
+
+// Owner / Educational Director publish anything; a Teacher publishes only the EXACT class + subject
+// pair they are assigned to (never classes x subjects). `ctx` = { classId, subject, teacherAssignments }.
+// Without a ctx only the school-wide roles qualify. The database enforces the same rule (results_update
+// policy + results_guard), so this only decides which controls to render.
+function canPublishResult(user, ctx) {
+  if (isOwnerOrDirector(user)) return true;
+  if (!user || user.role !== ROLES.TEACHER || !ctx) return false;
+  return isAssignedSubjectTeacher(user, ctx.classId, ctx.subject, ctx.teacherAssignments);
+}
+// Locking / unlocking stays Owner / Educational Director only.
+function canLockResult(user) { return isOwnerOrDirector(user); }
+function canUnlockResult(user) { return isOwnerOrDirector(user); }
 
 // Parents never see the audit trail; everyone else follows the same scoping as canViewResult.
 function canViewResultAudit(user, ctx) {

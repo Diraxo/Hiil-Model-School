@@ -1136,6 +1136,8 @@ function DataProvider({ children }) {
           () => bounce("res", () => Promise.allSettled([resultsRefetchRef.current.refetchResults(), resultsRefetchRef.current.refetchResultEvidence()])))
         .on("postgres_changes", { event: "*", schema: "public", table: "result_components" },
           () => bounce("res", () => Promise.allSettled([resultsRefetchRef.current.refetchResults(), resultsRefetchRef.current.refetchResultEvidence()])))
+        .on("postgres_changes", { event: "*", schema: "public", table: "result_evidence" },
+          () => bounce("res", () => Promise.allSettled([resultsRefetchRef.current.refetchResults(), resultsRefetchRef.current.refetchResultEvidence()])))
         .on("postgres_changes", { event: "*", schema: "public", table: "result_configurations" },
           () => bounce("resCfg", resultsRefetchRef.current.refetchResultConfigs))
         .subscribe();

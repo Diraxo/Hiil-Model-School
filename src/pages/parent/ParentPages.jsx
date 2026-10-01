@@ -33,7 +33,7 @@ import { homeworkSummary, HomeworkList, HomeworkDetailsModal } from "../../compo
 import { LeaveRequestHistoryList } from "../../components/leave";
 import { AnnouncementsPreviewCard } from "../../components/announcements";
 import { DocumentViewerModal } from "../../components/DocumentViewer";
-import { ExamEvidenceStrip } from "../../components/ResultEvidence";
+import { ResultDetailModal } from "../../components/ResultDetail";
 import { useMutationGuard } from "../../hooks/useMutationGuard";
 
 // Mirrors AdminPages.jsx's DOCUMENT_CATEGORIES — the fixed set of categories documents are
@@ -92,6 +92,7 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
   const auth = useAuth();
   const { db } = data;
   const { children, child } = useActiveChild(activeChildId, setActiveChildId);
+  const [resultDetail, setResultDetail] = useState(null); // published result record | null
 
   if (children.length === 0) {
     return (
@@ -246,7 +247,11 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
         <Card className="p-5">
           <h3 className="text-sm font-semibold text-slate-700 mb-3">Recent Results</h3>
           {recentResults.length === 0 ? <p className="text-xs text-slate-400">No published results yet.</p> : recentResults.map((r) => (
-            <div key={r.id} className="flex items-center justify-between text-sm py-1.5"><span className="text-slate-700">{r.subject} <span className="text-slate-400 text-xs">• {SEMESTER_LABEL[r.semester]}</span></span><span className="font-medium text-slate-600">{r.totals.total}%</span></div>
+            <button key={r.id} type="button" onClick={() => setResultDetail(r)} aria-label={`Open ${r.subject} result, ${SEMESTER_LABEL[r.semester]}`}
+              className="w-full flex items-center justify-between text-sm py-1.5 text-left rounded hover:bg-slate-50">
+              <span className="text-slate-700">{r.subject} <span className="text-slate-400 text-xs">• {SEMESTER_LABEL[r.semester]}</span></span>
+              <span className="font-medium text-slate-600">{r.totals.completionStatus === "COMPLETE" ? `${r.totals.total}%` : `${r.totals.entered} / ${r.totals.totalMax}`}</span>
+            </button>
           ))}
         </Card>
         <Card className="p-5">
@@ -258,6 +263,7 @@ function ParentDashboard({ activeChildId, setActiveChildId }) {
       </div>
 
       <AnnouncementsPreviewCard announcements={announcements} />
+      <ResultDetailModal record={resultDetail} student={child} audience="parent" onClose={() => setResultDetail(null)} />
     </div>
   );
 }
@@ -568,7 +574,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
   // Open on the semester that is running (Semester 2 once it has started), from the academic calendar.
   const [semester, setSemester] = useState(() => data.currentResultSemester());
   const [viewCard, setViewCard] = useState(false);
-  const [evidenceView, setEvidenceView] = useState(null); // { title, files, initialIndex } | null
+  const [detail, setDetail] = useState(null); // published result record | null
 
   // Deep-link from a "Results published"/"Report card published" notification.
   useEffect(() => {
@@ -639,7 +645,10 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
               return (
                 <div key={r.id} className="px-4 py-3">
                   <div className="flex items-center justify-between mb-1.5 gap-2">
-                    <p className="text-sm font-medium text-slate-700">{r.subject}</p>
+                    <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-slate-700">{r.subject}</p>
+                      <Badge tone="green">{r.publishStatus === "LOCKED" ? "Final" : "Published"}</Badge>
+                    </div>
                     <div className="text-right shrink-0">
                       {complete ? (
                         <>
@@ -654,17 +663,17 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
                       )}
                     </div>
                   </div>
-                  <div className="space-y-2 text-xs text-slate-400">
+                  <div className="space-y-1 text-xs text-slate-400">
                     {r.assessments.map((c) => {
                       const comp = r.components?.[c.id];
-                      const pages = c.kind === ASSESSMENT_KIND.TEST && comp?.sharedWithParents ? data.resultEvidenceFor(r.id, c.id) : [];
+                      const n = c.kind === ASSESSMENT_KIND.TEST ? data.resultEvidenceFor(r.id, c.id).length : 0;
                       return (
-                        <div key={c.id}>
-                          <span>{c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "Not yet recorded"}</span>
-                          <ExamEvidenceStrip pages={pages} onOpen={(idx) => setEvidenceView({ title: `${r.subject} — ${c.name}`, files: pages, initialIndex: idx })} />
-                        </div>
+                        <p key={c.id}>{c.name}: {comp?.score != null ? `${comp.score}/${c.weight}` : "Not yet recorded"}{n > 0 ? ` · ${n} evidence ${n === 1 ? "image" : "images"}` : ""}</p>
                       );
                     })}
+                  </div>
+                  <div className="mt-2">
+                    <GhostButton icon={Eye} onClick={() => setDetail(r)}>View details<span className="sr-only"> for {r.subject}</span></GhostButton>
                   </div>
                 </div>
               );
@@ -673,7 +682,7 @@ function ParentResultsPage({ activeChildId, setActiveChildId, focus, clearFocus 
         </>
       )}
       <ReportCardModal student={viewCard ? child : null} classId={child.classId} onClose={() => setViewCard(false)} />
-      <DocumentViewerModal open={!!evidenceView} onClose={() => setEvidenceView(null)} title={evidenceView?.title} files={evidenceView?.files} initialIndex={evidenceView?.initialIndex} allowDownload={false} />
+      <ResultDetailModal record={detail} student={child} audience="parent" onClose={() => setDetail(null)} />
     </div>
   );
 }
